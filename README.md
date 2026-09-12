@@ -11,7 +11,11 @@ Quality-of-life mods for *Interplanetary Enhanced Edition* (Unity 5.6.7f1, Mono)
 | Hold to fast-forward any action phase | Space, 8x | `[ActionPhase] HoldToFastForwardKey / HoldSpeed` |
 | Force time scale back + log state | F12 | `[ActionPhase] PanicKey` |
 | End Turn hotkey (also confirms hotseat "next player") | Enter / Keypad Enter | `[Hotkeys] EndTurnKey / EndTurnKeyAlt` |
+| Cycle same-type buildings while the building popup is open | Left / Right arrow | `[Buildings] PreviousBuildingKey / NextBuildingKey` |
+| One-click upgrade into the first empty slot when the selected slot is occupied | on | `[Buildings] AutoPickEmptySlot` |
 | Localized text overrides | Quantum Computing -> AGI | `[Localization] Overrides` (`key=value;key=value`) |
+
+On first load the log also lists the game's own Rewired keyboard bindings for the gameplay actions, so key conflicts (e.g. arrows vs camera pan) are visible.
 
 Config file: `<game>/BepInEx/config/pavol.interplanetary.qol.cfg` (created on first launch). Log: `<game>/BepInEx/LogOutput.log`.
 
