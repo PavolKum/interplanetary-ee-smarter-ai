@@ -94,6 +94,19 @@ Implemented in the plugin's `Update()` with `UnityEngine.Input.GetKeyDown`, not 
 6. Open the pause menu during a fast action phase, resume -> speed still resets at phase end.
 7. Uninstall test: rename `winhttp.dll` -> vanilla game, no residue.
 
+## 6. Revisions after the GPT-6 Astra review (2026-09-12, `docs/reviews/astra-plan-v0.1.md`, verdict GO-WITH-CHANGES)
+
+Each finding was checked against the decompiled source before being accepted.
+
+- **Human detection**: AI players are created with `LocalPlayer = true` (`GameSessionManager.cs:214-232`); the game itself counts humans as `LocalPlayer && !AIPlayer` (`PlayerManager.cs:283-293`). The plugin uses that predicate. In hotseat, "a human fired" means any human at the keyboard.
+- **Offline only, everywhere**: the "harmless online" claim is withdrawn (readiness handshakes precede playback; a fast client could finish its next turn while others still watch). Every `timeScale` write, including hold-to-fast-forward, is gated on `!GameManager.OnlineGame`. No config switch to allow online in v0.1.
+- **Speed ownership and recovery**: the plugin records the scale it found and only ever restores that value; it applies a speed only if `StartActionphase` actually reached `Playing`; a Harmony finalizer on `ActionphaseManager.FixedUpdate` restores the scale if playback throws; all `GameManager` reads go through a null-safe accessor (`m_instance` is nulled in `OnDestroy`, `GameManager.cs:208-219`), and the plugin's own `OnDestroy` restores too.
+- **Corrected numbers**: minimum playback is ~355 frames (325 + 30 extra on non-zero turns), so ~1.0 s at 8x plus countdown; at 144 fps and 8x Unity runs ~2.8 fixed ticks per rendered frame, well under the 16-tick cap.
+- **Hotkeys**: single dispatcher in `Update()`, the Rewired postfix is dropped. End Turn fires only when `EndturnOverlay.EndTurnButton` is active in the hierarchy and interactable (the game toggles both during targeting and view changes, `EndturnOverlay.cs:150-159, 201-223`), the game status is `PlayerTurn`, the input state is `ReadInput`/`"Gameplay"`, and nothing else fired on this key-down. The hotseat OK path is an `else` branch of the same dispatcher. Warning message boxes are intentionally non-modal toasts (`MessageOverlay.cs:79-104`), so the second press proceeds exactly as a second click would; the plugin does not block on them. Text fields (chat, renames, save dialog) all switch the input action state away from `"Gameplay"`, so no TextMeshPro reference is needed.
+- **Localization**: a Harmony prefix that short-circuits `GetLocalizedString` for overridden keys (so the original's unguarded mod-dictionary indexing never runs for them). Overrides come from a plain BepInEx config string (`key=value;key=value`), no TSV file to deploy. Default: `ui_technology_name_tec_QuantumComputing=AGI`.
+- **Audio**: explosion sounds are destroyed after a scaled delay (`BaseExplosion.cs:59-67`), so fast-forward can cut them short. Accepted; the point of the feature is not to watch.
+- **Harmony**: patches name parameters exactly as the originals (`newGameStatus`, `localizationStringKey`). An empty plugin loading proves nothing about detours on this old Mono, so the first real launch checks the logged patch count and each feature in turn.
+
 ## 5. Questions for the reviewer
 
 - Any reason to prefer Harmony-postfixing `FixedUpdate` to call `playActionphase` N times per tick over `Time.timeScale`? (My view: timeScale is what the devs themselves used, and it keeps VFX/coroutines in sync.)
