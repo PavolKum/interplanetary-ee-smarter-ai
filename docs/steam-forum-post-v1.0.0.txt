@@ -1,0 +1,32 @@
+TITLE: [MOD] Quality of Life: fast action phase, Enter to end turn, arrow keys in building windows, one-click upgrades
+
+[h1]Interplanetary EE: Quality of Life[/h1]
+
+A small mod for the Enhanced Edition that fixes the little things that add up over a long game. Free, open source (MIT), nothing in the game folder is modified.
+
+[b]What it does[/b]
+[list]
+[*][b]Fast action phase.[/b] If you didn't fire anything this turn, the action phase plays at 8x. That's about one second instead of eight. If you did fire, it plays at 1.3x. Hold Space to fast-forward any action phase. Offline games only; online play is untouched.
+[*][b]Enter ends the turn.[/b] Exactly like clicking the button, including the "targeting not finished" warning. In hotseat, Enter also confirms the "next player" screen.
+[*][b]Arrow keys cycle buildings.[/b] With a building window open, Left / Right step through your buildings of that type, so checking which mines still need upgrades is a few keypresses.
+[*][b]One-click upgrades.[/b] Clicking an upgrade while the selected slot is already full installs it into the empty slot instead of showing "slot already used".
+[*][b]Text overrides.[/b] Rename any in-game text from the config if you feel like it. Off by default.
+[/list]
+
+Every feature has its own on/off switch and the keys and speeds are configurable in a plain text file.
+
+[b]Install[/b] (two steps, about a minute)
+[olist]
+[*]Get BepInEx 5.x [b]x64[/b] from [url=https://github.com/BepInEx/BepInEx/releases]github.com/BepInEx/BepInEx/releases[/url] and unpack it into the game folder (right-click the game in Steam > Manage > Browse local files). You should see winhttp.dll next to Interplanetary.exe.
+[*]Get InterplanetaryQoL-v1.0.0.zip from [url=https://github.com/PavolKum/interplanetary-ee-qol/releases]github.com/PavolKum/interplanetary-ee-qol/releases[/url] and unpack it into the same folder.
+[/olist]
+Start the game. To uninstall, delete winhttp.dll from the game folder and the game is back to vanilla. Steam's "verify integrity" doesn't mind the extra files.
+
+[b]Notes[/b]
+[list]
+[*]Built against the current Steam build (August 2026). If a future patch changes the game code, a feature will switch itself off and write a line to BepInEx/LogOutput.log rather than crash.
+[*]Tested in offline single-player. If something misbehaves, post here or open an issue on GitHub with the LogOutput.log and I'll look at it.
+[*]The game's own mod support only covers balance spreadsheets, so this uses BepInEx + Harmony, the same loader most Unity game mods use. Source and a write-up of how the action phase and input work under the hood are in the repo if you're curious.
+[/list]
+
+Source: [url=https://github.com/PavolKum/interplanetary-ee-qol]github.com/PavolKum/interplanetary-ee-qol[/url]
