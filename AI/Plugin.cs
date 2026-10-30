@@ -48,7 +48,6 @@ namespace InterplanetaryAI
         internal static ConfigEntry<string> GrowthWeights;
         internal static ConfigEntry<string> PressureWeights;
         internal static ConfigEntry<int> GrowthUntilTurn;
-        internal static ConfigEntry<float> BehindRatio;
         internal static ConfigEntry<float> DefenseBonusWhenHit;
         internal static ConfigEntry<bool> ResearchPlanEnabled;
         internal static ConfigEntry<string> ResearchPlan;
@@ -127,13 +126,11 @@ namespace InterplanetaryAI
                 "Superweapon buildings to save for, in priority order. Add bui_SolarLaser only together with [Lasers] EnableLasers.");
             BuildPlannerEnabled = Config.Bind("Economy", "BuildPlanner", true,
                 "Replace the native fixed construction roulette (firepower 3 / energy 1.75 / material 1.2 / defense 0.7) with phase weights below. Needs and minimum intel stay native.");
-            GrowthWeights = Config.Bind("Economy", "GrowthWeights", "1.5,3.5,3,0.7",
-                "Firepower,Energy,Material,Defense weights while growing: before GrowthUntilTurn, or while the AI's economy trails the strongest visible enemy's.");
-            PressureWeights = Config.Bind("Economy", "PressureWeights", "3,2,1.5,1",
-                "Firepower,Energy,Material,Defense weights once the AI has caught up.");
-            GrowthUntilTurn = Config.Bind("Economy", "GrowthUntilTurn", 15, "Always grow before this turn.");
-            BehindRatio = Config.Bind("Economy", "BehindRatio", 0.9f,
-                "Grow while own economy < this x the strongest visible enemy economy (energy + material + science per turn).");
+            GrowthWeights = Config.Bind("Economy", "GrowthWeights", "1.5,3.5,3,0.7,0.3",
+                "Firepower,Energy,Material,Defense,Counterintel weights in the opening (before GrowthUntilTurn).");
+            PressureWeights = Config.Bind("Economy", "PressureWeights", "2.5,2.5,2,1,0.8",
+                "Firepower,Energy,Material,Defense,Counterintel weights after the opening: keeps growing while arming. Native was 3 / 1.75 / 1.2 / 0.7 / 1.25 (+ intel).");
+            GrowthUntilTurn = Config.Bind("Economy", "GrowthUntilTurn", 15, "Opening length in turns.");
             DefenseBonusWhenHit = Config.Bind("Economy", "DefenseBonusWhenHit", 1.5f, "Extra defense weight while the AI has recently taken damage.");
 
             SmartDefense = Config.Bind("Economy", "SmartDefense", true,
@@ -209,7 +206,6 @@ namespace InterplanetaryAI
             Build.Growth = BuildPlanner.Parse(GrowthWeights.Value, Build.Growth);
             Build.Pressure = BuildPlanner.Parse(PressureWeights.Value, Build.Pressure);
             Build.GrowthUntilTurn = GrowthUntilTurn.Value;
-            Build.BehindRatio = BehindRatio.Value;
             Build.DefenseBonusWhenHit = DefenseBonusWhenHit.Value;
             SuperweaponIds = Brain.ResearchPlan.Parse(Superweapons.Value);
             ResearchPlanIds = Brain.ResearchPlan.Parse(ResearchPlan.Value);

@@ -83,6 +83,55 @@ def main():
             cells = [f"{e['name']} {e['score']:.2f} ({e['leader']:.2f}/{e['grudgeTerm']:.2f}/{e['finish']:.2f})" for e in r["enemies"]]
             print(f"  {r['ai']:<8} " + "; ".join(cells))
 
+    summarize_economy(rows)
+
+
+def summarize_economy(rows):
+    economy = [r for r in rows if r["e"] == "economy"]
+    if not economy:
+        return
+    print("\neconomy per AI (energy / material / science per turn; planet material):")
+    by_ai = defaultdict(list)
+    for r in economy:
+        by_ai[r["ai"]].append(r)
+    for ai in sorted(by_ai):
+        series = by_ai[ai]
+        marks = [r for r in series if r["t"] % 10 == 0] + [series[-1]]
+        cells = [f"T{r['t']} {r['energyPerTurn']}/{r['materialPerTurn']}/{r['sciencePerTurn']} pm{r['planetMaterial']}{' G' if r['growth'] else ''}" for r in marks]
+        print(f"  {ai:<8} " + "  ".join(cells))
+        last = series[-1]
+        print(f"           buildings T{last['t']}: " + ", ".join(f"{k} {v}" for k, v in sorted(last["buildings"].items(), key=lambda kv: -kv[1])))
+        goal_turns = [r["t"] for r in series if r["goal"]]
+        if goal_turns:
+            print(f"           saving for {series[-1]['goal'] or 'goal'} from T{goal_turns[0]}; last reserve E{last['reservedEnergy']} M{last['reservedMaterial']}")
+
+    supers = [r for r in rows if r["e"] == "superweapon"]
+    print("\nsuperweapons queued:", ", ".join(f"T{r['t']} {r['ai']} {r['building']}" for r in supers) if supers else "none")
+
+    research = defaultdict(list)
+    for r in rows:
+        if r["e"] == "research":
+            research[r["ai"]].append(r["target"].replace("tec_", ""))
+    if research:
+        print("\nresearch plan targets queued:")
+        for ai in sorted(research):
+            print(f"  {ai:<8} {len(research[ai])}: " + ", ".join(research[ai][-6:]) + (" (last 6)" if len(research[ai]) > 6 else ""))
+
+    builds = [r for r in rows if r["e"] == "build"]
+    if builds:
+        picks = [0, 0, 0, 0]
+        queued = [0, 0, 0, 0]
+        defenses = Counter()
+        for r in builds:
+            for i in range(4):
+                picks[i] += r["picks"][i]
+                queued[i] += r["queued"][i]
+            defenses.update(r.get("defensesQueued", {}))
+        names = ["firepower", "energy", "material", "defense"]
+        print("\nbuild planner picks -> module said yes: " + ", ".join(f"{names[i]} {picks[i]}->{queued[i]}" for i in range(4)))
+        if defenses:
+            print("smart defense queued: " + ", ".join(f"{k.replace('bui_', '')} {v}" for k, v in defenses.most_common()))
+
 
 if __name__ == "__main__":
     main()

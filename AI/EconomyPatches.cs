@@ -27,8 +27,8 @@ namespace InterplanetaryAI
             public bool Bought;
             public float[] Weights;
             public bool Growth;
-            public readonly int[] Picks = new int[4];
-            public readonly int[] PickSuccesses = new int[4];
+            public readonly int[] Picks = new int[5];
+            public readonly int[] PickSuccesses = new int[5];
             public readonly Dictionary<string, int> EnemyWeapons = new Dictionary<string, int>();
             public readonly Dictionary<string, int> OwnDefenses = new Dictionary<string, int>();
             public readonly Dictionary<string, int> DefensesQueued = new Dictionary<string, int>();
@@ -44,6 +44,7 @@ namespace InterplanetaryAI
             AccessTools.Field(typeof(AIConstruction), "m_energyConstruction"),
             AccessTools.Field(typeof(AIConstruction), "m_materialConstruction"),
             AccessTools.Field(typeof(AIConstruction), "m_defenseConstruction"),
+            AccessTools.Field(typeof(AIConstruction), "m_counterintelConstruction"),
         };
         private static readonly MethodInfo s_tryBuildAffordable = AccessTools.Method(typeof(AIConstructionModule), "tryBuildAffordableBuilding");
 
@@ -99,7 +100,7 @@ namespace InterplanetaryAI
                 BuildSituation situation = new BuildSituation { Turn = turn, OwnEconomy = ownEconomy, MaxEnemyEconomy = maxEnemyEconomy, RecentDamage = recentDamage };
                 state.Growth = BuildPlanner.IsGrowthPhase(situation, Plugin.Build);
                 state.Weights = BuildPlanner.Weights(situation, Plugin.Build);
-                for (int i = 0; i < 4; i++) { state.Picks[i] = 0; state.PickSuccesses[i] = 0; }
+                for (int i = 0; i < 5; i++) { state.Picks[i] = 0; state.PickSuccesses[i] = 0; }
 
                 // Superweapon goal.
                 state.BuyPending = false;
@@ -246,7 +247,8 @@ namespace InterplanetaryAI
                 case BuildCategory.Firepower: return ((AIWeaponConstruction)module).TryConstructWeapon();
                 case BuildCategory.Energy: return ((AIEnergyConstruction)module).TryConstructEnergy();
                 case BuildCategory.Material: return ((AIMaterialConstruction)module).TryConstructMaterial();
-                default: return ((AIDefenseConstruction)module).TryConstructDefense();
+                case BuildCategory.Defense: return ((AIDefenseConstruction)module).TryConstructDefense();
+                default: return ((AICounterintelConstruction)module).TryConstructCounterintel();
             }
         }
 

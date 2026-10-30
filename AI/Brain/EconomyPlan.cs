@@ -30,6 +30,7 @@ namespace InterplanetaryAI.Brain
         Energy = 1,
         Material = 2,
         Defense = 3,
+        Counterintel = 4,
     }
 
     public sealed class BuildSituation
@@ -42,18 +43,20 @@ namespace InterplanetaryAI.Brain
 
     public sealed class BuildWeights
     {
-        public float[] Growth = { 1.5f, 3.5f, 3f, 0.7f };   // firepower, energy, material, defense
-        public float[] Pressure = { 3f, 2f, 1.5f, 1f };
+        // firepower, energy, material, defense, counterintel
+        public float[] Growth = { 1.5f, 3.5f, 3f, 0.7f, 0.3f };
+        public float[] Pressure = { 2.5f, 2.5f, 2f, 1f, 0.8f };
         public int GrowthUntilTurn = 15;
-        public float BehindRatio = 0.9f;                     // growth while own economy < ratio x strongest enemy
         public float DefenseBonusWhenHit = 1.5f;
     }
 
     public static class BuildPlanner
     {
+        // Growth is the opening only. "Grow while behind the leader" was tried and rejected: against a human
+        // who out-booms the AIs it keeps them building economy all game and never punishing the boom.
         public static bool IsGrowthPhase(BuildSituation s, BuildWeights w)
         {
-            return s.Turn < w.GrowthUntilTurn || s.OwnEconomy < w.BehindRatio * s.MaxEnemyEconomy;
+            return s.Turn < w.GrowthUntilTurn;
         }
 
         public static float[] Weights(BuildSituation s, BuildWeights w)
@@ -81,9 +84,9 @@ namespace InterplanetaryAI.Brain
         {
             if (string.IsNullOrEmpty(text)) return fallback;
             string[] parts = text.Split(',');
-            if (parts.Length != 4) return fallback;
-            float[] values = new float[4];
-            for (int i = 0; i < 4; i++)
+            if (parts.Length != 5) return fallback;
+            float[] values = new float[5];
+            for (int i = 0; i < 5; i++)
             {
                 float v;
                 if (!float.TryParse(parts[i].Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v) || v < 0f) return fallback;

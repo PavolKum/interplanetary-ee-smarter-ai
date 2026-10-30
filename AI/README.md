@@ -32,10 +32,11 @@ Review: two GPT-6.1 Terra passes; see `docs/reviews/terra-ai-disposition.md` for
 ## Files
 
 - `Brain/` - game-independent decision logic (planner, memories, accuracy, strike choice).
-- `Patches.cs` - Harmony adapters. Any exception keeps the native behaviour for that hook and is logged once.
+- `Patches.cs` - v0.1 combat hooks; `EconomyPatches.cs` - v0.2 economy, research and defense hooks; `LaserPatches.cs` - experimental laser support. Any exception keeps the native behaviour for that hook and is logged once.
 - `Plugin.cs` - config, hook registration, offline guard, decision log.
 - `Tests/` - console checks for `Brain/`: `dotnet run -c Release` in `AI/Tests` (exit code 1 on failure).
-- `tools/summarize_decisions.py` - reads the newest decision log and prints targets, trajectory success and threat scores for the last match.
+- `tools/summarize_decisions.py` - reads the newest decision log and prints targets, trajectory success, threat scores, economy, superweapons, research and defense for the last match.
+- `tools/human_research_order.py` - consensus research order from the recorder's winning-match debriefs.
 
 ## Build, install, uninstall
 
@@ -55,8 +56,22 @@ Uninstall: delete `<game>/BepInEx/plugins/InterplanetaryAI/`, or set `[General] 
 3. Compare against the recorder's postgame facts (`ScheduleImodes/interplanetary/debriefs/`).
 4. Tune config or change the Brain; rebuild; repeat.
 
-## Next (v0.2 candidates)
+## v0.2 - build and research like a strong player
 
-- Economy: the AIs plateau at 2-3.5k energy from turn ~20. Find out why (construction placement, `MinimumEnergyThreshold`, material builds failing per the director run) and fix it.
-- Early pressure: weapon build-up timed against the leader's undefended boom.
-- Research path: the native AIs never research some economy techs (Robotic Mining in the director run).
+| Change | Hook | Config |
+|---|---|---|
+| Superweapon savings: once Nuclear Missile / Asteroid Diversion is unlocked, a reserve that converges on the cost (the native AI drops any need above 1.65x its stock, so it never saves); bought through the native weapon module | postfix `AICore.BeginTurn` (reserve), prefix `AIConstruction.tryConstructNewBuilding` (buy) | `[Economy] SuperweaponSavings`, `SaveShare`, `Superweapons` |
+| Build planner: growth weights (energy/material heavy) for the first 15 turns, then a balanced mix that keeps growing while arming (growing while behind the leader was rejected: it never punishes a human boom); counterintel kept; +defense when recently hit. Replaces the fixed native roulette; needs and minimum intel stay native | prefix `AIConstruction.tryConstructNewBuilding` | `[Economy] BuildPlanner`, `GrowthWeights`, `PressureWeights`, `GrowthUntilTurn` |
+| Research plan: the human's consensus opening from 6 recorded wins (`tools/human_research_order.py`), the Nuclear Missile line pulled forward, then the rest, then Asteroid Diversion. Prerequisites are queued by the game; native research resumes after the plan | prefix `AITechQueue.BeginTurn` | `[Research] UsePlan`, `Plan` |
+| Smart defense: build the defense that counters the most visible, not-yet-covered enemy firepower (Kinetic vs Railgun/Coilcannon, Ion vs Missile/MIRV/Nuclear, Shield vs Laser) | prefix `AIDefenseConstruction.TryConstructDefense` | `[Economy] SmartDefense` |
+| Lasers (EXPERIMENTAL, off): lift the two native bans and fix the dormant AI laser code (crash on an empty target list, wrong building aimed, projectile simulation of a never-set shot) | transpilers on `AIWeaponConstruction.TryConstructWeapon` and `AIWeaponTargeting.BeginTurn`, prefixes on `AILaserTrajectoryWeapon.setBuildingsToTry` / `Update`, `AITargetWeapons.CalculateTrajectory` | `[Lasers] EnableLasers` |
+| Economy, build, research, superweapon and defense records in the decision log, to diagnose the turn-20 plateau | same hooks | `[Logging] DecisionLog` |
+
+Why the research plan is not the human order verbatim: that order reaches Thermonuclear Warheads at about 24.5k cumulative science, and the strongest native AI in the 30 Oct match had 17k by turn 40.
+
+## Next
+
+- Read the first v0.2 match log: is the economy still flat (placement? planet material?), did anyone buy a superweapon, did the plan keep up.
+- Calibrate accuracy from the AIs' realized hit rate against the human's 58-67%.
+- Lasers: one throwaway match with `EnableLasers = true`.
+- Upgrades and projects (the native AI never builds projects: "Project handling not implemented").
