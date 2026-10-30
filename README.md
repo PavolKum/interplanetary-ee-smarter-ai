@@ -36,6 +36,7 @@ Uninstall: delete or rename `<game>/winhttp.dll`. Everything else is inert witho
 ## Layout
 
 - `QoL/` - the plugin (net35, C# 7.3).
+- `AI/` - Smarter AI plugin (focus fire, no deliberate misses, grudges, city-finishing strikes); see `AI/README.md`.
 - `decompiled/` - ILSpy 9.1 output of `Assembly-CSharp.dll`, for reference only.
 - `docs/plan-qol-v0.1.md` - design, with the survey of the game's internals and the post-review revisions.
 - `docs/reviews/` - external review passes (GPT-6 Astra, GPT-6.1 Terra via OpenCode).

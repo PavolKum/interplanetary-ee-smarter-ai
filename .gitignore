@@ -5,3 +5,4 @@ obj/
 .vs/
 docs/reviews/*.err
 docs/reviews/*.tmp
+__pycache__/
