@@ -17,6 +17,7 @@ namespace InterplanetaryAI.Tests
             FocusShareSendsMostWeaponsAtTop();
             UnreachableTopIsReroutedToNextBest();
             AllUnreachableKeepsPlan();
+            NoVisibleCitiesGetsNoFinishBonus();
             AccuracyCarryKeepsLongRunRate();
             AccuracyExtremes();
             AccuracyLevelLookupClamps();
@@ -42,9 +43,9 @@ namespace InterplanetaryAI.Tests
         {
             return new List<EnemyView>
             {
-                new EnemyView { PlayerId = 0, Name = "You", IsHuman = true, Economy = 13000, CityHp = 9000 },
-                new EnemyView { PlayerId = 2, Name = "AI 02", Economy = 1100, CityHp = 1500 },
-                new EnemyView { PlayerId = 3, Name = "AI 03", Economy = 3100, CityHp = 8000 },
+                new EnemyView { PlayerId = 0, Name = "You", IsHuman = true, Economy = 13000, CityPopulation = 9000, VisibleCities = 5 },
+                new EnemyView { PlayerId = 2, Name = "AI 02", Economy = 1100, CityPopulation = 1500, VisibleCities = 2 },
+                new EnemyView { PlayerId = 3, Name = "AI 03", Economy = 3100, CityPopulation = 8000, VisibleCities = 4 },
             };
         }
 
@@ -70,9 +71,9 @@ namespace InterplanetaryAI.Tests
         {
             List<EnemyView> enemies = new List<EnemyView>
             {
-                new EnemyView { PlayerId = 1, Economy = 1000, CityHp = 5000 },
-                new EnemyView { PlayerId = 2, Economy = 1000, CityHp = 5000, Grudge = 800 },
-                new EnemyView { PlayerId = 3, Economy = 1000, CityHp = 500 },
+                new EnemyView { PlayerId = 1, Economy = 1000, CityPopulation = 5000, VisibleCities = 3 },
+                new EnemyView { PlayerId = 2, Economy = 1000, CityPopulation = 5000, VisibleCities = 3, Grudge = 800 },
+                new EnemyView { PlayerId = 3, Economy = 1000, CityPopulation = 500, VisibleCities = 1 },
             };
             TargetPlanner.Score(enemies, new PlannerSettings());
             Check(enemies[1].Score > enemies[0].Score, "the enemy that hurt us should outscore an equal one that did not");
@@ -122,6 +123,21 @@ namespace InterplanetaryAI.Tests
             weapons[0].UnreachableTargetIds.Add(3);
             int[] plan = TargetPlanner.Assign(enemies, weapons, settings, new Random(1));
             Check(plan[0] == 0, "with every target marked unreachable, keep the leader (search may still succeed)");
+
+            weapons[0].UnreachableTargetIds.Remove(2); // now exactly one enemy (AI 02, index 1) is reachable
+            plan = TargetPlanner.Assign(enemies, weapons, settings, new Random(1));
+            Check(plan[0] == 1, "with only one reachable enemy, the weapon goes there even if it scores lowest; got " + plan[0]);
+        }
+
+        private static void NoVisibleCitiesGetsNoFinishBonus()
+        {
+            List<EnemyView> enemies = new List<EnemyView>
+            {
+                new EnemyView { PlayerId = 1, Economy = 1000, CityPopulation = 5000, VisibleCities = 3 },
+                new EnemyView { PlayerId = 2, Economy = 1000, CityPopulation = 0, VisibleCities = 0 },
+            };
+            TargetPlanner.Score(enemies, new PlannerSettings());
+            Check(enemies[1].FinishTerm == 0f, "an enemy with no visible city is unknown, not weak; finish term was " + enemies[1].FinishTerm);
         }
 
         private static void AccuracyCarryKeepsLongRunRate()

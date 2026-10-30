@@ -11,8 +11,8 @@ namespace InterplanetaryAI.Brain
         public string Name;
         public bool IsHuman;
         public float Economy;        // visible energy + material + science generation per turn
-        public float CityHp;         // visible remaining city HP
-        public int VisibleCities;
+        public float CityPopulation; // visible cities' population; a city's durability (ruined at 0)
+        public int VisibleCities;    // 0 = nothing known, so no finish-off bonus
         public float Grudge;         // decayed damage this enemy dealt to us
 
         // outputs, filled by Score()
@@ -35,7 +35,7 @@ namespace InterplanetaryAI.Brain
         public float BaseWeight = 0.1f;   // keeps every enemy pickable
         public float LeaderWeight = 1.0f; // squared economy share, so a runaway leader dominates
         public float GrudgeWeight = 0.6f;
-        public float FinishWeight = 0.5f; // prefers enemies with little city HP left
+        public float FinishWeight = 0.5f; // prefers enemies with little visible city population left
         public float HumanBias = 1.0f;    // multiplier on human enemies; 1 = no favouritism
     }
 
@@ -45,23 +45,24 @@ namespace InterplanetaryAI.Brain
         {
             float maxEconomy = 0f;
             float maxGrudge = 0f;
-            float maxCityHp = 0f;
+            float maxCityPopulation = 0f;
             foreach (EnemyView enemy in enemies)
             {
                 maxEconomy = Math.Max(maxEconomy, enemy.Economy);
                 maxGrudge = Math.Max(maxGrudge, enemy.Grudge);
-                maxCityHp = Math.Max(maxCityHp, enemy.CityHp);
+                maxCityPopulation = Math.Max(maxCityPopulation, enemy.CityPopulation);
             }
 
             foreach (EnemyView enemy in enemies)
             {
                 float economyShare = maxEconomy > 0f ? enemy.Economy / maxEconomy : 0f;
                 float grudgeShare = maxGrudge > 0f ? enemy.Grudge / maxGrudge : 0f;
-                float hpShare = maxCityHp > 0f ? enemy.CityHp / maxCityHp : 1f;
+                // An enemy with no visible city is unknown, not weak: no finish-off bonus.
+                float populationShare = enemy.VisibleCities > 0 && maxCityPopulation > 0f ? enemy.CityPopulation / maxCityPopulation : 1f;
 
                 enemy.LeaderTerm = settings.LeaderWeight * economyShare * economyShare;
                 enemy.GrudgeTerm = settings.GrudgeWeight * grudgeShare;
-                enemy.FinishTerm = settings.FinishWeight * (1f - hpShare);
+                enemy.FinishTerm = settings.FinishWeight * (1f - populationShare);
 
                 float score = settings.BaseWeight + enemy.LeaderTerm + enemy.GrudgeTerm + enemy.FinishTerm;
                 if (enemy.IsHuman)

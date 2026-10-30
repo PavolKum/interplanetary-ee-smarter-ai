@@ -21,7 +21,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.1.0";
+        public const string VERSION = "0.1.1";
 
         internal static ManualLogSource Log;
 
@@ -34,8 +34,10 @@ namespace InterplanetaryAI
         internal static ConfigEntry<float> HumanBias;
         internal static ConfigEntry<float> GrudgeDecayPerTurn;
         internal static ConfigEntry<int> ReachabilityMemoryTurns;
+        internal static ConfigEntry<bool> RefreshFiringList;
         internal static ConfigEntry<bool> AccuracyOverride;
         internal static ConfigEntry<string> AccuracyByLevel;
+        internal static ConfigEntry<bool> FireMisses;
         internal static ConfigEntry<bool> SmartStrikes;
         internal static ConfigEntry<float> WeaponBuildingShare;
         internal static ConfigEntry<bool> DecisionLog;
@@ -46,6 +48,7 @@ namespace InterplanetaryAI
         internal static ReachabilityMemory Reach;
         internal static readonly Dictionary<int, float> AccuracyCarry = new Dictionary<int, float>();
         internal static readonly System.Random Rng = new System.Random();
+        internal static int LastTurnSeen;
 
         private static StreamWriter s_decisionWriter;
         private Harmony m_harmony;
@@ -66,18 +69,22 @@ namespace InterplanetaryAI
             GrudgeWeight = Config.Bind("Targeting", "GrudgeWeight", 0.6f,
                 "Weight of recent damage an enemy dealt to this AI (retaliation).");
             FinishWeight = Config.Bind("Targeting", "FinishWeight", 0.5f,
-                "Weight of how little visible city HP an enemy has left (finish off the weak).");
+                "Weight of how little visible city population an enemy has left (a city is ruined at 0; finish off the weak).");
             HumanBias = Config.Bind("Targeting", "HumanBias", 1.0f,
                 "Multiplier on human enemies' score. 1 = no favouritism; above 1 = AIs prefer the human.");
             GrudgeDecayPerTurn = Config.Bind("Targeting", "GrudgeDecayPerTurn", 0.7f,
                 "How much remembered damage survives each turn (0-1).");
-            ReachabilityMemoryTurns = Config.Bind("Targeting", "ReachabilityMemoryTurns", 2,
-                "A weapon that found no trajectory onto a target is steered elsewhere for this many turns.");
+            ReachabilityMemoryTurns = Config.Bind("Targeting", "ReachabilityMemoryTurns", 1,
+                "A weapon that found no direct trajectory onto a target is steered elsewhere for this many turns. A failed search is weak evidence (time-limited, random), so keep this short.");
+            RefreshFiringList = Config.Bind("Targeting", "RefreshFiringList", true,
+                "Fix a native bug: rebuild the list of weapons to fire from this turn's trajectory results right before firing. Without it, weapons that only found a hit on another enemy planet stay silent.");
 
             AccuracyOverride = Config.Bind("Accuracy", "Override", true,
                 "Native AIs plan deliberate misses each turn (accuracy 0.4 / 0.75 / 0.9 / 1.0 by difficulty). Override that plan.");
             AccuracyByLevel = Config.Bind("Accuracy", "AccuracyByLevel", "0.6,0.95,1.0,1.0",
-                "Planned hit share per difficulty level, lowest first, comma-separated.");
+                "Planned hit share per difficulty level, lowest first, comma-separated. Below 1.0 some weapons that found a hit hold fire (see FireMisses).");
+            FireMisses = Config.Bind("Accuracy", "FireMisses", false,
+                "Fire the planned misses. Off by default: the game counts a trajectory onto the AI's own planet as a 'miss', and a miss spends energy and material for nothing (except possibly multi-projectile weapons such as Asteroid Diversion).");
 
             SmartStrikes = Config.Bind("Strikes", "SmartStrikes", true,
                 "Guided second-phase strikes go for the visible city closest to destruction instead of a random visible building.");
@@ -175,6 +182,7 @@ namespace InterplanetaryAI
             Grudges.Clear();
             Reach.Clear();
             AccuracyCarry.Clear();
+            LastTurnSeen = 0;
         }
 
         internal static void WriteDecision(string json)

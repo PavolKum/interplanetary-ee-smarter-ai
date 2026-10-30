@@ -1,0 +1,428 @@
+diff --git a/AI/Brain/Memory.cs b/AI/Brain/Memory.cs
+index a6ada61..795d904 100644
+--- a/AI/Brain/Memory.cs
++++ b/AI/Brain/Memory.cs
+@@ -125,12 +125,13 @@ namespace InterplanetaryAI.Brain
+         }
+     }
+ 
++    // Durability: population for cities (BaseBuilding.DealDamageToCity ruins a city at 0 population),
++    // HP for every other building. Only compared within the same kind.
+     public sealed class BuildingView
+     {
+         public bool IsCity;
+         public int CurrentHp;
+         public int MaxHp;
+-        public int Population;
+     }
+ 
+     public static class StrikePlanner
+diff --git a/AI/Brain/TargetPlanner.cs b/AI/Brain/TargetPlanner.cs
+index c780bdd..2a7f2d9 100644
+--- a/AI/Brain/TargetPlanner.cs
++++ b/AI/Brain/TargetPlanner.cs
+@@ -11,8 +11,8 @@ namespace InterplanetaryAI.Brain
+         public string Name;
+         public bool IsHuman;
+         public float Economy;        // visible energy + material + science generation per turn
+-        public float CityHp;         // visible remaining city HP
+-        public int VisibleCities;
++        public float CityPopulation; // visible cities' population; a city's durability (ruined at 0)
++        public int VisibleCities;    // 0 = nothing known, so no finish-off bonus
+         public float Grudge;         // decayed damage this enemy dealt to us
+ 
+         // outputs, filled by Score()
+@@ -35,7 +35,7 @@ namespace InterplanetaryAI.Brain
+         public float BaseWeight = 0.1f;   // keeps every enemy pickable
+         public float LeaderWeight = 1.0f; // squared economy share, so a runaway leader dominates
+         public float GrudgeWeight = 0.6f;
+-        public float FinishWeight = 0.5f; // prefers enemies with little city HP left
++        public float FinishWeight = 0.5f; // prefers enemies with little visible city population left
+         public float HumanBias = 1.0f;    // multiplier on human enemies; 1 = no favouritism
+     }
+ 
+@@ -45,23 +45,24 @@ namespace InterplanetaryAI.Brain
+         {
+             float maxEconomy = 0f;
+             float maxGrudge = 0f;
+-            float maxCityHp = 0f;
++            float maxCityPopulation = 0f;
+             foreach (EnemyView enemy in enemies)
+             {
+                 maxEconomy = Math.Max(maxEconomy, enemy.Economy);
+                 maxGrudge = Math.Max(maxGrudge, enemy.Grudge);
+-                maxCityHp = Math.Max(maxCityHp, enemy.CityHp);
++                maxCityPopulation = Math.Max(maxCityPopulation, enemy.CityPopulation);
+             }
+ 
+             foreach (EnemyView enemy in enemies)
+             {
+                 float economyShare = maxEconomy > 0f ? enemy.Economy / maxEconomy : 0f;
+                 float grudgeShare = maxGrudge > 0f ? enemy.Grudge / maxGrudge : 0f;
+-                float hpShare = maxCityHp > 0f ? enemy.CityHp / maxCityHp : 1f;
++                // An enemy with no visible city is unknown, not weak: no finish-off bonus.
++                float populationShare = enemy.VisibleCities > 0 && maxCityPopulation > 0f ? enemy.CityPopulation / maxCityPopulation : 1f;
+ 
+                 enemy.LeaderTerm = settings.LeaderWeight * economyShare * economyShare;
+                 enemy.GrudgeTerm = settings.GrudgeWeight * grudgeShare;
+-                enemy.FinishTerm = settings.FinishWeight * (1f - hpShare);
++                enemy.FinishTerm = settings.FinishWeight * (1f - populationShare);
+ 
+                 float score = settings.BaseWeight + enemy.LeaderTerm + enemy.GrudgeTerm + enemy.FinishTerm;
+                 if (enemy.IsHuman)
+diff --git a/AI/InterplanetaryAI.csproj b/AI/InterplanetaryAI.csproj
+index 1cca104..b4e3b22 100644
+--- a/AI/InterplanetaryAI.csproj
++++ b/AI/InterplanetaryAI.csproj
+@@ -8,7 +8,7 @@
+     <Nullable>disable</Nullable>
+     <ImplicitUsings>disable</ImplicitUsings>
+     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+-    <Version>0.1.0</Version>
++    <Version>0.1.1</Version>
+     <DebugType>portable</DebugType>
+     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+     <!-- Same as QoL: without this MSBuild refuses to resolve Assembly-CSharp (MSB3258). -->
+diff --git a/AI/Patches.cs b/AI/Patches.cs
+index 2da7905..4a7a562 100644
+--- a/AI/Patches.cs
++++ b/AI/Patches.cs
+@@ -29,12 +29,20 @@ namespace InterplanetaryAI
+ 
+         // ---- match lifecycle -------------------------------------------------------------------
+ 
++        // Every player (human too) gets an AICore at match start or load; only AI players ever run it
++        // (PlayerManager.Update -> UpdateAI is gated on AIPlayer). Memory is reset for a new match or a
++        // load to an earlier turn; a load later in the same match keeps it.
+         private static void CoreInitializePostfix(AICore __instance)
+         {
+-            Plugin.ResetMatchMemory();
++            int turn = GameManager.CurrentTurn;
++            if (turn <= 1 || turn < Plugin.LastTurnSeen)
++            {
++                Plugin.ResetMatchMemory();
++            }
+             try
+             {
+                 PlayerData me = __instance.PlayerData;
++                if (!me.AIPlayer) return;
+                 Plugin.WriteDecision(new Json()
+                     .Str("e", "init").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName).Int("id", me.PlayerID).Int("lvl", me.AILevel)
+                     .Bool("active", Plugin.Active).Num("acc", AccuracyPlan.ForLevel(Plugin.Accuracy, me.AILevel))
+@@ -51,15 +59,20 @@ namespace InterplanetaryAI
+         private static void TargetingBeginTurnPostfix(AIWeaponTargeting __instance)
+         {
+             if (!Plugin.Active || !Plugin.SmartTargeting.Value) return;
++            PlayerData logMe = null;
++            List<EnemyView> logEnemies = null;
++            int[] countByEnemy = null;
++            int logTurn = 0, logWeapons = 0, rerouted = 0;
+             try
+             {
+                 AICore core = (AICore)s_moduleCore.GetValue(__instance);
+                 List<AITargetableWeapon> weapons = (List<AITargetableWeapon>)s_targetableWeapons.GetValue(__instance);
+-                if (core == null || weapons == null || weapons.Count == 0) return;
++                if (core == null || !core.PlayerData.AIPlayer || weapons == null || weapons.Count == 0) return;
+                 List<CelestialBody> planets = core.EnemyPlanets;
+                 if (planets == null || planets.Count == 0) return;
+ 
+                 int turn = GameManager.CurrentTurn;
++                Plugin.LastTurnSeen = turn;
+                 PlayerData me = core.PlayerData;
+                 List<EnemyView> enemies = new List<EnemyView>();
+                 foreach (CelestialBody planet in planets)
+@@ -80,9 +93,9 @@ namespace InterplanetaryAI
+                 }
+                 if (slots.Count == 0) return;
+ 
++                // The whole plan is computed above; only plain assignments from here on.
+                 int[] plan = TargetPlanner.Assign(enemies, slots, Plugin.Planner, Plugin.Rng);
+-                int[] countByEnemy = new int[enemies.Count];
+-                int rerouted = 0;
++                countByEnemy = new int[enemies.Count];
+                 for (int i = 0; i < plan.Length; i++)
+                 {
+                     if (plan[i] < 0) continue;
+@@ -90,12 +103,24 @@ namespace InterplanetaryAI
+                     countByEnemy[plan[i]]++;
+                     if (slots[i].UnreachableTargetIds.Count > 0) rerouted++;
+                 }
+-
+-                LogTargeting(me, turn, enemies, countByEnemy, slots.Count, rerouted);
++                logMe = me;
++                logEnemies = enemies;
++                logTurn = turn;
++                logWeapons = slots.Count;
+             }
+             catch (Exception e)
+             {
+                 ReportOnce("targeting", e);
++                return;
++            }
++
++            try
++            {
++                if (logMe != null) LogTargeting(logMe, logTurn, logEnemies, countByEnemy, logWeapons, rerouted);
++            }
++            catch (Exception e)
++            {
++                ReportOnce("targeting-log", e);
+             }
+         }
+ 
+@@ -115,7 +140,8 @@ namespace InterplanetaryAI
+                 view.Economy += Math.Max(0, stats.EnergyGeneration) + Math.Max(0, stats.MaterialGeneration) + Math.Max(0, stats.ScienceGeneration);
+                 if (building.IsCity)
+                 {
+-                    view.CityHp += Math.Max(0, stats.CurrentHP);
++                    // Cities have no HP stat (GetStat returns null); population is their durability.
++                    view.CityPopulation += Math.Max(0, stats.CurrentPopulation);
+                     view.VisibleCities++;
+                 }
+             }
+@@ -123,11 +149,12 @@ namespace InterplanetaryAI
+             return view;
+         }
+ 
+-        // Same filter the native AI uses for its target lists: intact, and not hidden from our intel.
++        // Live values are read only for buildings our intel currently sees. Shadow buildings show frozen
++        // last-known state, so reading their live stats would be hidden information; they are skipped.
+         private static bool IsVisibleIntact(PlayerData me, BaseBuilding building)
+         {
+             if (building == null || building.CurrentState != BaseBuilding.BuildingState.Normal) return false;
+-            return me.IntelHandler.GetBuildingVisibility(building) != BuildingIntelVisibility.Invisible;
++            return me.IntelHandler.GetBuildingVisibility(building) == BuildingIntelVisibility.Visible;
+         }
+ 
+         private static string WeaponKey(WeaponGameplayData weapon)
+@@ -146,6 +173,7 @@ namespace InterplanetaryAI
+                 if (total == 0) return;
+                 AICore core = (AICore)s_goalCore.GetValue(__instance);
+                 PlayerData me = core.PlayerData;
++                if (!me.AIPlayer) return;
+ 
+                 float accuracy = AccuracyPlan.ForLevel(Plugin.Accuracy, me.AILevel);
+                 float carry;
+@@ -169,14 +197,27 @@ namespace InterplanetaryAI
+ 
+         // ---- what actually got fired; feeds reachability memory ---------------------------------
+ 
++        // Native bug: the hitting/missing lists are only rebuilt when a weapon registers a primary hit
++        // (AITrajectoryWeapon.RegisterPrimaryTargetTrajectory) and are never cleared at turn start. A weapon
++        // that only found a secondary hit or a miss is never picked, and last turn's entries return no shot.
++        // Rebuilding the lists from this turn's results right before firing fixes both.
+         private static void GoalTargetWeaponsPrefix(AIWeaponTargetingGoal __instance, out bool __state)
+         {
+             __state = !__instance.AreWeaponsTargeted;
++            if (!__state || !Plugin.Active || !Plugin.RefreshFiringList.Value) return;
++            try
++            {
++                __instance.DetermineShootingWeapons();
++            }
++            catch (Exception e)
++            {
++                ReportOnce("refresh-firing-list", e);
++            }
+         }
+ 
+         private static void GoalTargetWeaponsPostfix(AIWeaponTargetingGoal __instance, bool __state)
+         {
+-            if (!__state || !Plugin.Enabled.Value) return;
++            if (!__state || !Plugin.Active) return;
+             try
+             {
+                 AICore core = (AICore)s_goalCore.GetValue(__instance);
+@@ -236,33 +277,44 @@ namespace InterplanetaryAI
+         private static bool SecondPhasePrefix(AIWeaponTargeting __instance, WeaponGameplayData weapon, CelestialBody targetPlanet)
+         {
+             if (!Plugin.Active || !Plugin.SmartStrikes.Value) return true;
++            PlayerData me, enemy;
++            List<BuildingView> views = new List<BuildingView>();
++            int pick;
+             try
+             {
+                 AICore core = (AICore)s_moduleCore.GetValue(__instance);
+-                PlayerData enemy = targetPlanet != null ? targetPlanet.Player : null;
++                enemy = targetPlanet != null ? targetPlanet.Player : null;
+                 if (core == null || enemy == null) return true;
+-                PlayerData me = core.PlayerData;
++                me = core.PlayerData;
+ 
+                 List<BaseBuilding> buildings = new List<BaseBuilding>();
+-                List<BuildingView> views = new List<BuildingView>();
+                 AddCandidates(me, enemy.BuildingHandler.GetBuildingsByType(BaseBuilding.BuildingFunctionalityType.City), true, buildings, views);
+                 AddCandidates(me, enemy.BuildingHandler.GetBuildingsByType(BaseBuilding.BuildingFunctionalityType.Weapon), false, buildings, views);
+ 
+-                int pick = StrikePlanner.Choose(views, Plugin.WeaponBuildingShare.Value, Plugin.Rng);
+-                if (pick < 0) return true; // nothing visible: native random surface point
++                pick = StrikePlanner.Choose(views, Plugin.WeaponBuildingShare.Value, Plugin.Rng);
++                if (pick < 0) return true; // nothing currently visible: native choice (it also aims at shadow intel)
+ 
+                 core.Actions.SecondPhaseTargetWeapon(weapon, targetPlanet, buildings[pick].transform.localPosition);
++            }
++            catch (Exception e)
++            {
++                ReportOnce("strike", e); // no action was queued, so the native choice runs
++                return true;
++            }
++
++            // The strike is queued: never fall through to native from here (it would queue a second one).
++            try
++            {
+                 Plugin.WriteDecision(new Json()
+                     .Str("e", "strike").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName).Str("target", enemy.UserNickName)
+-                    .Str("building", views[pick].IsCity ? "city" : "weapon").Int("hp", views[pick].CurrentHp).Int("maxHp", views[pick].MaxHp)
++                    .Str("building", views[pick].IsCity ? "city" : "weapon").Int("durability", views[pick].CurrentHp).Int("maxDurability", views[pick].MaxHp)
+                     .Int("candidates", views.Count).ToString());
+-                return false;
+             }
+             catch (Exception e)
+             {
+-                ReportOnce("strike", e);
+-                return true;
++                ReportOnce("strike-log", e);
+             }
++            return false;
+         }
+ 
+         private static void AddCandidates(PlayerData me, List<BaseBuilding> source, bool isCity, List<BaseBuilding> buildings, List<BuildingView> views)
+@@ -275,9 +327,8 @@ namespace InterplanetaryAI
+                 views.Add(new BuildingView
+                 {
+                     IsCity = isCity,
+-                    CurrentHp = building.Stats.CurrentHP,
+-                    MaxHp = building.Stats.MaxHP,
+-                    Population = isCity ? building.Stats.CurrentPopulation : 0,
++                    CurrentHp = isCity ? building.Stats.CurrentPopulation : building.Stats.CurrentHP,
++                    MaxHp = isCity ? building.Stats.MaxPopulation : building.Stats.MaxHP,
+                 });
+             }
+         }
+@@ -286,7 +337,7 @@ namespace InterplanetaryAI
+ 
+         private static void DealDamagePrefix(BaseBuilding building, int damage, int sourcePlayerID)
+         {
+-            if (!Plugin.Enabled.Value || building == null || sourcePlayerID < 0) return;
++            if (!Plugin.Active || building == null || sourcePlayerID < 0) return;
+             try
+             {
+                 int victimId = building.Owner != null ? building.Owner.PlayerID : building.OwnerID;
+@@ -314,7 +365,7 @@ namespace InterplanetaryAI
+                     .Append(" (").Append(e.Score.ToString("0.00", CultureInfo.InvariantCulture)).Append(')');
+                 if (i > 0) enemyArray.Append(',');
+                 enemyArray.Append(new Json().Str("name", e.Name).Int("id", e.PlayerId).Bool("human", e.IsHuman).Int("assigned", countByEnemy[i])
+-                    .Num("score", e.Score).Num("economy", e.Economy).Num("cityHp", e.CityHp).Int("cities", e.VisibleCities)
++                    .Num("score", e.Score).Num("economy", e.Economy).Num("cityPop", e.CityPopulation).Int("cities", e.VisibleCities)
+                     .Num("grudge", e.Grudge).Num("leader", e.LeaderTerm).Num("grudgeTerm", e.GrudgeTerm).Num("finish", e.FinishTerm).ToString());
+             }
+             enemyArray.Append(']');
+diff --git a/AI/Plugin.cs b/AI/Plugin.cs
+index fcdc350..b17913e 100644
+--- a/AI/Plugin.cs
++++ b/AI/Plugin.cs
+@@ -21,7 +21,7 @@ namespace InterplanetaryAI
+     {
+         public const string GUID = "pavol.interplanetary.ai";
+         public const string NAME = "Interplanetary EE: Smarter AI";
+-        public const string VERSION = "0.1.0";
++        public const string VERSION = "0.1.1";
+ 
+         internal static ManualLogSource Log;
+ 
+@@ -34,6 +34,7 @@ namespace InterplanetaryAI
+         internal static ConfigEntry<float> HumanBias;
+         internal static ConfigEntry<float> GrudgeDecayPerTurn;
+         internal static ConfigEntry<int> ReachabilityMemoryTurns;
++        internal static ConfigEntry<bool> RefreshFiringList;
+         internal static ConfigEntry<bool> AccuracyOverride;
+         internal static ConfigEntry<string> AccuracyByLevel;
+         internal static ConfigEntry<bool> SmartStrikes;
+@@ -46,6 +47,7 @@ namespace InterplanetaryAI
+         internal static ReachabilityMemory Reach;
+         internal static readonly Dictionary<int, float> AccuracyCarry = new Dictionary<int, float>();
+         internal static readonly System.Random Rng = new System.Random();
++        internal static int LastTurnSeen;
+ 
+         private static StreamWriter s_decisionWriter;
+         private Harmony m_harmony;
+@@ -71,8 +73,10 @@ namespace InterplanetaryAI
+                 "Multiplier on human enemies' score. 1 = no favouritism; above 1 = AIs prefer the human.");
+             GrudgeDecayPerTurn = Config.Bind("Targeting", "GrudgeDecayPerTurn", 0.7f,
+                 "How much remembered damage survives each turn (0-1).");
+-            ReachabilityMemoryTurns = Config.Bind("Targeting", "ReachabilityMemoryTurns", 2,
+-                "A weapon that found no trajectory onto a target is steered elsewhere for this many turns.");
++            ReachabilityMemoryTurns = Config.Bind("Targeting", "ReachabilityMemoryTurns", 1,
++                "A weapon that found no direct trajectory onto a target is steered elsewhere for this many turns. A failed search is weak evidence (time-limited, random), so keep this short.");
++            RefreshFiringList = Config.Bind("Targeting", "RefreshFiringList", true,
++                "Fix a native bug: rebuild the list of weapons to fire from this turn's trajectory results right before firing. Without it, weapons that only found a hit on another enemy planet stay silent.");
+ 
+             AccuracyOverride = Config.Bind("Accuracy", "Override", true,
+                 "Native AIs plan deliberate misses each turn (accuracy 0.4 / 0.75 / 0.9 / 1.0 by difficulty). Override that plan.");
+@@ -175,6 +179,7 @@ namespace InterplanetaryAI
+             Grudges.Clear();
+             Reach.Clear();
+             AccuracyCarry.Clear();
++            LastTurnSeen = 0;
+         }
+ 
+         internal static void WriteDecision(string json)
+diff --git a/AI/Tests/Program.cs b/AI/Tests/Program.cs
+index 5a3b9aa..48c9dbd 100644
+--- a/AI/Tests/Program.cs
++++ b/AI/Tests/Program.cs
+@@ -17,6 +17,7 @@ namespace InterplanetaryAI.Tests
+             FocusShareSendsMostWeaponsAtTop();
+             UnreachableTopIsReroutedToNextBest();
+             AllUnreachableKeepsPlan();
++            NoVisibleCitiesGetsNoFinishBonus();
+             AccuracyCarryKeepsLongRunRate();
+             AccuracyExtremes();
+             AccuracyLevelLookupClamps();
+@@ -42,9 +43,9 @@ namespace InterplanetaryAI.Tests
+         {
+             return new List<EnemyView>
+             {
+-                new EnemyView { PlayerId = 0, Name = "You", IsHuman = true, Economy = 13000, CityHp = 9000 },
+-                new EnemyView { PlayerId = 2, Name = "AI 02", Economy = 1100, CityHp = 1500 },
+-                new EnemyView { PlayerId = 3, Name = "AI 03", Economy = 3100, CityHp = 8000 },
++                new EnemyView { PlayerId = 0, Name = "You", IsHuman = true, Economy = 13000, CityPopulation = 9000, VisibleCities = 5 },
++                new EnemyView { PlayerId = 2, Name = "AI 02", Economy = 1100, CityPopulation = 1500, VisibleCities = 2 },
++                new EnemyView { PlayerId = 3, Name = "AI 03", Economy = 3100, CityPopulation = 8000, VisibleCities = 4 },
+             };
+         }
+ 
+@@ -70,9 +71,9 @@ namespace InterplanetaryAI.Tests
+         {
+             List<EnemyView> enemies = new List<EnemyView>
+             {
+-                new EnemyView { PlayerId = 1, Economy = 1000, CityHp = 5000 },
+-                new EnemyView { PlayerId = 2, Economy = 1000, CityHp = 5000, Grudge = 800 },
+-                new EnemyView { PlayerId = 3, Economy = 1000, CityHp = 500 },
++                new EnemyView { PlayerId = 1, Economy = 1000, CityPopulation = 5000, VisibleCities = 3 },
++                new EnemyView { PlayerId = 2, Economy = 1000, CityPopulation = 5000, VisibleCities = 3, Grudge = 800 },
++                new EnemyView { PlayerId = 3, Economy = 1000, CityPopulation = 500, VisibleCities = 1 },
+             };
+             TargetPlanner.Score(enemies, new PlannerSettings());
+             Check(enemies[1].Score > enemies[0].Score, "the enemy that hurt us should outscore an equal one that did not");
+@@ -122,6 +123,21 @@ namespace InterplanetaryAI.Tests
+             weapons[0].UnreachableTargetIds.Add(3);
+             int[] plan = TargetPlanner.Assign(enemies, weapons, settings, new Random(1));
+             Check(plan[0] == 0, "with every target marked unreachable, keep the leader (search may still succeed)");
++
++            weapons[0].UnreachableTargetIds.Remove(2); // now exactly one enemy (AI 02, index 1) is reachable
++            plan = TargetPlanner.Assign(enemies, weapons, settings, new Random(1));
++            Check(plan[0] == 1, "with only one reachable enemy, the weapon goes there even if it scores lowest; got " + plan[0]);
++        }
++
++        private static void NoVisibleCitiesGetsNoFinishBonus()
++        {
++            List<EnemyView> enemies = new List<EnemyView>
++            {
++                new EnemyView { PlayerId = 1, Economy = 1000, CityPopulation = 5000, VisibleCities = 3 },
++                new EnemyView { PlayerId = 2, Economy = 1000, CityPopulation = 0, VisibleCities = 0 },
++            };
++            TargetPlanner.Score(enemies, new PlannerSettings());
++            Check(enemies[1].FinishTerm == 0f, "an enemy with no visible city is unknown, not weak; finish term was " + enemies[1].FinishTerm);
+         }
+ 
+         private static void AccuracyCarryKeepsLongRunRate()

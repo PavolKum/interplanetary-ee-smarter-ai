@@ -1,0 +1,22 @@
+READ-ONLY re-review. Do not edit, create or delete any file.
+
+You reviewed AI/ v0.1.0 in docs/reviews/terra-ai-v0.1.md (verdict: fix first). The fixes are in docs/reviews/terra-ai-v0.1.1-fixes.diff and in the current files AI/Patches.cs, AI/Plugin.cs, AI/Brain/*.cs, AI/Tests/Program.cs.
+
+Disposition of your findings:
+1 city HP -> fixed: cities use CurrentPopulation/MaxPopulation (BaseBuilding.DealDamageToCity ruins at 0), other buildings HP.
+2 shadow leak -> fixed: only BuildingIntelVisibility.Visible buildings are read; shadow buildings are skipped; strikes with no visible candidate fall back to native.
+3 100% accuracy silences miss-only weapons -> DECLINED: a planned miss is a trajectory that hits no player planet, so firing it only spends energy/material. Challenge this if you can show a miss shot has gameplay value (decoy, lock-on, defense draw).
+4 stale firing lists -> fixed: prefix on AIWeaponTargetingGoal.TargetWeapons calls DetermineShootingWeapons() before native finalization (config RefreshFiringList).
+5 non-transactional fallback -> fixed: targeting computes the full plan before mutation; logging is in separate try blocks; the strike prefix never returns true after queuing an action.
+6 reachability -> default memory reduced from 2 turns to 1.
+7 unknown city health -> fixed: VisibleCities == 0 gives no finish term; test added.
+8 memory reset / guard -> reset only when CurrentTurn <= 1 or turn went backwards; damage and summary hooks now use the offline Active guard; AIPlayer guards added.
+9 tests -> one-reachable-enemy case added; new check seen red with the fix removed.
+
+Check, with file:line evidence:
+A. Is each fix correct and complete? Any new bug introduced by the diff (compile-level issues are already ruled out: it builds)?
+B. Fix 4 specifically: is calling DetermineShootingWeapons() at that point safe (side effects, the duplicate-weapon LogError paths, interaction with Hits/Misses quotas, weapons whose TargetableWeapon has no power)? Could it make the AI fire more than native at difficulty 3 in a harmful way (e.g. firing at its own planet)? Look at how handleFinishedAccurateTrajectory classifies a hit on the AI's own planet.
+C. Decline 3: agree or disagree, with evidence.
+D. Fix 8: is GameManager.CurrentTurn already advanced/valid when AICore.Initialize runs on a fresh match and on a save load (PlayerData initialization order)? If CurrentTurn is stale from the previous match at that moment, the reset condition may misfire.
+
+Output: verdict line (playtest now / fix first), then numbered findings (severity, evidence, failure scenario, fix). Terse. Mark UNVERIFIED where you could not check.

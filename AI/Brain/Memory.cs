@@ -125,12 +125,13 @@ namespace InterplanetaryAI.Brain
         }
     }
 
+    // Durability: population for cities (BaseBuilding.DealDamageToCity ruins a city at 0 population),
+    // HP for every other building. Only compared within the same kind.
     public sealed class BuildingView
     {
         public bool IsCity;
         public int CurrentHp;
         public int MaxHp;
-        public int Population;
     }
 
     public static class StrikePlanner

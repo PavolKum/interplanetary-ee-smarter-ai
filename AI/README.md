@@ -19,9 +19,13 @@ The 29 Oct 2026 match (debrief `261029-be947731`) shows the result: the human's 
 | Reachability memory: a weapon that found no trajectory onto a target is steered to the next-best one for N turns | postfix `AIWeaponTargetingGoal.TargetWeapons` records; targeting reads | `ReachabilityMemoryTurns` |
 | Grudges: damage per shooter, decayed per turn | prefix `PlayerBuildingHandler.DealDamageToBuilding` | `GrudgeWeight`, `GrudgeDecayPerTurn` |
 | Accuracy: re-split the same shot count at a configured hit share | postfix `AIWeaponTargetingGoal.BeginTurn` | `[Accuracy] AccuracyByLevel` (default `0.6,0.95,1.0,1.0`) |
-| Guided strikes go for the visible city closest to destruction (defeat = last city lost) | prefix `AIWeaponTargeting.HandleSecondPhaseTargeting` | `[Strikes]` |
+| Native bug fix: rebuild the firing list from this turn's results right before firing (natively it only refreshes on a primary hit, so secondary-only weapons stay silent) | prefix `AIWeaponTargetingGoal.TargetWeapons` | `RefreshFiringList` |
+| Planned misses are not fired (an own-planet impact counts as a "miss" in the game's classifier) | same prefix | `[Accuracy] FireMisses` (default off) |
+| Guided strikes go for the visible city with the least population (a city is ruined at 0; defeat = last city lost) | prefix `AIWeaponTargeting.HandleSecondPhaseTargeting` | `[Strikes]` |
 
-Fairness: every input comes from buildings the AI's own intel can see (same filter the native AI uses), its own damage taken, and its own trajectory results. No hidden information, no resource bonuses.
+Fairness: every input comes from buildings the AI's own intel currently sees (`Visible` only; shadow intel is skipped), its own damage taken, and its own trajectory results. No hidden information, no resource bonuses.
+
+Review: two GPT-6.1 Terra passes; see `docs/reviews/terra-ai-disposition.md` for what was fixed and what is open.
 
 `HumanBias` (default 1.0) multiplies human enemies' score. At 1.0 the AIs gang up on whoever leads the economy, which is usually the human.
 

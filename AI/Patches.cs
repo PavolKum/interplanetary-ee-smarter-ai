@@ -29,12 +29,16 @@ namespace InterplanetaryAI
 
         // ---- match lifecycle -------------------------------------------------------------------
 
+        // Every player (human too) gets an AICore at match start or load; only AI players ever run it
+        // (PlayerManager.Update -> UpdateAI is gated on AIPlayer). Memory is reset on every start or load:
+        // the turn value at this point is not proven fresh, and the memory is short-lived anyway.
         private static void CoreInitializePostfix(AICore __instance)
         {
             Plugin.ResetMatchMemory();
             try
             {
                 PlayerData me = __instance.PlayerData;
+                if (!me.AIPlayer) return;
                 Plugin.WriteDecision(new Json()
                     .Str("e", "init").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName).Int("id", me.PlayerID).Int("lvl", me.AILevel)
                     .Bool("active", Plugin.Active).Num("acc", AccuracyPlan.ForLevel(Plugin.Accuracy, me.AILevel))
@@ -51,15 +55,23 @@ namespace InterplanetaryAI
         private static void TargetingBeginTurnPostfix(AIWeaponTargeting __instance)
         {
             if (!Plugin.Active || !Plugin.SmartTargeting.Value) return;
+            PlayerData logMe = null;
+            List<EnemyView> logEnemies = null;
+            int[] countByEnemy = null;
+            int logTurn = 0, logWeapons = 0, rerouted = 0;
             try
             {
                 AICore core = (AICore)s_moduleCore.GetValue(__instance);
                 List<AITargetableWeapon> weapons = (List<AITargetableWeapon>)s_targetableWeapons.GetValue(__instance);
-                if (core == null || weapons == null || weapons.Count == 0) return;
+                if (core == null || !core.PlayerData.AIPlayer || weapons == null || weapons.Count == 0) return;
                 List<CelestialBody> planets = core.EnemyPlanets;
                 if (planets == null || planets.Count == 0) return;
 
                 int turn = GameManager.CurrentTurn;
+                // Backstop for the Initialize reset: the init-time turn value is not proven fresh, but the
+                // first targeting of a new match or an earlier save always shows the turn going backwards.
+                if (turn < Plugin.LastTurnSeen) Plugin.ResetMatchMemory();
+                Plugin.LastTurnSeen = turn;
                 PlayerData me = core.PlayerData;
                 List<EnemyView> enemies = new List<EnemyView>();
                 foreach (CelestialBody planet in planets)
@@ -80,9 +92,9 @@ namespace InterplanetaryAI
                 }
                 if (slots.Count == 0) return;
 
+                // The whole plan is computed above; only plain assignments from here on.
                 int[] plan = TargetPlanner.Assign(enemies, slots, Plugin.Planner, Plugin.Rng);
-                int[] countByEnemy = new int[enemies.Count];
-                int rerouted = 0;
+                countByEnemy = new int[enemies.Count];
                 for (int i = 0; i < plan.Length; i++)
                 {
                     if (plan[i] < 0) continue;
@@ -90,12 +102,24 @@ namespace InterplanetaryAI
                     countByEnemy[plan[i]]++;
                     if (slots[i].UnreachableTargetIds.Count > 0) rerouted++;
                 }
-
-                LogTargeting(me, turn, enemies, countByEnemy, slots.Count, rerouted);
+                logMe = me;
+                logEnemies = enemies;
+                logTurn = turn;
+                logWeapons = slots.Count;
             }
             catch (Exception e)
             {
                 ReportOnce("targeting", e);
+                return;
+            }
+
+            try
+            {
+                if (logMe != null) LogTargeting(logMe, logTurn, logEnemies, countByEnemy, logWeapons, rerouted);
+            }
+            catch (Exception e)
+            {
+                ReportOnce("targeting-log", e);
             }
         }
 
@@ -115,7 +139,8 @@ namespace InterplanetaryAI
                 view.Economy += Math.Max(0, stats.EnergyGeneration) + Math.Max(0, stats.MaterialGeneration) + Math.Max(0, stats.ScienceGeneration);
                 if (building.IsCity)
                 {
-                    view.CityHp += Math.Max(0, stats.CurrentHP);
+                    // Cities have no HP stat (GetStat returns null); population is their durability.
+                    view.CityPopulation += Math.Max(0, stats.CurrentPopulation);
                     view.VisibleCities++;
                 }
             }
@@ -123,11 +148,12 @@ namespace InterplanetaryAI
             return view;
         }
 
-        // Same filter the native AI uses for its target lists: intact, and not hidden from our intel.
+        // Live values are read only for buildings our intel currently sees. Shadow buildings show frozen
+        // last-known state, so reading their live stats would be hidden information; they are skipped.
         private static bool IsVisibleIntact(PlayerData me, BaseBuilding building)
         {
             if (building == null || building.CurrentState != BaseBuilding.BuildingState.Normal) return false;
-            return me.IntelHandler.GetBuildingVisibility(building) != BuildingIntelVisibility.Invisible;
+            return me.IntelHandler.GetBuildingVisibility(building) == BuildingIntelVisibility.Visible;
         }
 
         private static string WeaponKey(WeaponGameplayData weapon)
@@ -146,6 +172,7 @@ namespace InterplanetaryAI
                 if (total == 0) return;
                 AICore core = (AICore)s_goalCore.GetValue(__instance);
                 PlayerData me = core.PlayerData;
+                if (!me.AIPlayer) return;
 
                 float accuracy = AccuracyPlan.ForLevel(Plugin.Accuracy, me.AILevel);
                 float carry;
@@ -169,14 +196,34 @@ namespace InterplanetaryAI
 
         // ---- what actually got fired; feeds reachability memory ---------------------------------
 
+        // Native bug: the hitting/missing lists are only rebuilt when a weapon registers a primary hit
+        // (AITrajectoryWeapon.RegisterPrimaryTargetTrajectory) and are never cleared at turn start. A weapon
+        // that only found a secondary hit or a miss is never picked, and last turn's entries return no shot.
+        // Rebuilding the lists from this turn's results right before firing fixes both.
+        // A planned "miss" can be a trajectory onto the AI's own planet (AIWeaponTargeting.handleFinishedAccurateTrajectory
+        // classes an own-planet impact as a miss), so unless FireMisses is on, the miss list is emptied before firing.
         private static void GoalTargetWeaponsPrefix(AIWeaponTargetingGoal __instance, out bool __state)
         {
             __state = !__instance.AreWeaponsTargeted;
+            if (!__state || !Plugin.Active) return;
+            try
+            {
+                if (Plugin.RefreshFiringList.Value) __instance.DetermineShootingWeapons();
+                if (!Plugin.FireMisses.Value)
+                {
+                    List<AITrajectoryWeapon> missing = (List<AITrajectoryWeapon>)s_goalMissing.GetValue(__instance);
+                    if (missing != null) missing.Clear();
+                }
+            }
+            catch (Exception e)
+            {
+                ReportOnce("refresh-firing-list", e);
+            }
         }
 
         private static void GoalTargetWeaponsPostfix(AIWeaponTargetingGoal __instance, bool __state)
         {
-            if (!__state || !Plugin.Enabled.Value) return;
+            if (!__state || !Plugin.Active) return;
             try
             {
                 AICore core = (AICore)s_goalCore.GetValue(__instance);
@@ -236,33 +283,44 @@ namespace InterplanetaryAI
         private static bool SecondPhasePrefix(AIWeaponTargeting __instance, WeaponGameplayData weapon, CelestialBody targetPlanet)
         {
             if (!Plugin.Active || !Plugin.SmartStrikes.Value) return true;
+            PlayerData me, enemy;
+            List<BuildingView> views = new List<BuildingView>();
+            int pick;
             try
             {
                 AICore core = (AICore)s_moduleCore.GetValue(__instance);
-                PlayerData enemy = targetPlanet != null ? targetPlanet.Player : null;
+                enemy = targetPlanet != null ? targetPlanet.Player : null;
                 if (core == null || enemy == null) return true;
-                PlayerData me = core.PlayerData;
+                me = core.PlayerData;
 
                 List<BaseBuilding> buildings = new List<BaseBuilding>();
-                List<BuildingView> views = new List<BuildingView>();
                 AddCandidates(me, enemy.BuildingHandler.GetBuildingsByType(BaseBuilding.BuildingFunctionalityType.City), true, buildings, views);
                 AddCandidates(me, enemy.BuildingHandler.GetBuildingsByType(BaseBuilding.BuildingFunctionalityType.Weapon), false, buildings, views);
 
-                int pick = StrikePlanner.Choose(views, Plugin.WeaponBuildingShare.Value, Plugin.Rng);
-                if (pick < 0) return true; // nothing visible: native random surface point
+                pick = StrikePlanner.Choose(views, Plugin.WeaponBuildingShare.Value, Plugin.Rng);
+                if (pick < 0) return true; // nothing currently visible: native choice (it also aims at shadow intel)
 
                 core.Actions.SecondPhaseTargetWeapon(weapon, targetPlanet, buildings[pick].transform.localPosition);
-                Plugin.WriteDecision(new Json()
-                    .Str("e", "strike").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName).Str("target", enemy.UserNickName)
-                    .Str("building", views[pick].IsCity ? "city" : "weapon").Int("hp", views[pick].CurrentHp).Int("maxHp", views[pick].MaxHp)
-                    .Int("candidates", views.Count).ToString());
-                return false;
             }
             catch (Exception e)
             {
-                ReportOnce("strike", e);
+                ReportOnce("strike", e); // no action was queued, so the native choice runs
                 return true;
             }
+
+            // The strike is queued: never fall through to native from here (it would queue a second one).
+            try
+            {
+                Plugin.WriteDecision(new Json()
+                    .Str("e", "strike").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName).Str("target", enemy.UserNickName)
+                    .Str("building", views[pick].IsCity ? "city" : "weapon").Int("durability", views[pick].CurrentHp).Int("maxDurability", views[pick].MaxHp)
+                    .Int("candidates", views.Count).ToString());
+            }
+            catch (Exception e)
+            {
+                ReportOnce("strike-log", e);
+            }
+            return false;
         }
 
         private static void AddCandidates(PlayerData me, List<BaseBuilding> source, bool isCity, List<BaseBuilding> buildings, List<BuildingView> views)
@@ -275,9 +333,8 @@ namespace InterplanetaryAI
                 views.Add(new BuildingView
                 {
                     IsCity = isCity,
-                    CurrentHp = building.Stats.CurrentHP,
-                    MaxHp = building.Stats.MaxHP,
-                    Population = isCity ? building.Stats.CurrentPopulation : 0,
+                    CurrentHp = isCity ? building.Stats.CurrentPopulation : building.Stats.CurrentHP,
+                    MaxHp = isCity ? building.Stats.MaxPopulation : building.Stats.MaxHP,
                 });
             }
         }
@@ -286,7 +343,7 @@ namespace InterplanetaryAI
 
         private static void DealDamagePrefix(BaseBuilding building, int damage, int sourcePlayerID)
         {
-            if (!Plugin.Enabled.Value || building == null || sourcePlayerID < 0) return;
+            if (!Plugin.Active || building == null || sourcePlayerID < 0) return;
             try
             {
                 int victimId = building.Owner != null ? building.Owner.PlayerID : building.OwnerID;
@@ -314,7 +371,7 @@ namespace InterplanetaryAI
                     .Append(" (").Append(e.Score.ToString("0.00", CultureInfo.InvariantCulture)).Append(')');
                 if (i > 0) enemyArray.Append(',');
                 enemyArray.Append(new Json().Str("name", e.Name).Int("id", e.PlayerId).Bool("human", e.IsHuman).Int("assigned", countByEnemy[i])
-                    .Num("score", e.Score).Num("economy", e.Economy).Num("cityHp", e.CityHp).Int("cities", e.VisibleCities)
+                    .Num("score", e.Score).Num("economy", e.Economy).Num("cityPop", e.CityPopulation).Int("cities", e.VisibleCities)
                     .Num("grudge", e.Grudge).Num("leader", e.LeaderTerm).Num("grudgeTerm", e.GrudgeTerm).Num("finish", e.FinishTerm).ToString());
             }
             enemyArray.Append(']');
