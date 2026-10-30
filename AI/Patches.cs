@@ -124,7 +124,7 @@ namespace InterplanetaryAI
             }
         }
 
-        private static EnemyView BuildEnemyView(PlayerData me, PlayerData enemy, int turn)
+        internal static EnemyView BuildEnemyView(PlayerData me, PlayerData enemy, int turn)
         {
             EnemyView view = new EnemyView
             {
@@ -151,7 +151,7 @@ namespace InterplanetaryAI
 
         // Live values are read only for buildings our intel currently sees. Shadow buildings show frozen
         // last-known state, so reading their live stats would be hidden information; they are skipped.
-        private static bool IsVisibleIntact(PlayerData me, BaseBuilding building)
+        internal static bool IsVisibleIntact(PlayerData me, BaseBuilding building)
         {
             if (building == null || building.CurrentState != BaseBuilding.BuildingState.Normal) return false;
             return me.IntelHandler.GetBuildingVisibility(building) == BuildingIntelVisibility.Visible;

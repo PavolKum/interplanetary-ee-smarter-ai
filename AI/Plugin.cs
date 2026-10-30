@@ -21,7 +21,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.1.2";
+        public const string VERSION = "0.2.0";
 
         internal static ManualLogSource Log;
 
@@ -41,6 +41,34 @@ namespace InterplanetaryAI
         internal static ConfigEntry<bool> SmartStrikes;
         internal static ConfigEntry<float> WeaponBuildingShare;
         internal static ConfigEntry<bool> DecisionLog;
+        internal static ConfigEntry<bool> SuperweaponSavings;
+        internal static ConfigEntry<float> SaveShare;
+        internal static ConfigEntry<string> Superweapons;
+        internal static ConfigEntry<bool> BuildPlannerEnabled;
+        internal static ConfigEntry<string> GrowthWeights;
+        internal static ConfigEntry<string> PressureWeights;
+        internal static ConfigEntry<int> GrowthUntilTurn;
+        internal static ConfigEntry<float> BehindRatio;
+        internal static ConfigEntry<float> DefenseBonusWhenHit;
+        internal static ConfigEntry<bool> ResearchPlanEnabled;
+        internal static ConfigEntry<string> ResearchPlan;
+        internal static ConfigEntry<bool> EnableLasers;
+        internal static ConfigEntry<bool> SmartDefense;
+
+        internal static readonly BuildWeights Build = new BuildWeights();
+        internal static List<string> SuperweaponIds = new List<string>();
+        internal static List<string> ResearchPlanIds = new List<string>();
+
+        // Human consensus opening (first 10), Nuclear Missile line, rest of the human order, Asteroid Diversion line.
+        private const string DefaultResearchPlan =
+            "tec_MassBiochemicalProcessing,tec_MolecularRecycling,tec_SuperTensileMaterials,tec_QuantumComputing,tec_SmartGrids,"
+            + "tec_2ndGenComposites,tec_MaglevServos,tec_MagneticRadiationShielding,tec_EarlyWarningAI,tec_Metamaterials,"
+            + "tec_SelfAdjustingOptics,tec_AdvancedSignalProcessing,tec_OrbitalAssembly,tec_EmDrives,tec_ThermonuclearWarheads,"
+            + "tec_RoboticMining,tec_ExperimentalMatterControl,tec_Nanostructuring,tec_QuantumCommunications,tec_MicrowaveEnergyTranmission,"
+            + "tec_AtmosphericInterferenceMitigation,tec_4thGenNuclearReactors,tec_PlasmaChannelInduction,tec_VerticalFarming,tec_LosslessEnergyTransfer,"
+            + "tec_Ultracapacitors,tec_Octaazacubane,tec_CompositeHeatCells,tec_UraniumAlloys,tec_AdvancedGenetics,tec_DesignerNanomaterials,"
+            + "tec_SelfHealingMaterials,tec_AITargetTracking,tec_MultiChainedStages,tec_GammaRayLasers,"
+            + "tec_InductionCoils,tec_ZeroReluctanceEngineering,tec_MassDrivers";
 
         internal static readonly PlannerSettings Planner = new PlannerSettings();
         internal static float[] Accuracy = new float[] { 0.6f, 0.95f, 1f, 1f };
@@ -91,6 +119,34 @@ namespace InterplanetaryAI
             WeaponBuildingShare = Config.Bind("Strikes", "WeaponBuildingShare", 0.25f,
                 "Chance a guided strike goes for the weakest visible weapon building instead of a city.");
 
+            SuperweaponSavings = Config.Bind("Economy", "SuperweaponSavings", true,
+                "Once a superweapon is unlocked, save toward it and buy it (the native AI never saves, so it never builds one).");
+            SaveShare = Config.Bind("Economy", "SaveShare", 0.5f,
+                "Share of each turn's unreserved stock added to the superweapon savings (0-1). The rest is spent normally.");
+            Superweapons = Config.Bind("Economy", "Superweapons", "bui_NuclearMissile,bui_AsteroidDiversion",
+                "Superweapon buildings to save for, in priority order. Add bui_SolarLaser only together with [Lasers] EnableLasers.");
+            BuildPlannerEnabled = Config.Bind("Economy", "BuildPlanner", true,
+                "Replace the native fixed construction roulette (firepower 3 / energy 1.75 / material 1.2 / defense 0.7) with phase weights below. Needs and minimum intel stay native.");
+            GrowthWeights = Config.Bind("Economy", "GrowthWeights", "1.5,3.5,3,0.7",
+                "Firepower,Energy,Material,Defense weights while growing: before GrowthUntilTurn, or while the AI's economy trails the strongest visible enemy's.");
+            PressureWeights = Config.Bind("Economy", "PressureWeights", "3,2,1.5,1",
+                "Firepower,Energy,Material,Defense weights once the AI has caught up.");
+            GrowthUntilTurn = Config.Bind("Economy", "GrowthUntilTurn", 15, "Always grow before this turn.");
+            BehindRatio = Config.Bind("Economy", "BehindRatio", 0.9f,
+                "Grow while own economy < this x the strongest visible enemy economy (energy + material + science per turn).");
+            DefenseBonusWhenHit = Config.Bind("Economy", "DefenseBonusWhenHit", 1.5f, "Extra defense weight while the AI has recently taken damage.");
+
+            SmartDefense = Config.Bind("Economy", "SmartDefense", true,
+                "Build the defense that counters the most visible enemy firepower not yet covered (Kinetic vs Railgun/Coilcannon, Ion vs Missile/MIRV/Nuclear, Shield vs Laser). Falls back to native when nothing visible threatens.");
+
+            ResearchPlanEnabled = Config.Bind("Research", "UsePlan", true,
+                "Research the Plan list in order (prerequisites are queued automatically) instead of the native random focus. Native research resumes when the plan is done.");
+            ResearchPlan = Config.Bind("Research", "Plan", DefaultResearchPlan,
+                "Tech IDs in order. Default: the human's consensus opening from 6 recorded wins (AI/tools/human_research_order.py), then the Nuclear Missile line pulled forward (the AIs make ~40% of the human's science and would never reach it at position 33), then the rest of the human's order, then the Asteroid Diversion line.");
+
+            EnableLasers = Config.Bind("Lasers", "EnableLasers", false,
+                "EXPERIMENTAL. Let the AI build and fire Laser / EMP Laser / Solar Laser. The game's own AI laser code was switched off by its developers and has bugs (crash on no target, wrong building aimed); this installs fixes for both plus a bypass at end of turn. Needs a game restart. Try it in a throwaway match first.");
+
             DecisionLog = Config.Bind("Logging", "DecisionLog", true,
                 "Write one JSON line per AI decision to BepInEx/InterplanetaryAI/decisions-<start time>.jsonl.");
 
@@ -108,11 +164,20 @@ namespace InterplanetaryAI
             patched += TryPatch(typeof(AIWeaponTargetingGoal), "TargetWeapons", "GoalTargetWeaponsPrefix", "GoalTargetWeaponsPostfix");
             patched += TryPatch(typeof(AIWeaponTargeting), "HandleSecondPhaseTargeting", "SecondPhasePrefix", null);
             patched += TryPatch(typeof(PlayerBuildingHandler), "DealDamageToBuilding", "DealDamagePrefix", null);
-            Log.LogInfo(NAME + " " + VERSION + " loaded; " + patched + " of 6 hooks patched. Accuracy by level: " + AccuracyByLevel.Value);
+            patched += TryPatch(typeof(AICore), "BeginTurn", null, "CoreBeginTurnPostfix", typeof(EconomyPatches));
+            patched += TryPatch(typeof(AICore), "EndTurn", null, "CoreEndTurnPostfix", typeof(EconomyPatches));
+            patched += TryPatch(typeof(AIConstruction), "tryConstructNewBuilding", "TryConstructPrefix", null, typeof(EconomyPatches));
+            patched += TryPatch(typeof(AITechQueue), "BeginTurn", "TechQueueBeginTurnPrefix", null, typeof(EconomyPatches));
+            patched += TryPatch(typeof(AIDefenseConstruction), "TryConstructDefense", "TryConstructDefensePrefix", null, typeof(EconomyPatches));
+            int laserPatches = EnableLasers.Value ? LaserPatches.Install(new Harmony(GUID + ".lasers")) : 0;
+            Log.LogInfo(NAME + " " + VERSION + " loaded; " + patched + " of 11 hooks patched. Accuracy by level: " + AccuracyByLevel.Value
+                + "; research plan " + ResearchPlanIds.Count + " techs; superweapons " + Superweapons.Value
+                + "; lasers " + (EnableLasers.Value ? laserPatches + " of 5 patches" : "off"));
         }
 
-        private int TryPatch(Type type, string method, string prefix, string postfix)
+        private int TryPatch(Type type, string method, string prefix, string postfix, Type patchClass = null)
         {
+            if (patchClass == null) patchClass = typeof(AiPatches);
             try
             {
                 MethodInfo target = AccessTools.Method(type, method);
@@ -121,8 +186,8 @@ namespace InterplanetaryAI
                     Log.LogError("Hook target not found: " + type.Name + "." + method + " - that behaviour stays native.");
                     return 0;
                 }
-                HarmonyMethod pre = prefix == null ? null : new HarmonyMethod(typeof(AiPatches), prefix);
-                HarmonyMethod post = postfix == null ? null : new HarmonyMethod(typeof(AiPatches), postfix);
+                HarmonyMethod pre = prefix == null ? null : new HarmonyMethod(patchClass, prefix);
+                HarmonyMethod post = postfix == null ? null : new HarmonyMethod(patchClass, postfix);
                 m_harmony.Patch(target, pre, post);
                 return 1;
             }
@@ -140,6 +205,14 @@ namespace InterplanetaryAI
             Planner.GrudgeWeight = GrudgeWeight.Value;
             Planner.FinishWeight = FinishWeight.Value;
             Planner.HumanBias = HumanBias.Value;
+
+            Build.Growth = BuildPlanner.Parse(GrowthWeights.Value, Build.Growth);
+            Build.Pressure = BuildPlanner.Parse(PressureWeights.Value, Build.Pressure);
+            Build.GrowthUntilTurn = GrowthUntilTurn.Value;
+            Build.BehindRatio = BehindRatio.Value;
+            Build.DefenseBonusWhenHit = DefenseBonusWhenHit.Value;
+            SuperweaponIds = Brain.ResearchPlan.Parse(Superweapons.Value);
+            ResearchPlanIds = Brain.ResearchPlan.Parse(ResearchPlan.Value);
 
             float[] parsed = ParseAccuracy(AccuracyByLevel.Value);
             if (parsed == null)
@@ -183,6 +256,7 @@ namespace InterplanetaryAI
             Reach.Clear();
             AccuracyCarry.Clear();
             LastTurnSeen = 0;
+            EconomyPatches.Reset();
         }
 
         internal static void WriteDecision(string json)

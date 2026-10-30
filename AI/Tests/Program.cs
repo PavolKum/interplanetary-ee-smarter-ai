@@ -24,9 +24,93 @@ namespace InterplanetaryAI.Tests
             GrudgeDecaysAndIgnoresSelfDamage();
             ReachabilityExpiresAndClearsOnSuccess();
             StrikePicksWeakestCityOrWeapon();
+            SavingsConvergeOnGoal();
+            SavingsNeverExceedStockOrGoal();
+            GrowthPhaseRules();
+            DefenseBonusWhenHit();
+            CategoryPickFollowsWeights();
+            ResearchPlanSkipsDoneAndQueued();
+            DefenseCountersVisibleThreat();
 
             Console.WriteLine(s_checks + " checks, " + s_failures + " failed");
             return s_failures == 0 ? 0 : 1;
+        }
+
+        // Simulates turns: income arrives, the reserve is set, everything unreserved is spent.
+        private static void SavingsConvergeOnGoal()
+        {
+            int stock = 0, reserve = 0, turnsToGoal = -1;
+            for (int turn = 1; turn <= 20; turn++)
+            {
+                stock = reserve + 1000;  // last turn's reserve survives, 1000 material income
+                if (Savings.CanBuy(9999, stock, 0, 2000)) { turnsToGoal = turn; break; }
+                reserve = Savings.NextReserve(reserve, stock, 2000, 0.5f);
+            }
+            Check(turnsToGoal > 0 && turnsToGoal <= 4, "1000/turn income at share 0.5 should afford a 2000 goal within 4 turns; got " + turnsToGoal);
+        }
+
+        private static void SavingsNeverExceedStockOrGoal()
+        {
+            Check(Savings.NextReserve(0, 500, 2000, 1f) == 500, "reserve cannot exceed the stock");
+            Check(Savings.NextReserve(1900, 5000, 2000, 0.5f) == 2000, "reserve caps at the goal cost");
+            Check(Savings.NextReserve(1500, 800, 2000, 0.5f) == 800, "if the stock fell below the old reserve, reserve what is there");
+            Check(Savings.NextReserve(300, 1000, 0, 0.5f) == 0, "no goal, no reserve");
+        }
+
+        private static void GrowthPhaseRules()
+        {
+            BuildWeights w = new BuildWeights();
+            Check(BuildPlanner.IsGrowthPhase(new BuildSituation { Turn = 5, OwnEconomy = 9000, MaxEnemyEconomy = 1000 }, w), "early turns are always growth");
+            Check(BuildPlanner.IsGrowthPhase(new BuildSituation { Turn = 30, OwnEconomy = 3000, MaxEnemyEconomy = 13000 }, w), "trailing the leader (3k vs 13k) means growth");
+            Check(!BuildPlanner.IsGrowthPhase(new BuildSituation { Turn = 30, OwnEconomy = 13000, MaxEnemyEconomy = 12000 }, w), "caught up after the opening means pressure");
+        }
+
+        private static void DefenseBonusWhenHit()
+        {
+            BuildWeights w = new BuildWeights();
+            float calm = BuildPlanner.Weights(new BuildSituation { Turn = 30, OwnEconomy = 1, MaxEnemyEconomy = 1 }, w)[(int)BuildCategory.Defense];
+            float hit = BuildPlanner.Weights(new BuildSituation { Turn = 30, OwnEconomy = 1, MaxEnemyEconomy = 1, RecentDamage = 500 }, w)[(int)BuildCategory.Defense];
+            Check(Math.Abs(hit - calm - w.DefenseBonusWhenHit) < 1e-4, "taking damage adds the defense bonus");
+            Check(w.Pressure[(int)BuildCategory.Defense] == 1f, "the bonus must not mutate the configured weights");
+        }
+
+        private static void CategoryPickFollowsWeights()
+        {
+            int[] counts = new int[4];
+            Random rng = new Random(7);
+            float[] weights = { 0f, 3f, 1f, 0f };
+            for (int i = 0; i < 4000; i++) counts[(int)BuildPlanner.Pick(weights, rng)]++;
+            Check(counts[0] == 0 && counts[3] == 0, "zero-weight categories are never picked");
+            Check(counts[1] > 2700 && counts[1] < 3300, "energy at weight 3 of 4 should be ~3000 of 4000; got " + counts[1]);
+            Check(BuildPlanner.Parse("1,2,x,4", new float[] { 9, 9, 9, 9 })[0] == 9f, "a malformed weight list keeps the fallback");
+        }
+
+        private static void DefenseCountersVisibleThreat()
+        {
+            string[] all = { "bui_KineticDefense", "bui_IonDefense", "bui_ShieldDefense" };
+            Dictionary<string, int> none = new Dictionary<string, int>();
+            Dictionary<string, int> railguns = new Dictionary<string, int> { { "wea_Railgun", 10 } };
+            Check(DefensePlanner.Choose(railguns, none, all) == "bui_KineticDefense", "railguns call for kinetic defense");
+            Dictionary<string, int> missiles = new Dictionary<string, int> { { "wea_MIRV", 4 }, { "wea_NuclearMissile", 1 } };
+            Check(DefensePlanner.Choose(missiles, none, all) == "bui_IonDefense", "MIRVs and a nuke call for ion defense");
+            Dictionary<string, int> mixed = new Dictionary<string, int> { { "wea_Railgun", 6 }, { "wea_Missile", 4 } };
+            Dictionary<string, int> haveKinetic = new Dictionary<string, int> { { "bui_KineticDefense", 3 } };
+            Check(DefensePlanner.Choose(mixed, haveKinetic, all) == "bui_IonDefense", "with railguns already covered, the uncovered missiles win");
+            Check(DefensePlanner.Choose(none, none, all) == null, "no visible threat gives null (native choice)");
+            Check(DefensePlanner.Choose(railguns, none, new[] { "bui_IonDefense" }) == null, "a defense that counters nothing visible is not forced");
+        }
+
+        private static void ResearchPlanSkipsDoneAndQueued()
+        {
+            List<string> plan = ResearchPlan.Parse(" tec_A, tec_B ,tec_C,tec_A,");
+            Check(plan.Count == 3 && plan[1] == "tec_B", "parse trims, drops blanks and duplicates");
+            HashSet<string> done = new HashSet<string> { "tec_A" };
+            HashSet<string> queued = new HashSet<string> { "tec_B" };
+            Check(ResearchPlan.NextTarget(plan, done.Contains, queued.Contains) == "tec_C", "next target skips researched and queued techs");
+            done.Add("tec_C");
+            Check(ResearchPlan.NextTarget(plan, done.Contains, id => false) == "tec_B", "a dequeued tech comes back");
+            done.Add("tec_B");
+            Check(ResearchPlan.NextTarget(plan, done.Contains, queued.Contains) == null, "finished plan returns null (native research resumes)");
         }
 
         private static void Check(bool condition, string what)

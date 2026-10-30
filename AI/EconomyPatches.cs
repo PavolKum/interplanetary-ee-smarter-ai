@@ -1,0 +1,444 @@
+using System;
+using System.Collections.Generic;
+using System.Reflection;
+using HarmonyLib;
+using Interplanetary.AI;
+using Interplanetary.AI.Evaluation;
+using Interplanetary.GameEngine;
+using Interplanetary.GameSession;
+using Interplanetary.PlayerDataManagement;
+using Interplanetary.Prefabs;
+using InterplanetaryAI.Brain;
+
+namespace InterplanetaryAI
+{
+    // v0.2 hooks: saving for and buying superweapons, the construction mix, and the research plan.
+    internal static class EconomyPatches
+    {
+        internal sealed class AiEconomyState
+        {
+            public int ReservedEnergy;
+            public int ReservedMaterial;
+            public AIBuildingEntity Goal;
+            public int GoalEnergyCost;
+            public int GoalMaterialCost;
+            public bool BuyPending;
+            public int BuyAttempts;
+            public bool Bought;
+            public float[] Weights;
+            public bool Growth;
+            public readonly int[] Picks = new int[4];
+            public readonly int[] PickSuccesses = new int[4];
+            public readonly Dictionary<string, int> EnemyWeapons = new Dictionary<string, int>();
+            public readonly Dictionary<string, int> OwnDefenses = new Dictionary<string, int>();
+            public readonly Dictionary<string, int> DefensesQueued = new Dictionary<string, int>();
+        }
+
+        internal static readonly Dictionary<int, AiEconomyState> States = new Dictionary<int, AiEconomyState>();
+
+        private static readonly FieldInfo s_moduleCore = AccessTools.Field(typeof(AIModule), "m_core");
+        private static readonly FieldInfo s_queueList = AccessTools.Field(typeof(AIConstructionQueue), "m_constructionQueue");
+        private static readonly FieldInfo[] s_categoryModules =
+        {
+            AccessTools.Field(typeof(AIConstruction), "m_weaponConstruction"),
+            AccessTools.Field(typeof(AIConstruction), "m_energyConstruction"),
+            AccessTools.Field(typeof(AIConstruction), "m_materialConstruction"),
+            AccessTools.Field(typeof(AIConstruction), "m_defenseConstruction"),
+        };
+        private static readonly MethodInfo s_tryBuildAffordable = AccessTools.Method(typeof(AIConstructionModule), "tryBuildAffordableBuilding");
+
+        private static readonly HashSet<string> s_reportedErrors = new HashSet<string>();
+
+        private static AiEconomyState StateOf(PlayerData ai)
+        {
+            AiEconomyState state;
+            if (!States.TryGetValue(ai.PlayerID, out state))
+            {
+                state = new AiEconomyState();
+                States[ai.PlayerID] = state;
+            }
+            return state;
+        }
+
+        // ---- turn start: savings goal, reserve, construction weights, economy log ----------------
+
+        // Runs after every module's BeginTurn (AICore.BeginTurn calls Resources.BeginTurn, then each module),
+        // so the reserve lands after the construction queue took its allotment and before any construction.
+        private static void CoreBeginTurnPostfix(AICore __instance)
+        {
+            if (!Plugin.Active || !__instance.PlayerData.AIPlayer) return;
+            try
+            {
+                AICore core = __instance;
+                PlayerData me = core.PlayerData;
+                AiEconomyState state = StateOf(me);
+                int turn = GameManager.CurrentTurn;
+
+                // Enemy picture for the construction mix (same visible-only data as targeting).
+                float maxEnemyEconomy = 0f, recentDamage = 0f;
+                state.EnemyWeapons.Clear();
+                foreach (CelestialBody planet in core.EnemyPlanets)
+                {
+                    EnemyView view = AiPatches.BuildEnemyView(me, planet.Player, turn);
+                    maxEnemyEconomy = Math.Max(maxEnemyEconomy, view.Economy);
+                    recentDamage += view.Grudge;
+                    foreach (BaseBuilding building in planet.Player.BuildingHandler.Buildings)
+                    {
+                        if (!AiPatches.IsVisibleIntact(me, building) || building.IsCity || !building.BuildingData.weapon_functionality.IsValueSet) continue;
+                        Increment(state.EnemyWeapons, building.BuildingData.weapon_functionality.Value);
+                    }
+                }
+                state.OwnDefenses.Clear();
+                state.DefensesQueued.Clear();
+                foreach (BaseBuilding building in me.BuildingHandler.Buildings)
+                {
+                    if (building == null || building.IsCity || building.CurrentState != BaseBuilding.BuildingState.Normal) continue;
+                    if (DefensePlanner.Counters.ContainsKey(building.BuildingData.id.Value)) Increment(state.OwnDefenses, building.BuildingData.id.Value);
+                }
+                float ownEconomy = me.ResourceHandler.EnergyProductionPerTurn + me.ResourceHandler.MaterialProductionPerTurn + me.ResourceHandler.ScienceProductionPerTurn;
+                BuildSituation situation = new BuildSituation { Turn = turn, OwnEconomy = ownEconomy, MaxEnemyEconomy = maxEnemyEconomy, RecentDamage = recentDamage };
+                state.Growth = BuildPlanner.IsGrowthPhase(situation, Plugin.Build);
+                state.Weights = BuildPlanner.Weights(situation, Plugin.Build);
+                for (int i = 0; i < 4; i++) { state.Picks[i] = 0; state.PickSuccesses[i] = 0; }
+
+                // Superweapon goal.
+                state.BuyPending = false;
+                state.BuyAttempts = 0;
+                state.Bought = false;
+                int stockEnergy = core.Resources.Energy, stockMaterial = core.Resources.Material;
+                int reserveEnergy = 0, reserveMaterial = 0;
+                state.Goal = Plugin.SuperweaponSavings.Value ? FindSuperweaponGoal(core) : null;
+                if (state.Goal != null)
+                {
+                    state.GoalEnergyCost = AIWeaponConstruction.GetWeaponEnergyCost(state.Goal, core);
+                    state.GoalMaterialCost = AIWeaponConstruction.GetWeaponMaterialCost(state.Goal, core);
+                    if (Savings.CanBuy(stockEnergy, stockMaterial, state.GoalEnergyCost, state.GoalMaterialCost))
+                    {
+                        state.BuyPending = true; // buy first thing in construction; nothing reserved
+                    }
+                    else
+                    {
+                        reserveEnergy = Savings.NextReserve(state.ReservedEnergy, stockEnergy, state.GoalEnergyCost, Plugin.SaveShare.Value);
+                        reserveMaterial = Savings.NextReserve(state.ReservedMaterial, stockMaterial, state.GoalMaterialCost, Plugin.SaveShare.Value);
+                        core.Resources.Energy -= reserveEnergy;
+                        core.Resources.Material -= reserveMaterial;
+                        core.Construction.ConstructionQueue.AllottedEnergy -= reserveEnergy;
+                        core.Construction.ConstructionQueue.AllottedMaterial -= reserveMaterial;
+                    }
+                }
+                state.ReservedEnergy = reserveEnergy;
+                state.ReservedMaterial = reserveMaterial;
+
+                LogEconomy(core, turn, state, stockEnergy, stockMaterial, ownEconomy, maxEnemyEconomy, recentDamage);
+            }
+            catch (Exception e)
+            {
+                ReportOnce("economy-begin-turn", e);
+            }
+        }
+
+        private static AIBuildingEntity FindSuperweaponGoal(AICore core)
+        {
+            AIFirepowerEvaluation firepower = core.ConstructionEvaluation.FirepowerEvaluation;
+            AIBuildingEntity best = null;
+            int bestCost = int.MaxValue;
+            foreach (string buildingId in Plugin.SuperweaponIds)
+            {
+                foreach (AIConstructionEntity entity in firepower.AvailableFirepowerEntitiesByEfficiency)
+                {
+                    AIBuildingEntity building = entity as AIBuildingEntity;
+                    if (building == null || building.Building.id.Value != buildingId) continue;
+                    if (!core.Construction.IsEntityAvailable(building)) continue;
+                    int cost = AIWeaponConstruction.GetWeaponEnergyCost(building, core) + AIWeaponConstruction.GetWeaponMaterialCost(building, core);
+                    if (cost < bestCost)
+                    {
+                        best = building;
+                        bestCost = cost;
+                    }
+                }
+                if (best != null) return best; // list order = priority
+            }
+            return null;
+        }
+
+        // ---- construction: buy the superweapon first, then the planned category mix ----------
+
+        private static bool TryConstructPrefix(AIConstruction __instance, ref bool __result)
+        {
+            if (!Plugin.Active) return true;
+            try
+            {
+                AICore core = (AICore)s_moduleCore.GetValue(__instance);
+                if (core == null || !core.PlayerData.AIPlayer) return true;
+                AiEconomyState state = StateOf(core.PlayerData);
+
+                // Needs (power slots, energy/material shortfalls) always stay native, exactly as the native branch.
+                if (core.PowerGrid.BuildingsRequiringPowerAmount > 0 || __instance.PowerSlotNeed > 0 || __instance.EnergyNeed > 0 || __instance.MaterialNeed > 0) return true;
+
+                if (state.BuyPending && !state.Bought && state.Goal != null && state.BuyAttempts < 4 && __instance.ConstructionQueue.IsReady)
+                {
+                    if (TryBuyGoal(core, __instance, state, ref __result)) return false;
+                }
+
+                if (!Plugin.BuildPlannerEnabled.Value || state.Weights == null) return true;
+                // Keep the native intel minimum: let native run when it is short of minimum intel.
+                if (core.ConstructionEvaluation.IntelEvaluation.AvailableIntelEntitiesByEfficiency.Count > 0 && core.Intel.IntelNeed > 0f && !core.Intel.HasMinimumIntel) return true;
+
+                BuildCategory category = BuildPlanner.Pick(state.Weights, Plugin.Rng);
+                state.Picks[(int)category]++;
+                int powerSlotNeed = __instance.PowerSlotNeed, energyNeed = __instance.EnergyNeed, materialNeed = __instance.MaterialNeed;
+                if (TryCategory(__instance, category))
+                {
+                    state.PickSuccesses[(int)category]++;
+                    __result = true;
+                    return false;
+                }
+                // A failed module attempt can raise needs; undo so the native roulette runs unchanged.
+                __instance.PowerSlotNeed = powerSlotNeed;
+                __instance.EnergyNeed = energyNeed;
+                __instance.MaterialNeed = materialNeed;
+                return true;
+            }
+            catch (Exception e)
+            {
+                ReportOnce("construction", e);
+                return true;
+            }
+        }
+
+        private static bool TryBuyGoal(AICore core, AIConstruction construction, AiEconomyState state, ref bool result)
+        {
+            state.BuyAttempts++;
+            if (!construction.IsEntityAvailable(state.Goal))
+            {
+                state.BuyPending = false;
+                return false;
+            }
+            if (!Savings.CanBuy(core.Resources.Energy, core.Resources.Material, state.GoalEnergyCost, state.GoalMaterialCost))
+            {
+                state.BuyPending = false;
+                return false;
+            }
+            object weaponModule = s_categoryModules[(int)BuildCategory.Firepower].GetValue(construction);
+            int queuedBefore = QueueCount(construction);
+            // Native path: queues the building if a power slot is free, otherwise raises the power-slot need
+            // so the next calls build power first; the purchase is retried on a later call.
+            s_tryBuildAffordable.Invoke(weaponModule, new object[] { state.Goal });
+            if (QueueCount(construction) > queuedBefore)
+            {
+                state.Bought = true;
+                state.BuyPending = false;
+                state.ReservedEnergy = 0;
+                state.ReservedMaterial = 0;
+                Plugin.WriteDecision(new Json().Str("e", "superweapon").Int("t", GameManager.CurrentTurn).Str("ai", core.PlayerData.UserNickName)
+                    .Str("building", state.Goal.Building.id.Value).Int("energyCost", state.GoalEnergyCost).Int("materialCost", state.GoalMaterialCost).ToString());
+                Plugin.Log.LogInfo("T" + GameManager.CurrentTurn + " " + core.PlayerData.UserNickName + " queued superweapon " + state.Goal.Building.id.Value);
+            }
+            result = true;
+            return true;
+        }
+
+        private static bool TryCategory(AIConstruction construction, BuildCategory category)
+        {
+            object module = s_categoryModules[(int)category].GetValue(construction);
+            switch (category)
+            {
+                case BuildCategory.Firepower: return ((AIWeaponConstruction)module).TryConstructWeapon();
+                case BuildCategory.Energy: return ((AIEnergyConstruction)module).TryConstructEnergy();
+                case BuildCategory.Material: return ((AIMaterialConstruction)module).TryConstructMaterial();
+                default: return ((AIDefenseConstruction)module).TryConstructDefense();
+            }
+        }
+
+        // ---- defense choice by visible threat -------------------------------------------------
+
+        private static readonly FieldInfo s_constructionModuleCore = AccessTools.Field(typeof(AIConstructionModule), "m_core");
+
+        private static bool TryConstructDefensePrefix(AIDefenseConstruction __instance, ref bool __result)
+        {
+            if (!Plugin.Active || !Plugin.SmartDefense.Value) return true;
+            try
+            {
+                AICore core = (AICore)s_constructionModuleCore.GetValue(__instance);
+                if (core == null || !core.PlayerData.AIPlayer) return true;
+                AiEconomyState state = StateOf(core.PlayerData);
+
+                // Cheapest affordable, available variant of each threat-relevant defense building.
+                Dictionary<string, AIBuildingEntity> options = new Dictionary<string, AIBuildingEntity>();
+                Dictionary<string, int> optionCost = new Dictionary<string, int>();
+                foreach (AIConstructionEntity entity in core.ConstructionEvaluation.DefenseEvaluation.AvailableDefenseEntitiesByEfficiency)
+                {
+                    AIBuildingEntity building = entity as AIBuildingEntity;
+                    if (building == null) continue;
+                    string id = building.Building.id.Value;
+                    if (!DefensePlanner.Counters.ContainsKey(id) || !core.Construction.IsEntityAvailable(building)) continue;
+                    int energy = AIConstructionModule.GetEnergyCost(building, core), material = AIConstructionModule.GetMaterialCost(building, core);
+                    if (core.Resources.Energy < energy || core.Resources.Material < material) continue;
+                    int previous;
+                    if (!optionCost.TryGetValue(id, out previous) || energy + material < previous)
+                    {
+                        options[id] = building;
+                        optionCost[id] = energy + material;
+                    }
+                }
+                // Count this turn's queued defenses as owned so one turn spreads across threats.
+                Dictionary<string, int> owned = new Dictionary<string, int>(state.OwnDefenses);
+                foreach (KeyValuePair<string, int> pair in state.DefensesQueued)
+                {
+                    int n;
+                    owned.TryGetValue(pair.Key, out n);
+                    owned[pair.Key] = n + pair.Value;
+                }
+                string choice = DefensePlanner.Choose(state.EnemyWeapons, owned, options.Keys);
+                if (choice == null) return true; // no visible threat it counters: native choice
+
+                s_tryBuildAffordable.Invoke(__instance, new object[] { options[choice] });
+                Increment(state.DefensesQueued, choice);
+                __result = true;
+                return false;
+            }
+            catch (Exception e)
+            {
+                ReportOnce("defense", e);
+                return true;
+            }
+        }
+
+        private static void Increment(Dictionary<string, int> counts, string key)
+        {
+            int n;
+            counts.TryGetValue(key, out n);
+            counts[key] = n + 1;
+        }
+
+        private static int QueueCount(AIConstruction construction)
+        {
+            System.Collections.ICollection list = s_queueList.GetValue(construction.ConstructionQueue) as System.Collections.ICollection;
+            return list != null ? list.Count : 0;
+        }
+
+        // ---- research plan ------------------------------------------------------------------
+
+        // Runs before the native AITechQueue.BeginTurn, which only queues when the queue is empty, so a
+        // non-empty planned queue wins and the native random-focus research resumes once the plan is done.
+        private static void TechQueueBeginTurnPrefix(AITechQueue __instance)
+        {
+            if (!Plugin.Active || !Plugin.ResearchPlanEnabled.Value || Plugin.ResearchPlanIds.Count == 0) return;
+            try
+            {
+                AICore core = (AICore)s_moduleCore.GetValue(__instance);
+                if (core == null || !core.PlayerData.AIPlayer) return;
+                if (GameSessionManager.CurrentGameSettings.TechTree != 1) return;
+                PlayerTechnologyHandler tech = core.PlayerData.TechnologyHandler;
+                if (tech.IsTechQueued) return;
+
+                List<string> before = tech.GetTechnologyQueueIdStringList();
+                for (int attempt = 0; attempt < 3; attempt++)
+                {
+                    string next = ResearchPlan.NextTarget(Plugin.ResearchPlanIds, id => SafeCompleted(tech, id), id => tech.GetTechnologyIsInQueue(id) || s_refused.Contains(id));
+                    if (next == null) return;
+                    bool queued = false;
+                    try { queued = tech.AddTechnologyToQueueById(next, true); }
+                    catch (Exception) { queued = false; }
+                    // Science is spent on the queue head without an availability check; never leave an
+                    // unresearchable head (the director learned this the hard way).
+                    List<string> after = tech.GetTechnologyQueueIdStringList();
+                    if (queued && after.Count > 0 && tech.IsTechnologyAvailable(after[0]))
+                    {
+                        Plugin.WriteDecision(new Json().Str("e", "research").Int("t", GameManager.CurrentTurn).Str("ai", core.PlayerData.UserNickName)
+                            .Str("target", next).Str("head", after[0]).Int("queueLength", after.Count).ToString());
+                        return;
+                    }
+                    tech.SetTechnologyQueue(before.ToArray());
+                    s_refused.Add(next);
+                    Plugin.Log.LogWarning("Research plan: " + next + " could not be queued for " + core.PlayerData.UserNickName + "; skipping it.");
+                }
+            }
+            catch (Exception e)
+            {
+                ReportOnce("research", e);
+            }
+        }
+
+        private static readonly HashSet<string> s_refused = new HashSet<string>();
+
+        private static bool SafeCompleted(PlayerTechnologyHandler tech, string id)
+        {
+            try { return tech.GetTechnologyCompletionById(id); }
+            catch (Exception) { s_refused.Add(id); return true; }
+        }
+
+        internal static void Reset()
+        {
+            States.Clear();
+            s_refused.Clear();
+        }
+
+        // ---- logging ----------------------------------------------------------------------------
+
+        // End of the AI's turn: what the construction mix actually did this turn.
+        private static void CoreEndTurnPostfix(AICore __instance)
+        {
+            if (!Plugin.Active || !__instance.PlayerData.AIPlayer) return;
+            try
+            {
+                AiEconomyState state;
+                if (!States.TryGetValue(__instance.PlayerData.PlayerID, out state)) return;
+                Plugin.WriteDecision(new Json().Str("e", "build").Int("t", GameManager.CurrentTurn).Str("ai", __instance.PlayerData.UserNickName)
+                    .Bool("growth", state.Growth)
+                    .Raw("picks", IntArray(state.Picks)).Raw("queued", IntArray(state.PickSuccesses))
+                    .Bool("superweaponBought", state.Bought)
+                    .Map("enemyWeapons", state.EnemyWeapons).Map("ownDefenses", state.OwnDefenses).Map("defensesQueued", state.DefensesQueued).ToString());
+            }
+            catch (Exception e)
+            {
+                ReportOnce("economy-end-turn", e);
+            }
+        }
+
+        private static void LogEconomy(AICore core, int turn, AiEconomyState state, int stockEnergy, int stockMaterial, float ownEconomy, float maxEnemyEconomy, float recentDamage)
+        {
+            PlayerData me = core.PlayerData;
+            Dictionary<string, int> buildings = new Dictionary<string, int>();
+            foreach (BaseBuilding building in me.BuildingHandler.Buildings)
+            {
+                if (building == null || building.CurrentState != BaseBuilding.BuildingState.Normal) continue;
+                string id = building.IsCity ? "city" : building.BuildingData.id.Value.Replace("bui_", "");
+                int n;
+                buildings.TryGetValue(id, out n);
+                buildings[id] = n + 1;
+            }
+            List<string> queue = me.TechnologyHandler.GetTechnologyQueueIdStringList();
+            Plugin.WriteDecision(new Json().Str("e", "economy").Int("t", turn).Str("ai", me.UserNickName)
+                .Int("energy", stockEnergy).Int("material", stockMaterial)
+                .Int("energyPerTurn", me.ResourceHandler.EnergyProductionPerTurn).Int("materialPerTurn", me.ResourceHandler.MaterialProductionPerTurn)
+                .Int("sciencePerTurn", me.ResourceHandler.ScienceProductionPerTurn).Int("planetMaterial", me.ResourceHandler.PlanetMaterial)
+                .Int("population", me.ResourceHandler.TotalPopulation)
+                .Num("ownEconomy", ownEconomy).Num("maxEnemyEconomy", maxEnemyEconomy).Num("recentDamage", recentDamage)
+                .Bool("growth", state.Growth).Raw("weights", FloatArray(state.Weights))
+                .Str("goal", state.Goal != null ? state.Goal.Building.id.Value : "")
+                .Int("reservedEnergy", state.ReservedEnergy).Int("reservedMaterial", state.ReservedMaterial).Bool("buyPending", state.BuyPending)
+                .Str("researchHead", queue.Count > 0 ? queue[0] : "")
+                .Map("buildings", buildings).ToString());
+        }
+
+        private static string IntArray(int[] values)
+        {
+            return "[" + string.Join(",", Array.ConvertAll(values, v => v.ToString(System.Globalization.CultureInfo.InvariantCulture))) + "]";
+        }
+
+        private static string FloatArray(float[] values)
+        {
+            if (values == null) return "[]";
+            return "[" + string.Join(",", Array.ConvertAll(values, v => v.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture))) + "]";
+        }
+
+        private static void ReportOnce(string hook, Exception e)
+        {
+            if (s_reportedErrors.Add(hook))
+            {
+                Plugin.Log.LogError("Hook '" + hook + "' failed; native behaviour used for it (reported once): " + e);
+            }
+        }
+    }
+}
