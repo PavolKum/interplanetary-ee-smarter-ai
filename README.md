@@ -1,6 +1,6 @@
 # interplanetary-mods
 
-Quality-of-life mods for *Interplanetary Enhanced Edition* (Unity 5.6.7f1, Mono). Loader: BepInEx 5.4.23.3 x64 + HarmonyX.
+Quality-of-life and AI mods for *Interplanetary Enhanced Edition* (Unity 5.6.7f1, Mono). Loader: BepInEx 5.4.23.3 x64 + HarmonyX.
 
 ## QoL plugin (`QoL/`)
 
@@ -38,4 +38,4 @@ Uninstall: delete or rename `<game>/winhttp.dll`. Everything else is inert witho
 - `QoL/` - the plugin (net35, C# 7.3).
 - `decompiled/` - ILSpy 9.1 output of `Assembly-CSharp.dll`, for reference only.
 - `docs/plan-qol-v0.1.md` - design, with the survey of the game's internals and the post-review revisions.
-- `docs/reviews/` - external review passes (GPT-6 Astra via OpenCode).
+- `docs/reviews/` - external review passes (GPT-6 Astra, GPT-6.1 Terra via OpenCode).

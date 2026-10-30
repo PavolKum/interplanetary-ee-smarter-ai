@@ -1,0 +1,24 @@
+You are the adversarial technical reviewer for a game AI mod that has just been written and not yet run in game. READ-ONLY: do not edit, create or delete any file; report findings only.
+
+Context: BepInEx 5.4 + HarmonyX plugin for "Interplanetary Enhanced Edition" (Unity 5.6.7f1, Mono, .NET 3.5 profile, C# 7.3). Goal: make the single-player AI strong enough to beat a skilled human, without giving it hidden information. Version 0.1 changes combat only:
+1. Threat-based focus fire replacing the native uniform-random per-weapon target pick (AIWeaponTargeting.BeginTurn line ~114).
+2. Re-splitting the native per-turn planned hits/misses (AIWeaponTargetingGoal / AIWeaponAccuracy / AIDifficulty) at a configurable accuracy.
+3. Guided second-phase strikes aimed at the weakest visible city instead of a random visible building.
+4. A grudge ledger (damage per shooter, decayed per turn) and per-weapon reachability memory.
+
+Code to review (all under AI/):
+- AI/Plugin.cs - config, hook registration, offline guard, JSONL decision log.
+- AI/Patches.cs - the Harmony hooks (adapters between game state and the Brain).
+- AI/Brain/TargetPlanner.cs, AI/Brain/Memory.cs - game-independent decision logic.
+- AI/Tests/Program.cs - unit checks for the Brain.
+
+Verify against the decompiled game source under decompiled/ (ILSpy of Assembly-CSharp.dll). Key files: decompiled/Interplanetary.AI/AIWeaponTargeting.cs, AIWeaponTargetingGoal.cs, AIWeaponAccuracy.cs, AIDifficulty.cs, AICore.cs, AIModule.cs, AITargetWeapons.cs, AIActions.cs, AIThreatAssessment.cs, decompiled/Interplanetary.AI.Trajectories/ (AITrajectoryWeapon, AIGravityTrajectoryWeapon), the PlayerBuildingHandler.DealDamageToBuilding method, ActionphaseBuildingDamageEvent, PlayerManager, GameManager, BaseBuilding, BuildingStatHolder. Find files with a search if a path differs.
+
+Answer, with file:line evidence from both the mod and the decompiled source:
+A. Hook correctness. For each of the 6 patches in Plugin.Awake: does the target method exist with that name and a single overload; do the prefix/postfix parameter names match the original's parameter names exactly; is __state used correctly; will the hook run at the moment the code assumes? In particular: is setting AITrajectoryWeapon.TargetEnemy in a postfix of AIWeaponTargeting.BeginTurn early enough (before any trajectory search reads it) and safe given TargetData / AngleToTarget were computed in the original loop? Who calls HandleSecondPhaseTargeting and with what - does skipping the original (return false) after calling AIActions.SecondPhaseTargetWeapon preserve everything the original did? Is the shooter id passed to DealDamageToBuilding in the same id space as PlayerData.PlayerID and BaseBuilding.Owner.PlayerID?
+B. Runtime risks: null references, exceptions inside hooks, anything that could stall the AI turn (AICore timeouts), main-thread assumptions, effects on AIWeaponTargetingGoal.IsGoalMet / AreWeaponsTargeted / DetermineShootingWeapons when Hits/Misses are re-split after BeginTurn, and whether accuracy 1.0 can leave weapons silent that native would have fired.
+C. Information fairness: does any input to the decision read information the AI's player could not see (intel visibility)? Note: BuildingIntelVisibility has Invisible / Visible / Shadow.
+D. Strength: given how the native AI actually plays (targeting, trajectory search budget, construction, economy), what are the biggest remaining reasons it would still lose to a human who turtles and out-scales economically? Rank the next 3 changes by expected win-rate impact, with the hook point for each.
+E. Bugs or weak spots in the Brain logic and in the tests (a check that cannot fail, a missing edge case).
+
+Output: a markdown report. Start with a verdict line (ship to playtest as-is / fix first), then findings ranked most severe first, each with: severity (blocker / major / minor), evidence (file:line), concrete failure scenario, and suggested fix. Mark anything you could not verify as UNVERIFIED. Be terse.
