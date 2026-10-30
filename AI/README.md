@@ -18,9 +18,9 @@ The 29 Oct 2026 match (debrief `261029-be947731`) shows the result: the human's 
 | Threat-based focus fire: score = visible economy (squared share of strongest) + grudge + finish-off, top target gets `FocusShare` of weapons, rest weighted random | postfix `AIWeaponTargeting.BeginTurn` rewrites `TargetEnemy` | `[Targeting]` |
 | Reachability memory: a weapon that found no trajectory onto a target is steered to the next-best one for N turns | postfix `AIWeaponTargetingGoal.TargetWeapons` records; targeting reads | `ReachabilityMemoryTurns` |
 | Grudges: damage per shooter, decayed per turn | prefix `PlayerBuildingHandler.DealDamageToBuilding` | `GrudgeWeight`, `GrudgeDecayPerTurn` |
-| Accuracy: re-split the same shot count at a configured hit share | postfix `AIWeaponTargetingGoal.BeginTurn` | `[Accuracy] AccuracyByLevel` (default `0.6,0.95,1.0,1.0`) |
+| Accuracy: re-split the same shot count at a configured hit share | postfix `AIWeaponTargetingGoal.BeginTurn` | `[Accuracy] AccuracyByLevel` (default `0.4,0.7,0.7,0.7` = human parity; see config text) |
 | Native bug fix: rebuild the firing list from this turn's results right before firing (natively it only refreshes on a primary hit, so secondary-only weapons stay silent) | prefix `AIWeaponTargetingGoal.TargetWeapons` | `RefreshFiringList` |
-| Planned misses are not fired (an own-planet impact counts as a "miss" in the game's classifier) | same prefix | `[Accuracy] FireMisses` (default off) |
+| Planned misses fire only as verified near-misses, never onto the AI's own planet (the game counts an own-planet impact as a "miss") | same prefix | `[Accuracy] FireMisses` (default on) |
 | Guided strikes go for the visible city with the least population (a city is ruined at 0; defeat = last city lost) | prefix `AIWeaponTargeting.HandleSecondPhaseTargeting` | `[Strikes]` |
 
 Fairness: every input comes from buildings the AI's own intel currently sees (`Visible` only; shadow intel is skipped), its own damage taken, and its own trajectory results. No hidden information, no resource bonuses.

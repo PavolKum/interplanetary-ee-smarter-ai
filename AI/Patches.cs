@@ -24,6 +24,7 @@ namespace InterplanetaryAI
         private static readonly FieldInfo s_goalWeapons = AccessTools.Field(typeof(AIWeaponTargetingGoal), "m_weapons");
         private static readonly FieldInfo s_goalHitting = AccessTools.Field(typeof(AIWeaponTargetingGoal), "m_hittingWeapons");
         private static readonly FieldInfo s_goalMissing = AccessTools.Field(typeof(AIWeaponTargetingGoal), "m_missingWeapons");
+        private static readonly FieldInfo s_acceptableMiss = AccessTools.Field(typeof(AITrajectoryWeapon), "m_acceptableMissTrajectory");
 
         private static readonly HashSet<string> s_reportedErrors = new HashSet<string>();
 
@@ -201,7 +202,9 @@ namespace InterplanetaryAI
         // that only found a secondary hit or a miss is never picked, and last turn's entries return no shot.
         // Rebuilding the lists from this turn's results right before firing fixes both.
         // A planned "miss" can be a trajectory onto the AI's own planet (AIWeaponTargeting.handleFinishedAccurateTrajectory
-        // classes an own-planet impact as a miss), so unless FireMisses is on, the miss list is emptied before firing.
+        // classes an own-planet impact as a miss). Only verified near-misses are kept: an acceptable miss whose stored
+        // result did not hit our planet. Unacceptable misses are dropped because their stored shot is the latest one
+        // tried, not the stored closest result (AITrajectoryWeapon.RegisterUnacceptableMissTrajectory), so it cannot be checked.
         private static void GoalTargetWeaponsPrefix(AIWeaponTargetingGoal __instance, out bool __state)
         {
             __state = !__instance.AreWeaponsTargeted;
@@ -209,16 +212,28 @@ namespace InterplanetaryAI
             try
             {
                 if (Plugin.RefreshFiringList.Value) __instance.DetermineShootingWeapons();
+                List<AITrajectoryWeapon> missing = (List<AITrajectoryWeapon>)s_goalMissing.GetValue(__instance);
+                if (missing == null) return;
                 if (!Plugin.FireMisses.Value)
                 {
-                    List<AITrajectoryWeapon> missing = (List<AITrajectoryWeapon>)s_goalMissing.GetValue(__instance);
-                    if (missing != null) missing.Clear();
+                    missing.Clear();
+                    return;
                 }
+                AICore core = (AICore)s_goalCore.GetValue(__instance);
+                missing.RemoveAll(weapon => !IsSafeNearMiss(weapon, core.Planet));
             }
             catch (Exception e)
             {
                 ReportOnce("refresh-firing-list", e);
             }
+        }
+
+        private static bool IsSafeNearMiss(AITrajectoryWeapon weapon, CelestialBody ownPlanet)
+        {
+            if (!weapon.HasFoundAcceptableMissTrajectory) return false;
+            AIStoredTrajectory stored = (AIStoredTrajectory)s_acceptableMiss.GetValue(weapon);
+            if (stored == null || stored.TrajectoryResults == null) return false;
+            return stored.TrajectoryResults.HitCelestialBody != ownPlanet;
         }
 
         private static void GoalTargetWeaponsPostfix(AIWeaponTargetingGoal __instance, bool __state)

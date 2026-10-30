@@ -21,7 +21,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.1.1";
+        public const string VERSION = "0.1.2";
 
         internal static ManualLogSource Log;
 
@@ -81,10 +81,10 @@ namespace InterplanetaryAI
 
             AccuracyOverride = Config.Bind("Accuracy", "Override", true,
                 "Native AIs plan deliberate misses each turn (accuracy 0.4 / 0.75 / 0.9 / 1.0 by difficulty). Override that plan.");
-            AccuracyByLevel = Config.Bind("Accuracy", "AccuracyByLevel", "0.6,0.95,1.0,1.0",
-                "Planned hit share per difficulty level, lowest first, comma-separated. Below 1.0 some weapons that found a hit hold fire (see FireMisses).");
-            FireMisses = Config.Bind("Accuracy", "FireMisses", false,
-                "Fire the planned misses. Off by default: the game counts a trajectory onto the AI's own planet as a 'miss', and a miss spends energy and material for nothing (except possibly multi-projectile weapons such as Asteroid Diversion).");
+            AccuracyByLevel = Config.Bind("Accuracy", "AccuracyByLevel", "0.4,0.7,0.7,0.7",
+                "Planned hit share per difficulty level, lowest first, comma-separated. Default = human parity: the human's planet-contact rate over 6 recorded matches (Oct 2026) was 58% overall and 67% in the last two; 0.7 planned allows for shots lost to defenses. Easy keeps the native 0.4.");
+            FireMisses = Config.Bind("Accuracy", "FireMisses", true,
+                "Fire the planned misses like a human would, but only verified near-misses: never a trajectory onto the AI's own planet (the game counts that as a 'miss'). Off = planned misses hold fire and save their firing cost.");
 
             SmartStrikes = Config.Bind("Strikes", "SmartStrikes", true,
                 "Guided second-phase strikes go for the visible city closest to destruction instead of a random visible building.");
