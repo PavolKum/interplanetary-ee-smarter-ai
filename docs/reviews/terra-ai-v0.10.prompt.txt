@@ -1,0 +1,23 @@
+READ-ONLY review. Do not edit, create or delete any file. Stay inside this repository: any path outside it is auto-rejected and ends your run. Finish with the complete written report.
+
+Code review of AI v0.10.0 (diff against 1f8eb8a in docs/reviews/terra-ai-v0.10.diff). Context: the strategy review docs/reviews/sol-ai-strategy-v0.10.md and the playtest docs/playtests/2026-10-31-v0.9.1.md. The AI lost nine matches; v0.10 changes posture: hold fire and invest until a salvo at one committed enemy saturates its defenses, then strike, pulsing every other turn as the human did.
+
+What v0.10 does:
+1. AI/Brain/Strategy.cs: EstimateSalvo (per weapon id: cover = K/(K+CoverHalf) capped 0.9 from remembered counter-defenses; observed interceptions of our shots blended in; rolls = intel energy x 0.5 / 150, unlimited when energy is hidden; passing = shots - min(rolls, eligible) x chance). Decide: fire when passing >= 12 and >= 45% of the salvo and the pulse (StrikeEvery 2) allows, or at once when >= 70% gets through; fallback after MaxHoldTurns 5 held; commit to the enemy with max score x passing.
+2. AI/StrategyPatches.cs: decides once per AI turn at the end of EconomyPatches.CoreBeginTurnPostfix (after Ledger.Roll and the enemy defense memory update), then points every gravity weapon at the committed enemy via AiPatches.AssignTargets (native AIWeaponTargeting.BeginTurn already ran; trajectory search starts in Update). Latest decision per player is read without a turn key; cleared at the start of the economy postfix.
+3. Hold turns: DirectorPatches.StartConstruction adds AIResources.EnergyUpkeep/MaterialUpkeep back to Resources and to ConstructionQueue.AllottedEnergy/Material; AiPatches.GoalTargetWeaponsPrefix empties m_hittingWeapons/m_missingWeapons so TargetWeapons fires nothing.
+4. The new-save backstop (ResetMatchMemory when the turn goes backwards) moved from the targeting body into TargetingBeginTurnPostfix (runs before the economy postfix).
+5. Economy: MaterialGlut (turn-start material >= 3 x turn-start energy and >= 5000) -> weights energy 1, material 0.25, and material cost x0.25 in EconomyDirector.Score/Best.
+6. Research plan: 4th Gen Reactors + Lossless Energy Transfer (unlocks pro_EnergyYieldLongGlobal1, x1.3 global energy for 6 turns per city) at #6-7, 2nd Gen + Maglev at #8-9; v0.9 default migrates. WarFromTurn 15 -> 20, ScienceMaxMultiplier 4 -> 2.5 via the ConfigMigratedTo chain ("0.5" -> "0.10").
+
+Check with file:line evidence (decompiled/ is the game source):
+A. Hold-fire correctness: is AIWeaponTargetingGoal.TargetWeapons the only path that fires AI weapons (lasers aside)? Can anything else fire them or charge firing energy (PlayerWeaponHandler, AIWeaponTargeting.EndTurn/FinalEndTurn, TargetWeapons.UpdateEndTurn, superweapons, guided missiles)? If the released energy is spent and a weapon still fires, what happens?
+B. Turn order: confirm AICore.BeginTurn -> modules BeginTurn (AIWeaponTargeting) -> our postfix -> later construction (tryConstructNewBuilding) and EndTurn firing. Is re-pointing TargetEnemy after AIWeaponTargeting.BeginTurn safe for AIGravityTrajectoryWeapon (TargetData, AngleToTarget, any cached search state)? Non-gravity (guided) weapons keep random native targets: does that matter?
+C. Is the "latest decision without a turn key" safe? Could a stale decision apply (save/load, a missed turn start, eliminated players, CurrentTurn changing between BeginTurn and EndTurn)?
+D. Releasing AIResources upkeep: does anything else (native modules, AIResources consumers, the superweapon savings logic, the defense reserve) depend on Resources.Energy staying net of upkeep? Is ConstructionQueue.AllottedEnergy the right counterpart?
+E. Salvo model: is it fair (only intel-visible energy, remembered defenses, our own observed shots)? Are the defaults sane against the v0.9.1 numbers (human 16-19 Kinetic at T22, ~6k energy; AIs 27-34 Kinetic)? Risks: never firing, firing too early, committing to an unreachable enemy.
+F. Material glut: any path where it starves needed material (superweapon bank, defenses) or flips mid-turn?
+G. Config migration chain and research plan: correct and complete?
+H. Tests (AI/Tests/Program.cs, 250 checks; mutation-checked): what is still untested that could break in play?
+
+Output: verdict (ship / fix first), findings ranked High/Medium/Low with file:line and a concrete fix, then "checked and fine". Under 1,200 words.

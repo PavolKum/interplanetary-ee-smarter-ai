@@ -1,0 +1,996 @@
+diff --git a/AI/Brain/Director.cs b/AI/Brain/Director.cs
+index bc32a92..f74a35c 100644
+--- a/AI/Brain/Director.cs
++++ b/AI/Brain/Director.cs
+@@ -50,6 +50,8 @@ namespace InterplanetaryAI.Brain
+         public int MaterialBudget;    // usable material left this turn
+         public bool EnergyPush;       // e.g. superweapon material saved, energy short
+         public float ScienceWeight = 1f; // science per turn valued against energy/material per turn
++        public bool MaterialGlut;     // v0.10: more material banked than energy can turn into anything
++        public float GlutMaterialWeight = 0.25f;
+     }
+ 
+     public sealed class WeaponStats
+@@ -68,7 +70,14 @@ namespace InterplanetaryAI.Brain
+         public static void Weights(EconomyBalance b, out float energyWeight, out float materialWeight)
+         {
+             float wantedEnergy = b.TargetRatio * b.MaterialIncome + b.WeaponUpkeep;
+-            if (b.EnergyPush || b.EnergyIncome < wantedEnergy)
++            if (b.MaterialGlut)
++            {
++                // v0.10: v0.9.1 Guts banked 15-37k material from T19 while energy-bound, and still preferred material
++                // gains (energy income sat just above 0.6 x material income + upkeep).
++                energyWeight = 1f;
++                materialWeight = b.GlutMaterialWeight;
++            }
++            else if (b.EnergyPush || b.EnergyIncome < wantedEnergy)
+             {
+                 energyWeight = 1f;
+                 materialWeight = 0.5f;
+@@ -86,26 +95,34 @@ namespace InterplanetaryAI.Brain
+             return b.MaterialBudget >= 1.3f * b.EnergyBudget ? 1f : 0.3f;
+         }
+ 
+-        public static float Score(EconOption o, float energyWeight, float materialWeight, float energyCostFactor, float scienceWeight = 1f)
++        public static float Score(EconOption o, float energyWeight, float materialWeight, float energyCostFactor, float scienceWeight = 1f,
++            float materialCostFactor = 1f)
+         {
+             float value = energyWeight * o.EnergyGain + materialWeight * o.MaterialGain + scienceWeight * o.ScienceGain;
+-            float cost = o.Material + energyCostFactor * o.Energy;
++            float cost = materialCostFactor * o.Material + energyCostFactor * o.Energy;
+             return value / Math.Max(1f, cost);
+         }
+ 
++        // v0.10: material is in glut when the banked stock is several turns of what this turn's energy can spend.
++        public static bool IsMaterialGlut(int materialStock, int energyBudget, float ratio, int minimum)
++        {
++            return materialStock >= minimum && materialStock >= ratio * Math.Max(1, energyBudget);
++        }
++
+         // The best affordable option with a positive score, or null.
+         public static EconOption Best(IList<EconOption> options, EconomyBalance b, int slotsLeft)
+         {
+             float wE, wM;
+             Weights(b, out wE, out wM);
+             float eFactor = EnergyCostFactor(b);
++            float mFactor = b.MaterialGlut ? b.GlutMaterialWeight : 1f;
+             EconOption best = null;
+             float bestScore = 0f;
+             foreach (EconOption o in options)
+             {
+                 if (o.Energy > b.EnergyBudget || o.Material > b.MaterialBudget) continue;
+                 if (o.NeedsSlot && slotsLeft <= 0) continue;
+-                float score = Score(o, wE, wM, eFactor, b.ScienceWeight);
++                float score = Score(o, wE, wM, eFactor, b.ScienceWeight, mFactor);
+                 if (score > bestScore)
+                 {
+                     best = o;
+diff --git a/AI/Brain/Strategy.cs b/AI/Brain/Strategy.cs
+new file mode 100644
+index 0000000..0630048
+--- /dev/null
++++ b/AI/Brain/Strategy.cs
+@@ -0,0 +1,164 @@
++using System;
++using System.Collections.Generic;
++
++namespace InterplanetaryAI.Brain
++{
++    // v0.10 strategy: when to fire and at whom. Facts behind it (v0.9.1 playtest, Sol strategy review):
++    //  - Unfired weapons cost nothing, but the native AI reserves every weapon's firing energy before it builds
++    //    (AIResources.BeginTurn). From T18 Guts spent ~35% of its energy income on firing into defenses that
++    //    intercepted ~90%, and ended every turn with 15-37k material it could not use.
++    //  - The human built 11 -> 51 Railguns from T22 without firing (T23-27), then fired every other turn
++    //    (T28 100 shots, T30 109) and invested on the turns between.
++    //  - A defense in range intercepts ~80-90%, and every roll costs the defender 100-200 energy: a salvo larger
++    //    than the rolls the target can pay for gets through (saturation).
++    // So: hold fire (and give the reserved energy to construction) until a salvo at one committed target is
++    // expected to get enough shots through; then strike, and pulse.
++
++    public sealed class SalvoTarget
++    {
++        public int PlayerId;
++        public string Name;
++        public float Score;                        // TargetPlanner score (leader / grudge / finish)
++        public Dictionary<string, int> Defenses;   // defense building id -> count, as seen or remembered
++        public bool EnergyKnown;                   // our intel reads its energy production
++        public float EnergyProduction;
++        public int ObservedImpacts;                // our recent shots that reached it (DefenseLedger window)
++        public int ObservedIntercepted;
++
++        // outputs
++        public float Passing;      // expected shots through its defenses
++        public float Eligible;     // shots expected to meet a defense in range
++        public float Rolls;        // defense rolls it can pay for (float.MaxValue when unknown)
++        public float Value;        // Score x Passing
++    }
++
++    public sealed class StrategySettings
++    {
++        public float CoverHalf = 12f;          // defenses at which half of the shots meet one in range
++        public float MaxCover = 0.9f;
++        public float RollEnergyShare = 0.5f;   // share of its energy income a defender has left for rolls
++        public float RollCost = 150f;          // energy per defense roll
++        public float MinPassingShots = 12f;    // strike when at least this many shots are expected through...
++        public float MinPassShare = 0.45f;     // ...and at least this share of the salvo
++        public float BrokenPassShare = 0.7f;   // defenses this broken: strike again without waiting for the pulse
++        public int StrikeEvery = 2;            // turns between strikes (2 = every other turn, as the human)
++        public int MaxHoldTurns = 5;           // at war with weapons, never hold longer than this
++        public int MinWeapons = 6;             // fewer weapons than this: keep building, do not fire
++        public int ObservedMinImpacts = 10;    // our own shots at a target before they correct the coverage guess
++        public float ObservedPriorWeight = 20f; // impacts' worth of weight on the modelled coverage
++        public float DefaultChance = 0.8f;     // intercept chance assumed for defenses we have not seen
++    }
++
++    public sealed class StrategyDecision
++    {
++        public bool Fire;
++        public int CommitTargetId = -1;
++        public string Reason = "";
++        public int Shots;
++        public float Passing;
++        public float PassShare;
++        public List<SalvoTarget> Targets = new List<SalvoTarget>();
++    }
++
++    public static class Strategy
++    {
++        // Expected shots through one target's defenses. counters: defense id -> (weapon id -> intercept chance).
++        public static void EstimateSalvo(IDictionary<string, int> shotsByWeapon, SalvoTarget target,
++            Dictionary<string, Dictionary<string, float>> counters, StrategySettings s)
++        {
++            float total = 0f, eligible = 0f, weightedChance = 0f;
++            foreach (KeyValuePair<string, int> shots in shotsByWeapon)
++            {
++                if (shots.Value <= 0) continue;
++                total += shots.Value;
++                int defenses = 0;
++                float chance = 0f;
++                if (target.Defenses != null)
++                {
++                    foreach (KeyValuePair<string, int> defense in target.Defenses)
++                    {
++                        Dictionary<string, float> stops;
++                        float p;
++                        if (defense.Value <= 0 || !counters.TryGetValue(defense.Key, out stops) || !stops.TryGetValue(shots.Key, out p) || p <= 0f) continue;
++                        defenses += defense.Value;
++                        chance = Math.Max(chance, p);
++                    }
++                }
++                if (defenses == 0) continue;
++                float cover = Math.Min(s.MaxCover, defenses / (defenses + Math.Max(1e-3f, s.CoverHalf)));
++                float e = shots.Value * cover;
++                eligible += e;
++                weightedChance += e * chance;
++            }
++            float averageChance = eligible > 0f ? weightedChance / eligible : 0f;
++            // Our own shots at it correct the guessed coverage (defenses we never saw, better placement than assumed).
++            // Past salvos that saturated its rolls understate coverage; the prior weight keeps a few shots from deciding.
++            if (target.ObservedImpacts >= Math.Max(1, s.ObservedMinImpacts) && total > 0f)
++            {
++                float n = target.ObservedImpacts;
++                float chance = averageChance > 0f ? averageChance : s.DefaultChance;
++                float observedCover = Math.Min(s.MaxCover, target.ObservedIntercepted / n / Math.Max(1e-3f, chance));
++                float modelCover = eligible / total;
++                float cover = (s.ObservedPriorWeight * modelCover + n * observedCover) / (s.ObservedPriorWeight + n);
++                eligible = cover * total;
++                averageChance = chance;
++            }
++            target.Rolls = target.EnergyKnown ? Math.Max(0f, target.EnergyProduction) * s.RollEnergyShare / Math.Max(1f, s.RollCost) : float.MaxValue;
++            float intercepted = Math.Min(target.Rolls, eligible) * averageChance;
++            target.Eligible = eligible;
++            target.Passing = Math.Max(0f, total - intercepted);
++            target.Value = target.Score * target.Passing;
++        }
++
++        // lastStrikeTurn: last turn we fired (-1000 never); holdTurns: consecutive war turns held with weapons.
++        public static StrategyDecision Decide(int turn, bool war, IDictionary<string, int> shotsByWeapon, IList<SalvoTarget> targets,
++            Dictionary<string, Dictionary<string, float>> counters, int lastStrikeTurn, int holdTurns, StrategySettings s)
++        {
++            StrategyDecision d = new StrategyDecision();
++            foreach (int n in shotsByWeapon.Values) d.Shots += Math.Max(0, n);
++            SalvoTarget best = null;
++            foreach (SalvoTarget t in targets)
++            {
++                EstimateSalvo(shotsByWeapon, t, counters, s);
++                d.Targets.Add(t);
++                if (best == null || t.Value > best.Value) best = t;
++            }
++            if (best == null || d.Shots == 0)
++            {
++                d.Reason = "no-weapons";
++                return d;
++            }
++            d.CommitTargetId = best.PlayerId;
++            d.Passing = best.Passing;
++            d.PassShare = best.Passing / d.Shots;
++            if (!war)
++            {
++                d.Reason = "peace";
++                return d;
++            }
++            if (d.Shots < s.MinWeapons)
++            {
++                d.Reason = "building";
++                return d;
++            }
++            bool saturated = d.Passing >= s.MinPassingShots && d.PassShare >= s.MinPassShare;
++            bool pulseReady = turn - lastStrikeTurn >= Math.Max(1, s.StrikeEvery);
++            bool broken = d.PassShare >= s.BrokenPassShare && d.Passing >= s.MinPassingShots;
++            if (saturated && (pulseReady || broken))
++            {
++                d.Fire = true;
++                d.Reason = pulseReady ? "saturated" : "broken";
++            }
++            else if (holdTurns >= s.MaxHoldTurns && pulseReady)
++            {
++                d.Fire = true;
++                d.Reason = "max-hold";
++            }
++            else
++            {
++                d.Reason = saturated ? "pulse-wait" : "below-saturation";
++            }
++            return d;
++        }
++    }
++}
+diff --git a/AI/Brain/TargetPlanner.cs b/AI/Brain/TargetPlanner.cs
+index dee49b8..f51c972 100644
+--- a/AI/Brain/TargetPlanner.cs
++++ b/AI/Brain/TargetPlanner.cs
+@@ -16,6 +16,8 @@ namespace InterplanetaryAI.Brain
+         public float CityPopulation; // total city population when our intel shows it; a city's durability (ruined at 0)
+         public int VisibleCities;    // 0 = nothing known, so no finish-off bonus
+         public float Grudge;         // decayed damage this enemy dealt to us
++        public bool EnergyKnown;     // v0.10: our intel reads its energy production (pays for its defense rolls)
++        public float EnergyProduction;
+ 
+         // outputs, filled by Score()
+         public float Score;
+@@ -88,7 +90,9 @@ namespace InterplanetaryAI.Brain
+         // Returns, for each weapon, an index into enemies. The first FocusShare of weapons go at the
+         // top-scored enemy; the rest draw at random weighted by score. A weapon that failed to find
+         // any trajectory onto its target recently is moved to the best enemy it can still reach.
+-        public static int[] Assign(IList<EnemyView> enemies, IList<WeaponSlot> weapons, PlannerSettings settings, Random rng)
++        // v0.10: commitIndex >= 0 sends every weapon at that enemy (a strike), each falling back to the best
++        // enemy it can still reach. v0.9.1: split fire put 55% of assignments on the other AI.
++        public static int[] Assign(IList<EnemyView> enemies, IList<WeaponSlot> weapons, PlannerSettings settings, Random rng, int commitIndex = -1)
+         {
+             int[] result = new int[weapons.Count];
+             if (enemies.Count == 0)
+@@ -100,6 +104,13 @@ namespace InterplanetaryAI.Brain
+             List<int> byScore = new List<int>();
+             for (int i = 0; i < enemies.Count; i++) byScore.Add(i);
+             byScore.Sort((a, b) => enemies[b].Score.CompareTo(enemies[a].Score));
++            if (commitIndex >= 0 && commitIndex < enemies.Count)
++            {
++                byScore.Remove(commitIndex);
++                byScore.Insert(0, commitIndex); // fallbacks after the committed target, best score first
++                for (int w = 0; w < weapons.Count; w++) result[w] = ReachableOrBest(commitIndex, byScore, enemies, weapons[w]);
++                return result;
++            }
+             int top = byScore[0];
+ 
+             float topScore = enemies[top].Score;
+diff --git a/AI/DirectorPatches.cs b/AI/DirectorPatches.cs
+index 18003bd..ab776ab 100644
+--- a/AI/DirectorPatches.cs
++++ b/AI/DirectorPatches.cs
+@@ -88,6 +88,9 @@ namespace InterplanetaryAI
+             public int IntelBuildings;
+             public int IntelThisTurn;
+             public int DefenseReserve;
++            public int ReleasedEnergy;    // v0.10: firing reservation given to construction on a hold-fire turn
++            public bool HoldingFire;
++            public bool MaterialGlut;
+             // across turns
+             public int WaterCooldownUntil;
+         }
+@@ -356,6 +359,21 @@ namespace InterplanetaryAI
+             d.EnergyIncome = res.EnergyProductionPerTurn;
+             d.MaterialIncome = res.PlanetMaterial > 0 ? res.MaterialProductionPerTurn : 0;
+             d.Upkeep = core.Resources.EnergyUpkeep;
++            // v0.10 hold fire: the game reserved every weapon's firing cost (AIResources.BeginTurn), but nothing fires
++            // this turn (StrategyPatches), so construction gets it. v0.9.1: ~35% of income sat in that reservation.
++            if (StrategyPatches.HoldFire(core.PlayerData.PlayerID))
++            {
++                int energyBack = Math.Max(0, core.Resources.EnergyUpkeep);
++                int materialBack = Math.Max(0, core.Resources.MaterialUpkeep);
++                core.Resources.Energy += energyBack;
++                core.Resources.Material += materialBack;
++                core.Construction.ConstructionQueue.AllottedEnergy += energyBack;
++                core.Construction.ConstructionQueue.AllottedMaterial += materialBack;
++                d.ReleasedEnergy = energyBack;
++                d.HoldingFire = true;
++                d.TurnStartEnergy = core.Resources.Energy;
++                d.TurnStartMaterial = core.Resources.Material;
++            }
+             // v0.4: at war, keep energy back for our defense rolls (each costs the defender 100-200 energy from
+             // what is left that turn; PlayerDefenseHandler.IsHitIntercepted). v0.3 spent it all.
+             if (d.War)
+@@ -696,7 +714,11 @@ namespace InterplanetaryAI
+                 MaterialBudget = core.Resources.Material,
+                 EnergyPush = economy.EnergyPush,
+                 ScienceWeight = d.ScienceWeight,
++                // Turn-start stock against turn-start energy: spending during the turn must not flip it.
++                MaterialGlut = Plugin.MaterialGlutRatio.Value > 0f
++                    && EconomyDirector.IsMaterialGlut(d.TurnStartMaterial, d.TurnStartEnergy, Plugin.MaterialGlutRatio.Value, Plugin.MaterialGlutMin.Value),
+             };
++            d.MaterialGlut = balance.MaterialGlut;
+             for (int attempt = 0; attempt < 6; attempt++)
+             {
+                 EconOption best = EconomyDirector.Best(options, balance, d.SlotsLeft);
+@@ -1613,6 +1635,7 @@ namespace InterplanetaryAI
+                 .Str("observedPass", ObservedPassText(d.ObservedPass))
+                 .Int("upgradesInstalled", upgradesInstalled).Str("weaponTarget", d.TargetName).Map("targetDefenses", d.TargetDefenses)
+                 .Int("intelBuildings", d.IntelBuildings + d.IntelThisTurn).Int("blindEnemies", d.BlindEnemies).Int("defenseReserve", d.DefenseReserve)
++                .Bool("holdingFire", d.HoldingFire).Int("releasedEnergy", d.ReleasedEnergy).Bool("materialGlut", d.MaterialGlut)
+                 .Int("refunds", d.Refunds).Map("placementFailures", d.PlacementFailures).Int("steps", d.Steps)
+                 .Map("queued", d.Actions).ToString());
+         }
+diff --git a/AI/EconomyPatches.cs b/AI/EconomyPatches.cs
+index 355abd3..3d019f3 100644
+--- a/AI/EconomyPatches.cs
++++ b/AI/EconomyPatches.cs
+@@ -83,6 +83,7 @@ namespace InterplanetaryAI
+         private static void CoreBeginTurnPostfix(AICore __instance)
+         {
+             if (!Plugin.Active || !__instance.PlayerData.AIPlayer) return;
++            StrategyPatches.ClearDecision(__instance.PlayerData.PlayerID); // a failure below must not leave last turn's hold
+             try
+             {
+                 AICore core = __instance;
+@@ -214,6 +215,9 @@ namespace InterplanetaryAI
+                 state.ReservedMaterial = reserveMaterial;
+ 
+                 LogEconomy(core, turn, state, stockEnergy, stockMaterial, ownEconomy, maxEnemyEconomy, recentDamage);
++                // v0.10: fire or hold, and at whom; before the director so construction knows whether the firing
++                // reservation is free this turn.
++                StrategyPatches.BeginTurn(core, state, recentDamage, turn);
+                 if (Plugin.DirectorEnabled.Value) DirectorPatches.BeginTurn(core, state, recentDamage, turn);
+             }
+             catch (Exception e)
+diff --git a/AI/Patches.cs b/AI/Patches.cs
+index 2ba843c..63367db 100644
+--- a/AI/Patches.cs
++++ b/AI/Patches.cs
+@@ -57,6 +57,30 @@ namespace InterplanetaryAI
+         private static void TargetingBeginTurnPostfix(AIWeaponTargeting __instance)
+         {
+             if (!Plugin.Active || !Plugin.SmartTargeting.Value) return;
++            try
++            {
++                AICore core = (AICore)s_moduleCore.GetValue(__instance);
++                if (core == null || !core.PlayerData.AIPlayer) return;
++                // Backstop for the Initialize reset: the init-time turn value is not proven fresh, but the first targeting
++                // of a new match or an earlier save always shows the turn going backwards. Runs here, before this turn's
++                // economy and strategy state are built (EconomyPatches.CoreBeginTurnPostfix), never after.
++                int turn = GameManager.CurrentTurn;
++                if (turn < Plugin.LastTurnSeen) Plugin.ResetMatchMemory();
++                Plugin.LastTurnSeen = turn;
++            }
++            catch (Exception e)
++            {
++                ReportOnce("targeting-reset", e);
++            }
++            // v0.10: with the strategy on, targets are assigned once it has decided (StrategyPatches.BeginTurn, later in
++            // the same AICore.BeginTurn), so a strike commits every weapon to one enemy.
++            if (Plugin.StrategyEnabled.Value) return;
++            AssignTargets(__instance, -1);
++        }
++
++        // commitPlayerId >= 0: every weapon at that enemy (each falling back to one it can reach); -1: the v0.9 split plan.
++        internal static void AssignTargets(AIWeaponTargeting __instance, int commitPlayerId)
++        {
+             PlayerData logMe = null;
+             List<EnemyView> logEnemies = null;
+             int[] countByEnemy = null;
+@@ -70,10 +94,6 @@ namespace InterplanetaryAI
+                 if (planets == null || planets.Count == 0) return;
+ 
+                 int turn = GameManager.CurrentTurn;
+-                // Backstop for the Initialize reset: the init-time turn value is not proven fresh, but the
+-                // first targeting of a new match or an earlier save always shows the turn going backwards.
+-                if (turn < Plugin.LastTurnSeen) Plugin.ResetMatchMemory();
+-                Plugin.LastTurnSeen = turn;
+                 PlayerData me = core.PlayerData;
+                 List<EnemyView> enemies = new List<EnemyView>();
+                 foreach (CelestialBody planet in planets)
+@@ -94,8 +114,10 @@ namespace InterplanetaryAI
+                 }
+                 if (slots.Count == 0) return;
+ 
++                int commitIndex = -1;
++                for (int i = 0; i < enemies.Count; i++) if (commitPlayerId >= 0 && enemies[i].PlayerId == commitPlayerId) commitIndex = i;
+                 // The whole plan is computed above; only plain assignments from here on.
+-                int[] plan = TargetPlanner.Assign(enemies, slots, Plugin.Planner, Plugin.Rng);
++                int[] plan = TargetPlanner.Assign(enemies, slots, Plugin.Planner, Plugin.Rng, commitIndex);
+                 countByEnemy = new int[enemies.Count];
+                 for (int i = 0; i < plan.Length; i++)
+                 {
+@@ -143,6 +165,11 @@ namespace InterplanetaryAI
+             {
+                 bool intelOff = GameSessionManager.CurrentGameSettings.Intelligence != 1;
+                 int intel = ours.Intel;
++                if (intelOff || intel >= theirs.EnergyStealth)
++                {
++                    view.EnergyKnown = true;
++                    view.EnergyProduction = Math.Max(0, theirs.EnergyProduction);
++                }
+                 if (intelOff || (intel >= theirs.EnergyStealth && intel >= theirs.MaterialStealth))
+                 {
+                     view.EconomyKnown = true;
+@@ -220,6 +247,24 @@ namespace InterplanetaryAI
+             __state = !__instance.AreWeaponsTargeted;
+             if (!__state || !Plugin.Active) return;
+             try
++            {
++                // v0.10 hold fire: nothing in the firing lists, nothing fired, no firing energy charged (the reserved
++                // energy went to construction this turn).
++                AICore holder = (AICore)s_goalCore.GetValue(__instance);
++                if (holder != null && StrategyPatches.HoldFire(holder.PlayerData.PlayerID))
++                {
++                    List<AITrajectoryWeapon> holdHitting = (List<AITrajectoryWeapon>)s_goalHitting.GetValue(__instance);
++                    List<AITrajectoryWeapon> holdMissing = (List<AITrajectoryWeapon>)s_goalMissing.GetValue(__instance);
++                    if (holdHitting != null) holdHitting.Clear();
++                    if (holdMissing != null) holdMissing.Clear();
++                    return;
++                }
++            }
++            catch (Exception e)
++            {
++                ReportOnce("hold-fire", e);
++            }
++            try
+             {
+                 if (Plugin.RefreshFiringList.Value) __instance.DetermineShootingWeapons();
+                 List<AITrajectoryWeapon> missing = (List<AITrajectoryWeapon>)s_goalMissing.GetValue(__instance);
+diff --git a/AI/Plugin.cs b/AI/Plugin.cs
+index ecea867..3537164 100644
+--- a/AI/Plugin.cs
++++ b/AI/Plugin.cs
+@@ -22,7 +22,7 @@ namespace InterplanetaryAI
+     {
+         public const string GUID = "pavol.interplanetary.ai";
+         public const string NAME = "Interplanetary EE: Smarter AI";
+-        public const string VERSION = "0.9.1";
++        public const string VERSION = "0.10.0";
+ 
+         internal static ManualLogSource Log;
+ 
+@@ -89,6 +89,18 @@ namespace InterplanetaryAI
+         internal static ConfigEntry<float> WeaponUpgradeShare;
+         internal static ConfigEntry<float> WeaponUpgradeMinGain;
+         internal static ConfigEntry<float> PopulationDamageWeight;
++        internal static ConfigEntry<float> MaterialGlutRatio;
++        internal static ConfigEntry<int> MaterialGlutMin;
++        internal static ConfigEntry<bool> StrategyEnabled;
++        internal static ConfigEntry<int> StrikeEvery;
++        internal static ConfigEntry<float> MinPassingShots;
++        internal static ConfigEntry<float> MinPassShare;
++        internal static ConfigEntry<float> BrokenPassShare;
++        internal static ConfigEntry<int> MaxHoldTurns;
++        internal static ConfigEntry<int> MinWeapons;
++        internal static ConfigEntry<float> CoverHalf;
++        internal static ConfigEntry<float> RollEnergyShare;
++        internal static readonly StrategySettings StrategyCfg = new StrategySettings();
+ 
+         internal static readonly BuildWeights Build = new BuildWeights();
+         internal static List<string> SuperweaponIds = new List<string>();
+@@ -99,7 +111,22 @@ namespace InterplanetaryAI
+         // science project (Quantum Computing), Kinetic and Ion defense on the way.
+         // v0.9: science (Quantum Computing, Ultracapacitors) and weapon-upgrade techs (Uranium Alloys, Zero Reluctance
+         // Engineering, Magnetic Saturation Elimination) moved up; Railgun population damage was 31st of 38.
++        // v0.10: 4th Gen Nuclear Reactors and Lossless Energy Transfer (Reactor Trials: x1.3 global energy per city
++        // project) moved from #30-31 to #6-7; the human had them by T15, the AIs never reached them in v0.9.1.
++        // Kinetic Defense (2nd Gen Composites -> Maglev Servos) right after them at #8-9 (v0.9: #12), Plasma Channel
++        // Induction (Ion) at #15 ahead of the weapon-upgrade techs.
+         private const string DefaultResearchPlan =
++            "tec_MassBiochemicalProcessing,tec_MolecularRecycling,tec_SmartGrids,tec_SuperTensileMaterials,tec_QuantumComputing,"
++            + "tec_4thGenNuclearReactors,tec_LosslessEnergyTransfer,tec_2ndGenComposites,tec_MaglevServos,tec_SelfAdjustingOptics,"
++            + "tec_AdvancedSignalProcessing,tec_Nanostructuring,tec_MicrowaveEnergyTranmission,tec_OrbitalAssembly,tec_PlasmaChannelInduction,"
++            + "tec_UraniumAlloys,tec_Ultracapacitors,tec_MagneticRadiationShielding,tec_EmDrives,tec_ThermonuclearWarheads,"
++            + "tec_ExperimentalMatterControl,tec_InductionCoils,tec_ZeroReluctanceEngineering,tec_MagneticSaturationElimination,tec_RoboticMining,"
++            + "tec_EarlyWarningAI,tec_Metamaterials,tec_DesignerNanomaterials,tec_VerticalFarming,tec_QuantumCommunications,"
++            + "tec_AtmosphericInterferenceMitigation,tec_CompositeHeatCells,tec_Octaazacubane,tec_AdvancedGenetics,tec_SelfHealingMaterials,"
++            + "tec_AITargetTracking,tec_MultiChainedStages,tec_GammaRayLasers,tec_MassDrivers";
++
++        // v0.9 default, replaced on load if the config still holds it unchanged.
++        private const string V09ResearchPlan =
+             "tec_MassBiochemicalProcessing,tec_MolecularRecycling,tec_SmartGrids,tec_SuperTensileMaterials,tec_SelfAdjustingOptics,"
+             + "tec_AdvancedSignalProcessing,tec_QuantumComputing,tec_UraniumAlloys,tec_Nanostructuring,tec_MicrowaveEnergyTranmission,"
+             + "tec_2ndGenComposites,tec_MaglevServos,tec_OrbitalAssembly,tec_Ultracapacitors,tec_PlasmaChannelInduction,"
+@@ -227,10 +254,11 @@ namespace InterplanetaryAI
+                 "Research the Plan list in order (prerequisites are queued automatically) instead of the native random focus. Native research resumes when the plan is done.");
+             ResearchPlan = Config.Bind("Research", "Plan", DefaultResearchPlan,
+                 "Tech IDs in order. Default (v0.3): the human's order from the 31 Oct 2026 win, economy first (material and energy projects, yield upgrades, Offshore Mine, Floating Plant), then the Nuclear Missile line, then the rest.");
+-            if (ResearchPlan.Value == V02ResearchPlan || ResearchPlan.Value == V03ResearchPlan || ResearchPlan.Value == V04ResearchPlan)
++            if (ResearchPlan.Value == V02ResearchPlan || ResearchPlan.Value == V03ResearchPlan || ResearchPlan.Value == V04ResearchPlan
++                || ResearchPlan.Value == V09ResearchPlan)
+             {
+                 ResearchPlan.Value = DefaultResearchPlan;
+-                Log.LogInfo("Research plan: replaced an unchanged older default with the v0.4 default.");
++                Log.LogInfo("Research plan: replaced an unchanged older default with the v0.10 default.");
+             }
+             if (Math.Abs(GrudgeWeight.Value - 0.6f) < 1e-4f)
+             {
+@@ -252,17 +280,31 @@ namespace InterplanetaryAI
+             UnpoweredPlantsPerTurn = Config.Bind("Director", "UnpoweredPlantsPerTurn", 5, "Most power plants built per turn to connect unpowered buildings.");
+             ScienceWeight = Config.Bind("Director", "ScienceWeight", 1.5f, "Science per turn valued against energy/material per turn when choosing projects and upgrades (base; raised while research is behind).");
+             ScienceTargetTurn = Config.Bind("Director", "ScienceTargetTurn", 40, "Turn by which the research plan should be done; science is valued more while the pace falls short.");
+-            ScienceMaxMultiplier = Config.Bind("Director", "ScienceMaxMultiplier", 4f, "Most the science weight is raised when research is behind schedule.");
++            ScienceMaxMultiplier = Config.Bind("Director", "ScienceMaxMultiplier", 2.5f, "Most the science weight is raised when research is behind schedule.");
+             WeaponUpgradesEnabled = Config.Bind("Director", "WeaponUpgrades", true, "At war, buy weapon upgrades that raise damage per firing energy (population damage weighted).");
+             WeaponUpgradesPerTurn = Config.Bind("Director", "WeaponUpgradesPerTurn", 6, "Most weapon upgrades queued in one turn.");
+             WeaponUpgradeShare = Config.Bind("Director", "WeaponUpgradeShare", 0.3f, "Most of a turn's starting material spent on weapon upgrades.");
+             WeaponUpgradeMinGain = Config.Bind("Director", "WeaponUpgradeMinGain", 0.15f, "Smallest gain in damage per firing energy worth an upgrade (0.15 = +15%).");
+             PopulationDamageWeight = Config.Bind("Director", "PopulationDamageWeight", 1.5f, "Population damage valued against building damage when judging weapons (cities at 0 population decide the game).");
++            MaterialGlutRatio = Config.Bind("Director", "MaterialGlutRatio", 3f,
++                "v0.10: material counts as in glut once the banked stock is this many times the turn's energy budget; energy gains then count fully, material gains and material cost at 0.25. 0 = off.");
++            MaterialGlutMin = Config.Bind("Director", "MaterialGlutMin", 5000, "Smallest material stock that counts as glut.");
++
++            StrategyEnabled = Config.Bind("Strategy", "Enabled", true,
++                "v0.10: hold fire (and give the firing energy the game reserves to construction) until a salvo at one committed target is expected to get enough shots through its defenses; then strike, at most every StrikeEvery turns. Off = fire every turn, split targets (v0.9).");
++            StrikeEvery = Config.Bind("Strategy", "StrikeEvery", 2, "Turns between strikes (2 = every other turn, as the human who won).");
++            MinPassingShots = Config.Bind("Strategy", "MinPassingShots", 12f, "Strike when at least this many shots are expected through the target's defenses...");
++            MinPassShare = Config.Bind("Strategy", "MinPassShare", 0.45f, "...and at least this share of the salvo.");
++            BrokenPassShare = Config.Bind("Strategy", "BrokenPassShare", 0.7f, "Expected pass share at which the target counts as broken: strike again without waiting for the pulse.");
++            MaxHoldTurns = Config.Bind("Strategy", "MaxHoldTurns", 5, "At war with weapons, never hold fire longer than this many turns in a row.");
++            MinWeapons = Config.Bind("Strategy", "MinWeapons", 6, "Fewer weapons than this: keep building, do not fire.");
++            CoverHalf = Config.Bind("Strategy", "CoverHalf", 12f, "Defenses at which half of our shots are assumed to meet one in range (corrected by our observed shots).");
++            RollEnergyShare = Config.Bind("Strategy", "RollEnergyShare", 0.5f, "Share of a target's energy income assumed left for its defense rolls (150 energy each).");
+ 
+             DirectorEnabled = Config.Bind("Director", "Enabled", true,
+                 "v0.3 economy director: replaces the native construction choice. Buys yield upgrades and city projects first, keeps energy income near EnergyToMaterialTarget x material income, places water buildings properly, holds weapons until WarFromTurn, and counters visible enemy weapons with defenses. Off = the v0.2 build planner.");
+-            WarFromTurn = Config.Bind("Director", "WarFromTurn", 15,
+-                "Turn from which the AI builds weapons (the human who won built none until ~25). Before it, only retaliation after heavy damage.");
++            WarFromTurn = Config.Bind("Director", "WarFromTurn", 20,
++                "Turn from which the AI builds weapons (v0.9.1: the human built its first at T22). Before it, only retaliation after heavy damage. Firing is decided by [Strategy].");
+             WarDamageTrigger = Config.Bind("Director", "WarDamageTrigger", 600f,
+                 "Recent damage taken that starts retaliation before WarFromTurn.");
+             WarUpkeepShare = Config.Bind("Director", "WarUpkeepShare", 0.4f,
+@@ -289,6 +331,21 @@ namespace InterplanetaryAI
+                 }
+                 migrated.Value = "0.5";
+             }
++            // Ordinal compare puts "0.10" before "0.5", so later migrations chain on equality.
++            if (migrated.Value == "0.5")
++            {
++                if (WarFromTurn.Value == 15)
++                {
++                    WarFromTurn.Value = 20; // v0.10: the human built its first weapons at T22; grow first
++                    Log.LogInfo("WarFromTurn: replaced the unchanged default 15 with 20 (once).");
++                }
++                if (Math.Abs(ScienceMaxMultiplier.Value - 4f) < 1e-4f)
++                {
++                    ScienceMaxMultiplier.Value = 2.5f; // v0.9.1: a weight ~3 from T15 cut the AIs' T15 energy to 3.0k
++                    Log.LogInfo("ScienceMaxMultiplier: replaced the unchanged default 4 with 2.5 (once).");
++                }
++                migrated.Value = "0.10";
++            }
+             DefensesPerTurn = Config.Bind("Director", "DefensesPerTurn", 3,
+                 "Defenses queued per turn when on target; more when behind (see DefenseCatchUpTurns).");
+             DefenseFloorShare = Config.Bind("Director", "DefenseFloorShare", 0.15f,
+@@ -394,6 +451,16 @@ namespace InterplanetaryAI
+             Planner.HumanBias = HumanBias.Value;
+             Planner.UnknownEconomyShare = UnknownEconomyShare.Value;
+ 
++            StrategyCfg.StrikeEvery = Math.Max(1, StrikeEvery.Value);
++            StrategyCfg.MinPassingShots = MinPassingShots.Value;
++            StrategyCfg.MinPassShare = Clamp01(MinPassShare.Value);
++            StrategyCfg.BrokenPassShare = Clamp01(BrokenPassShare.Value);
++            StrategyCfg.MaxHoldTurns = Math.Max(1, MaxHoldTurns.Value);
++            StrategyCfg.MinWeapons = Math.Max(1, MinWeapons.Value);
++            StrategyCfg.CoverHalf = Math.Max(0.1f, CoverHalf.Value);
++            StrategyCfg.RollEnergyShare = Clamp01(RollEnergyShare.Value);
++            StrategyCfg.ObservedMinImpacts = Math.Max(1, ObservedMinImpacts.Value);
++
+             Build.Growth = BuildPlanner.Parse(GrowthWeights.Value, Build.Growth);
+             Build.Pressure = BuildPlanner.Parse(PressureWeights.Value, Build.Pressure);
+             Build.GrowthUntilTurn = GrowthUntilTurn.Value;
+@@ -445,6 +512,7 @@ namespace InterplanetaryAI
+             AccuracyCarry.Clear();
+             LastTurnSeen = 0;
+             EconomyPatches.Reset();
++            StrategyPatches.Reset();
+         }
+ 
+         internal static void WriteDecision(string json)
+diff --git a/AI/StrategyPatches.cs b/AI/StrategyPatches.cs
+new file mode 100644
+index 0000000..b068d38
+--- /dev/null
++++ b/AI/StrategyPatches.cs
+@@ -0,0 +1,197 @@
++using System;
++using System.Collections.Generic;
++using System.Reflection;
++using HarmonyLib;
++using Interplanetary.AI;
++using Interplanetary.GameEngine;
++using Interplanetary.PlayerDataManagement;
++using Interplanetary.Prefabs;
++using Interplanetary.Weapons;
++using InterplanetaryAI.Brain;
++
++namespace InterplanetaryAI
++{
++    // v0.10 game adapter for Brain/Strategy: decides once per AI turn (after the defense ledger and the enemy
++    // defense memory are updated in EconomyPatches.CoreBeginTurnPostfix) whether to fire, and at whom.
++    //  - Targets: every weapon is pointed at the committed enemy (falling back to one it can reach).
++    //  - Hold: DirectorPatches gives the firing energy the game reserved to construction, and AiPatches empties
++    //    the firing lists, so nothing fires and nothing is charged.
++    // No decision (strategy off, or it failed) means v0.9 behaviour: fire every turn, split targets.
++    internal static class StrategyPatches
++    {
++        private sealed class State
++        {
++            public int Turn = -1;
++            public int LastStrikeTurn = -1000;
++            public int HoldTurns;
++            public StrategyDecision Decision;
++        }
++
++        private static readonly Dictionary<int, State> s_states = new Dictionary<int, State>();
++        private static readonly HashSet<string> s_reportedErrors = new HashSet<string>();
++        private static readonly FieldInfo s_coreTargeting = AccessTools.Field(typeof(AICore), "m_weaponTargeting");
++
++        internal static void Reset()
++        {
++            s_states.Clear();
++        }
++
++        // The AI's latest decision (made at the start of its current turn), or null: behave as v0.9. Read by turn start
++        // (construction) and at firing (AIWeaponTargeting.EndTurn); both must see the same one, so it is not keyed on
++        // GameManager.CurrentTurn, which may already have moved on when the weapons fire.
++        internal static StrategyDecision Latest(int playerId)
++        {
++            if (!Plugin.Active || !Plugin.StrategyEnabled.Value) return null;
++            State s;
++            return s_states.TryGetValue(playerId, out s) ? s.Decision : null;
++        }
++
++        internal static void ClearDecision(int playerId)
++        {
++            State s;
++            // A turn start seen twice keeps the decision already made for that turn (BeginTurn will not redo it).
++            if (s_states.TryGetValue(playerId, out s) && s.Turn != GameManager.CurrentTurn) s.Decision = null;
++        }
++
++        internal static bool HoldFire(int playerId)
++        {
++            StrategyDecision d = Latest(playerId);
++            return d != null && !d.Fire;
++        }
++
++        internal static void BeginTurn(AICore core, EconomyPatches.AiEconomyState economy, float recentDamage, int turn)
++        {
++            if (!Plugin.Active || !Plugin.StrategyEnabled.Value) return;
++            PlayerData me = core.PlayerData;
++            State state;
++            if (!s_states.TryGetValue(me.PlayerID, out state))
++            {
++                state = new State();
++                s_states[me.PlayerID] = state;
++            }
++            if (state.Turn == turn) return; // decided already (a turn start seen twice)
++            if (turn < state.Turn) { state.LastStrikeTurn = -1000; state.HoldTurns = 0; } // an earlier save
++            state.Turn = turn;
++            state.Decision = null;
++
++            StrategyDecision decision;
++            List<CelestialBody> planets = core.EnemyPlanets;
++            try
++            {
++                bool war = EconomyDirector.WarPhase(turn, Plugin.WarFromTurn.Value, recentDamage, Plugin.WarDamageTrigger.Value);
++                Dictionary<string, int> shots = new Dictionary<string, int>();
++                foreach (WeaponGameplayData weapon in me.WeaponHandler.Weapons)
++                {
++                    if (weapon == null || weapon.IsLaser || weapon.WeaponData == null || weapon.Building == null) continue;
++                    if (weapon.Building.CurrentState != BaseBuilding.BuildingState.Normal || !weapon.Building.Power.HasPower) continue;
++                    string id = weapon.WeaponData.id.Value;
++                    int n;
++                    shots.TryGetValue(id, out n);
++                    shots[id] = n + 1;
++                }
++
++                List<EnemyView> views = new List<EnemyView>();
++                foreach (CelestialBody planet in planets) views.Add(AiPatches.BuildEnemyView(me, planet.Player, turn));
++                TargetPlanner.Score(views, Plugin.Planner);
++                List<SalvoTarget> targets = new List<SalvoTarget>();
++                foreach (EnemyView view in views)
++                {
++                    Dictionary<string, int> known;
++                    economy.KnownDefenses.TryGetValue(view.PlayerId, out known);
++                    int impacts = 0, intercepted = 0;
++                    foreach (int[] counts in Plugin.Ledger.ObservedAll(me.PlayerID, view.PlayerId, 1).Values)
++                    {
++                        impacts += counts[0];
++                        intercepted += counts[1];
++                    }
++                    targets.Add(new SalvoTarget
++                    {
++                        PlayerId = view.PlayerId,
++                        Name = view.Name,
++                        Score = view.Score,
++                        Defenses = known != null ? new Dictionary<string, int>(known) : new Dictionary<string, int>(),
++                        EnergyKnown = view.EnergyKnown,
++                        EnergyProduction = view.EnergyProduction,
++                        ObservedImpacts = impacts,
++                        ObservedIntercepted = intercepted,
++                    });
++                }
++                decision = Strategy.Decide(turn, war, shots, targets, DefensePlanner.Counters, state.LastStrikeTurn, state.HoldTurns, Plugin.StrategyCfg);
++                if (decision.Fire)
++                {
++                    state.LastStrikeTurn = turn;
++                    state.HoldTurns = 0;
++                }
++                else if (war && decision.Shots >= Plugin.StrategyCfg.MinWeapons)
++                {
++                    state.HoldTurns++;
++                }
++                state.Decision = decision;
++            }
++            catch (Exception e)
++            {
++                ReportOnce("strategy", e);
++                state.Decision = null;
++                AssignTargets(core, -1); // v0.9 split targeting
++                return;
++            }
++
++            // Point the weapons. Native targeting already ran in AICore.BeginTurn; trajectory search starts in Update.
++            AssignTargets(core, decision.CommitTargetId);
++            Log(me, turn, decision, state);
++        }
++
++        private static void AssignTargets(AICore core, int commitPlayerId)
++        {
++            try
++            {
++                AIWeaponTargeting targeting = s_coreTargeting != null ? s_coreTargeting.GetValue(core) as AIWeaponTargeting : null;
++                if (targeting != null) AiPatches.AssignTargets(targeting, commitPlayerId);
++            }
++            catch (Exception e)
++            {
++                ReportOnce("strategy-targets", e);
++            }
++        }
++
++        private static void Log(PlayerData me, int turn, StrategyDecision d, State state)
++        {
++            try
++            {
++                Dictionary<string, int> passing = new Dictionary<string, int>();
++                Dictionary<string, int> eligible = new Dictionary<string, int>();
++                Dictionary<string, int> rolls = new Dictionary<string, int>();
++                Dictionary<string, int> defenses = new Dictionary<string, int>();
++                Dictionary<string, int> score = new Dictionary<string, int>();
++                string commit = "";
++                foreach (SalvoTarget t in d.Targets)
++                {
++                    string name = t.Name ?? t.PlayerId.ToString();
++                    passing[name] = (int)Math.Round(t.Passing);
++                    eligible[name] = (int)Math.Round(t.Eligible);
++                    rolls[name] = t.Rolls >= float.MaxValue / 2 ? -1 : (int)Math.Round(t.Rolls);
++                    int n = 0;
++                    foreach (int c in t.Defenses.Values) n += c;
++                    defenses[name] = n;
++                    score[name] = (int)Math.Round(t.Score * 1000f);
++                    if (t.PlayerId == d.CommitTargetId) commit = name;
++                }
++                Plugin.WriteDecision(new Json()
++                    .Str("e", "strategy").Int("t", turn).Str("ai", me.UserNickName)
++                    .Bool("fire", d.Fire).Str("reason", d.Reason).Int("shots", d.Shots).Num("passing", d.Passing).Num("passShare", d.PassShare)
++                    .Str("commit", commit).Int("lastStrike", state.LastStrikeTurn).Int("holdTurns", state.HoldTurns)
++                    .Map("passingBy", passing).Map("eligibleBy", eligible).Map("rollsBy", rolls).Map("defensesBy", defenses).Map("scoreBy", score)
++                    .ToString());
++            }
++            catch (Exception e)
++            {
++                ReportOnce("strategy-log", e);
++            }
++        }
++
++        private static void ReportOnce(string hook, Exception e)
++        {
++            if (s_reportedErrors.Add(hook)) Plugin.Log.LogError("Strategy hook '" + hook + "' failed (v0.9 firing used): " + e);
++        }
++    }
++}
+diff --git a/AI/Tests/Program.cs b/AI/Tests/Program.cs
+index 331366a..4027b18 100644
+--- a/AI/Tests/Program.cs
++++ b/AI/Tests/Program.cs
+@@ -45,11 +45,189 @@ namespace InterplanetaryAI.Tests
+             UnknownEnemyIsNotIgnored();
+             DefenseReserveRules();
+             EndgameBankRules();
++            SalvoEstimateRules();
++            StrategyFireRules();
++            StrategyCommitsToBestValue();
++            CommittedAssignmentRules();
++            MaterialGlutRules();
+ 
+             Console.WriteLine(s_checks + " checks, " + s_failures + " failed");
+             return s_failures == 0 ? 0 : 1;
+         }
+ 
++        // ---- v0.10 strategy -------------------------------------------------------------------------
++
++        private static Dictionary<string, Dictionary<string, float>> EnhancedCounters()
++        {
++            return new Dictionary<string, Dictionary<string, float>>
++            {
++                { "bui_KineticDefense", new Dictionary<string, float> { { "wea_Railgun", 0.8f }, { "wea_Coilcannon", 0.8f } } },
++                { "bui_IonDefense", new Dictionary<string, float> { { "wea_Missile", 0.8f }, { "wea_NuclearMissile", 0.8f } } },
++            };
++        }
++
++        private static SalvoTarget Target(int id, float score, int kinetic, bool energyKnown, float energy)
++        {
++            return new SalvoTarget
++            {
++                PlayerId = id, Name = "p" + id, Score = score, EnergyKnown = energyKnown, EnergyProduction = energy,
++                Defenses = new Dictionary<string, int> { { "bui_KineticDefense", kinetic } },
++            };
++        }
++
++        private static Dictionary<string, int> Railguns(int n)
++        {
++            return new Dictionary<string, int> { { "wea_Railgun", n } };
++        }
++
++        private static void SalvoEstimateRules()
++        {
++            StrategySettings s = new StrategySettings(); // CoverHalf 12, roll share 0.5 at 150
++            var counters = EnhancedCounters();
++
++            // v0.9.1 T22 shape: 35 Railguns at the human's 19 Kinetic, 6,000 energy. cover 19/31, eligible 21.45,
++            // rolls 20, intercepted 16, through 19.
++            SalvoTarget human = Target(0, 1f, 19, true, 6000f);
++            Strategy.EstimateSalvo(Railguns(35), human, counters, s);
++            Check(Math.Abs(human.Rolls - 20f) < 1e-3, "6000 energy x 0.5 / 150 = 20 rolls; got " + human.Rolls);
++            Check(Math.Abs(human.Eligible - 35f * 19f / 31f) < 1e-3, "eligible = shots x cover; got " + human.Eligible);
++            Check(Math.Abs(human.Passing - (35f - 20f * 0.8f)) < 1e-3, "rolls bind: 35 - 20 x 0.8 = 19 through; got " + human.Passing);
++
++            // Unknown energy: rolls unlimited, only coverage limits.
++            SalvoTarget blind = Target(0, 1f, 19, false, 0f);
++            Strategy.EstimateSalvo(Railguns(35), blind, counters, s);
++            Check(Math.Abs(blind.Passing - (35f - 35f * 19f / 31f * 0.8f)) < 1e-3, "unknown energy: only coverage limits; got " + blind.Passing);
++            Check(blind.Passing < human.Passing, "unknown energy is assumed to pay every roll (more conservative)");
++
++            // Saturation: doubling the salvo against the same rolls more than doubles what gets through.
++            SalvoTarget small = Target(0, 1f, 19, true, 6000f), big = Target(0, 1f, 19, true, 6000f);
++            Strategy.EstimateSalvo(Railguns(20), small, counters, s);
++            Strategy.EstimateSalvo(Railguns(40), big, counters, s);
++            Check(big.Passing > 2f * small.Passing, "a salvo past the target's rolls saturates; 20 -> " + small.Passing + ", 40 -> " + big.Passing);
++
++            // Defenses that do not stop the weapon do nothing; no defenses, everything through.
++            SalvoTarget ionOnly = new SalvoTarget { PlayerId = 1, Score = 1f, Defenses = new Dictionary<string, int> { { "bui_IonDefense", 30 } } };
++            Strategy.EstimateSalvo(Railguns(10), ionOnly, counters, s);
++            Check(Math.Abs(ionOnly.Passing - 10f) < 1e-3, "Ion defenses do not stop Railguns; got " + ionOnly.Passing);
++            SalvoTarget open = new SalvoTarget { PlayerId = 1, Score = 1f, Defenses = null };
++            Strategy.EstimateSalvo(Railguns(10), open, counters, s);
++            Check(Math.Abs(open.Passing - 10f) < 1e-3, "no known defenses: all through; got " + open.Passing);
++
++            // Our observed shots correct the coverage guess: 40 impacts, 36 intercepted at 0.8 -> cover capped 0.9.
++            SalvoTarget seen = Target(0, 1f, 5, false, 0f);
++            seen.ObservedImpacts = 40;
++            seen.ObservedIntercepted = 36;
++            SalvoTarget unseen = Target(0, 1f, 5, false, 0f);
++            Strategy.EstimateSalvo(Railguns(30), seen, counters, s);
++            Strategy.EstimateSalvo(Railguns(30), unseen, counters, s);
++            float modelCover = 5f / 17f;
++            float blended = (20f * modelCover + 40f * 0.9f) / 60f;
++            Check(Math.Abs(seen.Passing - (30f - 30f * blended * 0.8f)) < 1e-3, "observed interceptions blend into coverage; got " + seen.Passing);
++            Check(seen.Passing < unseen.Passing, "a target that intercepted most of our shots is harder than its visible defenses suggest");
++            SalvoTarget few = Target(0, 1f, 5, false, 0f);
++            few.ObservedImpacts = 5;
++            few.ObservedIntercepted = 5;
++            Strategy.EstimateSalvo(Railguns(30), few, counters, s);
++            Check(Math.Abs(few.Passing - unseen.Passing) < 1e-3, "fewer than ObservedMinImpacts shots do not move the estimate");
++        }
++
++        private static void StrategyFireRules()
++        {
++            StrategySettings s = new StrategySettings();
++            var counters = EnhancedCounters();
++            Func<int, List<SalvoTarget>> human = kinetic => new List<SalvoTarget> { Target(0, 1f, kinetic, true, 6000f) };
++
++            StrategyDecision none = Strategy.Decide(25, true, new Dictionary<string, int>(), human(19), counters, -1000, 0, s);
++            Check(!none.Fire && none.Reason == "no-weapons", "no weapons, no fire; got " + none.Reason);
++            StrategyDecision peace = Strategy.Decide(10, false, Railguns(40), human(0), counters, -1000, 0, s);
++            Check(!peace.Fire && peace.Reason == "peace", "before war, no fire even into an open planet; got " + peace.Reason);
++            StrategyDecision few = Strategy.Decide(25, true, Railguns(5), human(0), counters, -1000, 0, s);
++            Check(!few.Fire && few.Reason == "building", "under MinWeapons, keep building; got " + few.Reason);
++
++            // 20 Railguns at 19 Kinetic, 6k energy: ~10 through (< 12): hold. 35: ~19 through, 54%: strike.
++            StrategyDecision small = Strategy.Decide(25, true, Railguns(20), human(19), counters, -1000, 0, s);
++            Check(!small.Fire && small.Reason == "below-saturation", "a salvo the defenses absorb is held; got " + small.Reason + " " + small.Passing);
++            StrategyDecision big = Strategy.Decide(25, true, Railguns(35), human(19), counters, -1000, 0, s);
++            Check(big.Fire && big.Reason == "saturated", "a saturating salvo strikes; got " + big.Reason + " " + big.Passing);
++            Check(big.CommitTargetId == 0, "commits to the only enemy");
++
++            // Pulse: struck last turn -> wait, unless the defenses are broken (>= 70% through).
++            StrategyDecision wait = Strategy.Decide(26, true, Railguns(35), human(19), counters, 25, 0, s);
++            Check(!wait.Fire && wait.Reason == "pulse-wait", "struck last turn: invest this turn; got " + wait.Reason);
++            StrategyDecision again = Strategy.Decide(27, true, Railguns(35), human(19), counters, 25, 0, s);
++            Check(again.Fire, "two turns after a strike, strike again");
++            StrategyDecision broken = Strategy.Decide(26, true, Railguns(35), human(3), counters, 25, 0, s);
++            Check(broken.Fire && broken.Reason == "broken", "broken defenses: strike again at once; got " + broken.Reason + " " + broken.PassShare);
++
++            // Never hold forever.
++            StrategyDecision stuck = Strategy.Decide(30, true, Railguns(20), human(40), counters, -1000, s.MaxHoldTurns, s);
++            Check(stuck.Fire && stuck.Reason == "max-hold", "after MaxHoldTurns held, fire anyway; got " + stuck.Reason);
++            StrategyDecision notYet = Strategy.Decide(30, true, Railguns(20), human(40), counters, -1000, s.MaxHoldTurns - 1, s);
++            Check(!notYet.Fire, "one turn short of MaxHoldTurns still holds");
++        }
++
++        private static void StrategyCommitsToBestValue()
++        {
++            StrategySettings s = new StrategySettings();
++            // The leader (score 1.0) behind 40 Kinetic vs a weaker rival (0.6) with 2: the open target is worth more.
++            List<SalvoTarget> targets = new List<SalvoTarget> { Target(0, 1f, 40, false, 0f), Target(2, 0.6f, 2, false, 0f) };
++            StrategyDecision d = Strategy.Decide(25, true, Railguns(30), targets, EnhancedCounters(), -1000, 0, s);
++            Check(d.CommitTargetId == 2, "commit where score x expected shots through is highest; got " + d.CommitTargetId);
++            // Same defenses: the higher score wins.
++            targets = new List<SalvoTarget> { Target(0, 1f, 10, false, 0f), Target(2, 0.6f, 10, false, 0f) };
++            d = Strategy.Decide(25, true, Railguns(30), targets, EnhancedCounters(), -1000, 0, s);
++            Check(d.CommitTargetId == 0, "equal defenses: the leader; got " + d.CommitTargetId);
++        }
++
++        private static void CommittedAssignmentRules()
++        {
++            List<EnemyView> enemies = ThreeEnemies();
++            PlannerSettings settings = new PlannerSettings { FocusShare = 0.7f };
++            TargetPlanner.Score(enemies, settings);
++            int[] plan = TargetPlanner.Assign(enemies, Weapons(10), settings, new Random(1), 2);
++            bool all = true;
++            foreach (int t in plan) all &= t == 2;
++            Check(all, "a committed strike sends every weapon at the committed enemy, not the top-scored one");
++            List<WeaponSlot> weapons = Weapons(2);
++            weapons[0].UnreachableTargetIds.Add(enemies[2].PlayerId);
++            plan = TargetPlanner.Assign(enemies, weapons, settings, new Random(1), 2);
++            int bestOther = 0;
++            for (int i = 1; i < enemies.Count; i++) if (i != 2 && enemies[i].Score > enemies[bestOther].Score) bestOther = i;
++            Check(plan[0] == bestOther && plan[1] == 2, "a weapon that cannot reach the committed enemy falls back to the best other; got " + plan[0] + "," + plan[1]);
++            plan = TargetPlanner.Assign(enemies, Weapons(10), new PlannerSettings { FocusShare = 0.7f }, new Random(1), -1);
++            int atTop = 0;
++            foreach (int t in plan) if (t == 0) atTop++;
++            Check(atTop >= 7, "no commit keeps the v0.9 split plan");
++        }
++
++        private static void MaterialGlutRules()
++        {
++            Check(EconomyDirector.IsMaterialGlut(17836, 1829, 3f, 5000), "v0.9.1 Guts T21 (17.8k material, 1.8k energy) is glut");
++            Check(!EconomyDirector.IsMaterialGlut(6948, 3045, 3f, 5000), "v0.9.1 T15 (6.9k vs 3.0k) is not");
++            Check(!EconomyDirector.IsMaterialGlut(4000, 500, 3f, 5000), "under the minimum is never glut");
++
++            // Energy income above 0.6 x material income + upkeep: without glut material gains win, with glut energy gains.
++            EconOption energy = new EconOption { Id = "trials", Kind = OptionKind.Project, Energy = 150, Material = 300, EnergyGain = 1100f, MaterialGain = -360f };
++            EconOption material = new EconOption { Id = "matproj", Kind = OptionKind.Project, Energy = 150, Material = 350, EnergyGain = 0f, MaterialGain = 900f };
++            List<EconOption> options = new List<EconOption> { energy, material };
++            EconomyBalance b = new EconomyBalance { EnergyIncome = 6300, MaterialIncome = 6000, WeaponUpkeep = 2500, TargetRatio = 0.6f, EnergyBudget = 2000, MaterialBudget = 30000 };
++            Check(EconomyDirector.Best(options, b, 10) == material, "v0.9 weights prefer the material project here (the bug)");
++            b.MaterialGlut = true;
++            Check(EconomyDirector.Best(options, b, 10) == energy, "in material glut the energy project wins");
++            float wE, wM;
++            EconomyDirector.Weights(b, out wE, out wM);
++            Check(wE == 1f && Math.Abs(wM - b.GlutMaterialWeight) < 1e-6, "glut weights: energy 1, material GlutMaterialWeight");
++
++            // Same gain, one costs energy, the other material: in glut material is cheap, so spend it and keep the energy.
++            EconOption energyHeavy = new EconOption { Id = "eh", Kind = OptionKind.Plant, Energy = 300, Material = 100, EnergyGain = 1000f };
++            EconOption materialHeavy = new EconOption { Id = "mh", Kind = OptionKind.Plant, Energy = 100, Material = 700, EnergyGain = 1000f };
++            List<EconOption> pair = new List<EconOption> { energyHeavy, materialHeavy };
++            EconomyBalance plain = new EconomyBalance { EnergyIncome = 6300, MaterialIncome = 6000, TargetRatio = 0.6f, EnergyBudget = 2000, MaterialBudget = 30000 };
++            Check(EconomyDirector.Best(pair, plain, 10) == energyHeavy, "without glut, material counts at full price");
++            plain.MaterialGlut = true;
++            Check(EconomyDirector.Best(pair, plain, 10) == materialHeavy, "in glut, material cost counts at GlutMaterialWeight");
++        }
++
+         // Simulates turns: income arrives, the reserve is set, everything unreserved is spent.
+         private static void SavingsConvergeOnGoal()
+         {
