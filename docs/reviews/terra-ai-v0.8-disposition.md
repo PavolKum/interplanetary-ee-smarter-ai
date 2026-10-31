@@ -15,3 +15,18 @@ Report: `terra-ai-v0.8.md` (fix first; accepted by the wrapper after 109 s). Fix
 
 Checked and fine (Terra): nuclear impacts reach IsHitIntercepted with the weapon id; base fallout does not bypass interception (only an upgrade does); Ion is the best buildable counter (0.8); Classic has no nuke and no counter (anti-nuke id null).
 191 checks.
+
+## v0.8.1 match bug and the v0.8.2 review (`terra-ai-v0.8.2.md`, fix first) - fixed in v0.8.3
+
+v0.8.1 match: citiesProtected = 0 all game for both AIs while they owned up to 21 Ions; the whole-footprint rule (3.3 for
+Ion 5.3 / city 2) was nearly unreachable (a defense stands >= ~3.1 away). v0.8.2: protected within radius - cityRadius/2,
+cap 2 x perCity x cities. Terra confirmed the radii and units; the log cannot prove geometry was the only cause.
+
+| # | Finding | Disposition |
+|---|---|---|
+| High 1 | Placement scored existing Ions at full radius, the deficit at radius - cityRadius/2 | **Fixed**: one per-target reach loss shared by CoverCounts, MarginalValue and PickAnchorsMarginal; tests + 2 mutants |
+| High 2 | Cap counted only powered Ions; ordinary defense queue can add Ions | **Fixed**: cap on every intact Ion plus this turn's queued Ions (any path) |
+| Medium 3 | "Protected" is a heuristic against a 3.7 blast | Labelled heuristic in code; sampled-impact model deferred |
+| Medium 4 | Fixed 4.3 shrink vs city-specific 4.25-4.45 | **Fixed**: per-city loss; sampling ring capped at radius - 0.85 (the most generous city) |
+
+200 checks.

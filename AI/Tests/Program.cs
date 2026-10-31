@@ -391,6 +391,18 @@ namespace InterplanetaryAI.Tests
                 "Ion 4.5 from city A: beyond 4.3, not protected");
             Check(DefenseCoverage.CityProtectionDeficit(cities2, cityR, new List<Point> { P(3.5f), P(-3.5f), P(60f) }, new List<float> { 5.3f, 5.3f, 5.3f }, 2, out prot) == 2 && prot == 1,
                 "Ions elsewhere do not count: A full (2), B missing 2");
+            // v0.8.3: scoring and counting use the same city rule (Terra v0.8.2 #1): an Ion 4.8 from a city (radius 2,
+            // reach 4.3) does not count for it, so a new Ion over that city still scores the full first-defense value.
+            var cityAndHouse = new List<Point> { P(0f), P(20f) };
+            var loss = new List<float> { 1f, 0f };
+            int[] cnt = DefenseCoverage.CoverCounts(cityAndHouse, new List<Point> { P(4.8f) }, new List<float> { 5.3f }, loss);
+            Check(cnt[0] == 0, "Ion 4.8 from a city with reach 4.3: does not count for it");
+            Check(DefenseCoverage.CoverCounts(cityAndHouse, new List<Point> { P(4.8f) }, new List<float> { 5.3f })[0] == 1, "without the loss it would count (the v0.8.2 mismatch)");
+            Check(Math.Abs(DefenseCoverage.MarginalValue(P(0.5f), cityAndHouse, new List<float> { 20f, 1f }, cnt, 5.3f, 0.8f, loss) - 16f) < 1e-3f,
+                "a new Ion over that city scores the full 0.8 x 20 = 16");
+            Check(DefenseCoverage.MarginalValue(P(4.6f), cityAndHouse, new List<float> { 20f, 1f }, cnt, 5.3f, 0.8f, loss) == 0f,
+                "a spot 4.6 from the city scores nothing for it (outside 4.3)");
+
             // v0.8.2 cap: at most 2 x perCity x cities, whatever the deficit says.
             Check(EconomyDirector.AntiNukeMissing(3, 21, 3, 1, 2f) == 0, "Junker T32 (21 Ions, 3 cities, 1 per city): capped at 6 -> 0 more");
             Check(EconomyDirector.AntiNukeMissing(3, 4, 3, 1, 2f) == 2, "4 owned, cap 6: at most 2 more even if 3 are missing");

@@ -153,14 +153,16 @@ namespace InterplanetaryAI.Brain
 
         // v0.8: how many defenses cover each target (each with its own radius). Stacking matters: n defenses of
         // interception chance p stop a shot with 1-(1-p)^n, so a second Ion Defense over a city lifts 0.8 to 0.96.
-        public static int[] CoverCounts(IList<Point> targets, IList<Point> defenses, IList<float> radii)
+        public static int[] CoverCounts(IList<Point> targets, IList<Point> defenses, IList<float> radii, IList<float> loss = null)
         {
             int[] counts = new int[targets.Count];
             for (int i = 0; i < targets.Count; i++)
             {
+                float l = loss != null ? loss[i] : 0f;
                 for (int j = 0; j < defenses.Count; j++)
                 {
-                    if (targets[i].DistanceSquared(defenses[j]) < radii[j] * radii[j]) counts[i]++;
+                    float reach = radii[j] - l;
+                    if (reach > 0f && targets[i].DistanceSquared(defenses[j]) < reach * reach) counts[i]++;
                 }
             }
             return counts;
@@ -168,27 +170,29 @@ namespace InterplanetaryAI.Brain
 
         // Interception a new defense at `center` adds: each target within reach gains p x (1-p)^k of its value, k = the
         // defenses already over it.
-        public static float MarginalValue(Point center, IList<Point> targets, IList<float> values, int[] counts, float radius, float p)
+        // v0.8.3: `loss` shrinks the reach per target (a city counts as protected within radius - cityRadius/2), so the
+        // score and the deficit use the same rule (Terra v0.8.2).
+        public static float MarginalValue(Point center, IList<Point> targets, IList<float> values, int[] counts, float radius, float p, IList<float> loss = null)
         {
-            float r2 = radius * radius;
             float total = 0f;
             for (int i = 0; i < targets.Count; i++)
             {
-                if (center.DistanceSquared(targets[i]) < r2) total += values[i] * p * (float)Math.Pow(1f - p, counts[i]);
+                float reach = radius - (loss != null ? loss[i] : 0f);
+                if (reach > 0f && center.DistanceSquared(targets[i]) < reach * reach) total += values[i] * p * (float)Math.Pow(1f - p, counts[i]);
             }
             return total;
         }
 
         // PickAnchors on marginal value: `count` draws among anchors scoring at least `band` of the best (score squared).
         public static List<int> PickAnchorsMarginal(IList<Point> anchors, IList<Point> targets, IList<float> values, int[] counts, float radius, float p,
-            float band, Random rng, int count)
+            float band, Random rng, int count, IList<float> loss = null)
         {
             List<int> picks = new List<int>();
             float[] weights = new float[anchors.Count];
             float best = 0f;
             for (int i = 0; i < anchors.Count; i++)
             {
-                weights[i] = MarginalValue(anchors[i], targets, values, counts, radius, p);
+                weights[i] = MarginalValue(anchors[i], targets, values, counts, radius, p, loss);
                 best = Math.Max(best, weights[i]);
             }
             if (best <= 1e-6f) return picks;
@@ -214,6 +218,8 @@ namespace InterplanetaryAI.Brain
             return picks;
         }
 
+        // HEURISTIC protection (Terra v0.8.2): interception is tested at the impact point and a nuclear blast reaches
+        // 3.7 beyond it, so a "protected" city can still be damaged by impacts outside every Ion's reach.
         // v0.8.1: anti-nuke defenses still missing, city by city (Terra v0.8: an inventory of Ions anywhere is not
         // protection). v0.8.2: a defense protects a city when the city centre is within radius - cityRadius/2 (most of
         // the footprint in reach). v0.8.1 demanded the whole footprint (radius - cityRadius = 3.3 for Ion 5.3 / city 2),
