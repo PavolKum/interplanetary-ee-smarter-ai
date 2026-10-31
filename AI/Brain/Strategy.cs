@@ -26,6 +26,7 @@ namespace InterplanetaryAI.Brain
         public float EnergyProduction;
         public Dictionary<string, float> Shots;    // weapon id -> projectiles that can reach it (null: the salvo's)
         public Dictionary<string, int[]> Observed; // weapon id -> our recent [impacts, intercepted] at it
+        public int LowYieldTurns;                  // v0.12: consecutive turns our weapons aimed at it found almost no trajectory
 
         // outputs
         public float Arriving;     // projectiles expected to arrive (after accuracy)
@@ -50,6 +51,10 @@ namespace InterplanetaryAI.Brain
         // (v0.11.1 aborted 13 of 26 strikes at 30%, throwing away 6-15 aimed weapons while energy went unspent).
         public float AbortBelowShare = 0f;
         public int AbortBelowWeapons = 3;
+        // v0.12 (Sol #2): a target our weapons found almost no trajectory onto (fewer than AbortBelowWeapons) this many turns
+        // running is worth LowYieldDiscount of its value, so the commit moves instead of aborting at it forever.
+        public int LowYieldTurns = 2;
+        public float LowYieldDiscount = 0.25f;
         public float BigSalvoShots = 24f;     // this many expected through fires whatever the share (v0.10.1: 40 held at 44%)
         public float RollEnergyShare = 0.5f;   // share of its energy income a defender has left for rolls
         public float RollCost = 150f;          // energy per defense roll
@@ -180,6 +185,7 @@ namespace InterplanetaryAI.Brain
             foreach (SalvoTarget t in targets)
             {
                 t.Value = t.Passing * (1f + s.LeaderInfluence * (maxScore > 0f ? t.Score / maxScore : 0f));
+                if (s.LowYieldTurns > 0 && t.LowYieldTurns >= s.LowYieldTurns) t.Value *= s.LowYieldDiscount;
                 if (best == null || t.Value > best.Value) best = t;
                 if (t.PlayerId == lastCommitId) previous = t;
             }
@@ -204,15 +210,17 @@ namespace InterplanetaryAI.Brain
             bool broken = d.PassShare >= s.BrokenPassShare && d.Passing >= s.MinPassingShots;
             // v0.11.1: no "aim first" turn (Terra v0.11 #1: the engine resets every trajectory search each turn, so a turn of
             // aiming carries nothing over). A strike whose weapons find no trajectory is called off at firing time instead.
-            if (weapons >= s.MinWeapons && saturated && (pulseReady || broken))
-            {
-                d.Fire = true;
-                d.Reason = pulseReady ? "saturated" : "broken";
-            }
-            else if (holdTurns >= s.MaxHoldTurns && pulseReady && d.Passing > 0f)
+            // v0.12 (Sol #2): max-hold first, so a strike after MaxHoldTurns held or aborted turns fires whatever aims (it is
+            // exempt from the abort), instead of another "saturated" strike that aborts again.
+            if (holdTurns >= s.MaxHoldTurns && pulseReady && d.Passing > 0f)
             {
                 d.Fire = true; // never sit on weapons forever, small arsenals included
                 d.Reason = "max-hold";
+            }
+            else if (weapons >= s.MinWeapons && saturated && (pulseReady || broken))
+            {
+                d.Fire = true;
+                d.Reason = pulseReady ? "saturated" : "broken";
             }
             else
             {

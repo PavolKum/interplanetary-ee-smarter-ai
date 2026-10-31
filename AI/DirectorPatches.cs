@@ -212,9 +212,10 @@ namespace InterplanetaryAI
                 PlayerResourceHandler res = me.ResourceHandler;
                 bool limited = GameSessionManager.CurrentGameSettings.PlanetMaterial != -1;
                 float drain = Math.Max(res.PlanetMaterialCost, res.MaterialProductionPerTurn);
-                d.SustainableMaterial = EconomyDirector.SustainableMaterialIncome(res.PlanetMaterial, limited, turn, Plugin.MaterialHorizonTurn.Value, 3);
+                d.SustainableMaterial = EconomyDirector.SustainableMaterialIncome(res.PlanetMaterial, res.Material, limited, turn, Plugin.MaterialHorizonTurn.Value, 3);
                 d.MaterialReserve = EconomyDirector.EconomyReserve(res.PlanetMaterial, drain, limited, Plugin.BankWarningTurns.Value, Plugin.MaterialReserve.Value);
-                if (limited && res.PlanetMaterial <= 0 && Plugin.SellDryMinesPerTurn.Value > 0) SellDryMines(core, d, Plugin.SellDryMinesPerTurn.Value);
+                int[] sold;
+                if (s_soldThisTurn.TryGetValue(me.PlayerID, out sold) && sold[0] == turn) { d.SoldMines = sold[1]; d.SoldMaterial = sold[2]; }
             }
             catch (Exception e)
             {
@@ -732,26 +733,42 @@ namespace InterplanetaryAI
         }
 
         // v0.12: on a dry planet mines yield nothing; selling returns 80% of their material and upgrades
-        // (PlayerBuildingHandler.SellBuilding). Mines that relay power are kept. The material goes to this turn's budget.
-        private static void SellDryMines(AICore core, DirectorState d, int perTurn)
+        // (PlayerBuildingHandler.SellBuilding). Prefix on AICore.BeginTurn (Sol v0.12 #3): before AIResources snapshots the
+        // material (so the proceeds are counted once, natively) and before AIPowerGridMaintaining builds its caches and
+        // reconnection searches. Only leaves are sold: at most one power connection (a relay has two or more), no generation.
+        private static readonly Dictionary<int, int[]> s_soldThisTurn = new Dictionary<int, int[]>(); // player -> [turn, mines, material]
+
+        private static void CoreBeginTurnPrefix(AICore __instance)
         {
-            PlayerData me = core.PlayerData;
-            List<BaseBuilding> dry = new List<BaseBuilding>();
-            foreach (BaseBuilding b in me.BuildingHandler.Buildings)
+            try
             {
-                if (dry.Count >= perTurn) break;
-                if (b == null || b.IsCity || b.BuildingData == null || b.CurrentState != BaseBuilding.BuildingState.Normal) continue;
-                if (Value(b.BuildingData.turn_yield_material) <= 0 || Value(b.BuildingData.turn_cost_planet_material) <= 0) continue;
-                if (b.Power != null && (b.Power.IsPotentiallyDistributingPower || b.Power.CanPotentiallyGeneratesPower)) continue;
-                dry.Add(b);
+                if (!Plugin.Active || !Plugin.DirectorEnabled.Value || Plugin.SellDryMinesPerTurn.Value <= 0) return;
+                PlayerData me = __instance.PlayerData;
+                if (me == null || !me.AIPlayer) return;
+                if (GameSessionManager.CurrentGameSettings.PlanetMaterial == -1 || me.ResourceHandler.PlanetMaterial > 0) return;
+                List<BaseBuilding> dry = new List<BaseBuilding>();
+                foreach (BaseBuilding b in me.BuildingHandler.Buildings)
+                {
+                    if (dry.Count >= Plugin.SellDryMinesPerTurn.Value) break;
+                    if (IsSellableDryMine(b)) dry.Add(b);
+                }
+                if (dry.Count == 0) return;
+                int before = me.ResourceHandler.Material;
+                foreach (BaseBuilding b in dry) me.BuildingHandler.SellBuilding(b, true);
+                s_soldThisTurn[me.PlayerID] = new[] { GameManager.CurrentTurn, dry.Count, Math.Max(0, me.ResourceHandler.Material - before) };
             }
-            int before = me.ResourceHandler.Material;
-            foreach (BaseBuilding b in dry) me.BuildingHandler.SellBuilding(b, true);
-            int gained = Math.Max(0, me.ResourceHandler.Material - before);
-            core.Resources.Material += gained;
-            core.Construction.ConstructionQueue.AllottedMaterial += gained;
-            d.SoldMines = dry.Count;
-            d.SoldMaterial = gained;
+            catch (Exception e)
+            {
+                ReportOnce("sell-dry-mines", e);
+            }
+        }
+
+        private static bool IsSellableDryMine(BaseBuilding b)
+        {
+            if (b == null || b.IsCity || b.BuildingData == null || b.CurrentState != BaseBuilding.BuildingState.Normal) return false;
+            if (Value(b.BuildingData.turn_yield_material) <= 0 || Value(b.BuildingData.turn_cost_planet_material) <= 0) return false;
+            if (b.Power == null || b.Power.CanPotentiallyGeneratesPower) return false;
+            return b.Power.ConnectedPowerSlots <= 1;
         }
 
         private static bool TryWeapon(AIConstruction construction, AICore core, DirectorState d, float upkeepCap)
@@ -809,7 +826,7 @@ namespace InterplanetaryAI
             List<EconOption> options = new List<EconOption>();
             float planetFactor = EconomyDirector.PlanetMaterialFactor(core.PlayerData.ResourceHandler.PlanetMaterial, d.MaterialIncome, 10);
             AddUpgradeOptions(core, d, options, planetFactor);
-            AddProjectOptions(construction, core, d, options);
+            AddProjectOptions(construction, core, d, options, planetFactor);
             AddBuildingOptions(core, d, options, planetFactor);
 
             EconomyBalance balance = new EconomyBalance
@@ -983,7 +1000,7 @@ namespace InterplanetaryAI
             return false;
         }
 
-        private static void AddProjectOptions(AIConstruction construction, AICore core, DirectorState d, List<EconOption> options)
+        private static void AddProjectOptions(AIConstruction construction, AICore core, DirectorState d, List<EconOption> options, float planetFactor)
         {
             PlayerResourceHandler res = core.PlayerData.ResourceHandler;
             float globalEnergy = core.PlayerData.StatHandler.GetGlobalStatModifier(GlobalStatModifierID.TurnYieldEnergy);
@@ -1049,8 +1066,10 @@ namespace InterplanetaryAI
                 float span = permanent ? 1f : Math.Min(10, Math.Max(1, p.duration.Value)) / 10f;
                 float energyGain = Value(p.turn_yield_energy_addition) * globalEnergy - Value(p.turn_cost_energy_addition)
                     + res.EnergyProductionPerTurn * (FloatValue(p.turn_yield_energy_multiplier_global, 1f) - 1f);
-                float materialGain = Value(p.turn_yield_material_addition) * globalMaterial - Value(p.turn_cost_material_addition)
-                    + res.MaterialProductionPerTurn * (FloatValue(p.turn_yield_material_multiplier_global, 1f) - 1f);
+                // v0.12 (Sol #1): extraction gains scale with what the planet can still give (0 when dry).
+                float materialGain = (Value(p.turn_yield_material_addition) * globalMaterial
+                    + res.MaterialProductionPerTurn * (FloatValue(p.turn_yield_material_multiplier_global, 1f) - 1f)) * planetFactor
+                    - Value(p.turn_cost_material_addition);
                 // Local multiplier: that city's science (population x its rate, Terra v0.9 #5); global: all science.
                 float thisCityScience;
                 if (!cityScience.TryGetValue(project.City.id.Value, out thisCityScience)) thisCityScience = res.ScienceProductionPerTurn / (float)cities;
@@ -1726,6 +1745,10 @@ namespace InterplanetaryAI
             {
                 d.Upkeep -= FiringCost(data);
                 d.WeaponEnergySpent = Math.Max(0, d.WeaponEnergySpent - Value(data.build_cost_energy));
+                if (IsAimedWeapon(data)) d.AimedWeapons = Math.Max(0, d.AimedWeapons - 1); // Sol v0.12 #7: no phantom cap slots
+                d.FailedThisTurn.Add(id);            // this type found no place this turn; another type may
+                d.FailedThisTurn.Remove("weapon");
+                d.FailedThisTurn.Remove("weapon-sink");
                 EconomyPatches.AiEconomyState economy;
                 if (EconomyPatches.States.TryGetValue(me.PlayerID, out economy) && economy.Bought && economy.Goal != null && economy.Goal.Building.id.Value == id)
                 {

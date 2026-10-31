@@ -81,10 +81,10 @@ namespace InterplanetaryAI.Brain
         public static void Weights(EconomyBalance b, out float energyWeight, out float materialWeight)
         {
             float wantedEnergy = WantedEnergy(b);
-            if (b.EnergyGlut || EnergySaturated(b))
+            if (b.EnergyGlut)
             {
-                // v0.12: more energy is worthless when it already goes unspent, or exceeds what the planet's remaining material
-                // can use. v0.11.1 ranked material glut first and turned the last material into Floating Plants.
+                // v0.12: more energy is worthless when last turn's already went unspent. v0.11.1 ranked material glut first and
+                // turned the last material into Floating Plants. (Energy saturation is a filter in Best, Sol v0.12 #5.)
                 energyWeight = b.GlutEnergyGainWeight;
                 materialWeight = b.MaterialGlut ? b.GlutMaterialWeight : 1f;
             }
@@ -108,25 +108,38 @@ namespace InterplanetaryAI.Brain
         }
 
         // Energy income wanted: TargetRatio x material income (capped by what the planet can sustain) + weapon upkeep.
+        // On a dry planet (no material income) the bank spread to the horizon is what energy can turn into anything.
         public static float WantedEnergy(EconomyBalance b)
         {
-            float material = b.SustainableMaterialIncome >= 0f ? Math.Min(b.MaterialIncome, b.SustainableMaterialIncome) : b.MaterialIncome;
+            float material = b.MaterialIncome;
+            if (b.SustainableMaterialIncome >= 0f)
+                material = b.MaterialIncome <= 0f ? b.SustainableMaterialIncome : Math.Min(b.MaterialIncome, b.SustainableMaterialIncome);
             return b.TargetRatio * material + b.WeaponUpkeep;
         }
 
-        // v0.12: energy is saturated when the planet, not the mines, limits material (the remaining pool cannot sustain the
-        // current extraction to the horizon) and energy income is above EnergySaturation x the wanted energy.
+        // v0.12: energy is saturated when the planet, not the mines, limits material (the remaining pool and bank cannot
+        // sustain the current extraction to the horizon, or the planet is dry) and energy income is above EnergySaturation x
+        // the wanted energy. Sol v0.12 #1: the dry state (income 0, sustainable from the bank) counts.
         public static bool EnergySaturated(EconomyBalance b)
         {
-            if (b.EnergySaturation <= 0f || b.SustainableMaterialIncome < 0f || b.SustainableMaterialIncome >= b.MaterialIncome) return false;
-            return b.EnergyIncome >= b.EnergySaturation * Math.Max(1f, WantedEnergy(b));
+            if (b.EnergySaturation <= 0f || b.SustainableMaterialIncome < 0f) return false;
+            bool planetBinds = b.MaterialIncome <= 0f || b.SustainableMaterialIncome < b.MaterialIncome;
+            return planetBinds && b.EnergyIncome >= b.EnergySaturation * Math.Max(1f, WantedEnergy(b));
         }
 
-        // v0.12: material per turn the planet can supply until horizonTurn (at least minTurns ahead). -1 = unlimited planet.
-        public static float SustainableMaterialIncome(int planetMaterial, bool limited, int turn, int horizonTurn, int minTurns)
+        // v0.12: an option whose only gain is energy (a power plant, an energy yield upgrade). Projects are kept out of the
+        // saturation filter (Reactor Trials: temporary, cheap, Sol v0.12 #5).
+        public static bool IsEnergyOnly(EconOption o)
+        {
+            return o.Kind != OptionKind.Project && o.EnergyGain > 0f && o.MaterialGain <= 0f && o.ScienceGain <= 0f;
+        }
+
+        // v0.12: material per turn the planet and the bank can supply until horizonTurn (at least minTurns ahead).
+        // -1 = unlimited planet.
+        public static float SustainableMaterialIncome(int planetMaterial, int stock, bool limited, int turn, int horizonTurn, int minTurns)
         {
             if (!limited) return -1f;
-            return Math.Max(0, planetMaterial) / (float)Math.Max(Math.Max(1, minTurns), horizonTurn - turn);
+            return (Math.Max(0, planetMaterial) + Math.Max(0, stock)) / (float)Math.Max(Math.Max(1, minTurns), horizonTurn - turn);
         }
 
         // v0.12: material the economy keeps back once the planet runs dry within warningTurns (for defenses, weapons and
@@ -175,9 +188,11 @@ namespace InterplanetaryAI.Brain
             EconOption best = null;
             float bestScore = 0f;
             int materialBudget = b.MaterialBudget - Math.Max(0, b.MaterialReserve);
+            bool saturated = EnergySaturated(b);
             foreach (EconOption o in options)
             {
                 if (o.Energy > b.EnergyBudget || o.Material > materialBudget) continue;
+                if (saturated && IsEnergyOnly(o)) continue;
                 if (o.NeedsSlot && slotsLeft <= 0) continue;
                 float score = Score(o, wE, wM, eFactor, b.ScienceWeight, mFactor);
                 if (score > bestScore)
@@ -365,6 +380,7 @@ namespace InterplanetaryAI.Brain
         // Value of material income when the planet is running out: mines stop yielding at zero planet material.
         public static float PlanetMaterialFactor(int planetMaterial, float planetMaterialUsePerTurn, int horizonTurns)
         {
+            if (planetMaterial <= 0) return 0f; // v0.12 (Sol #1): a dry planet yields nothing, whatever the multipliers
             if (planetMaterialUsePerTurn <= 0f) return 1f;
             float turnsLeft = planetMaterial / planetMaterialUsePerTurn;
             return Math.Max(0f, Math.Min(1f, turnsLeft / Math.Max(1, horizonTurns)));

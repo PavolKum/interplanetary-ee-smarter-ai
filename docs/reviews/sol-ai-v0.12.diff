@@ -1,0 +1,639 @@
+diff --git a/AI/Brain/Director.cs b/AI/Brain/Director.cs
+index 16916b8..899778a 100644
+--- a/AI/Brain/Director.cs
++++ b/AI/Brain/Director.cs
+@@ -53,7 +53,16 @@ namespace InterplanetaryAI.Brain
+         public bool MaterialGlut;     // v0.10: more material banked than energy can turn into anything
+         public float GlutMaterialWeight = 0.25f;
+         public bool EnergyGlut;       // v0.11: last turn ended with much of its energy unspent (material or space bound)
+-        public float GlutEnergyWeight = 0.25f;
++        public float GlutEnergyWeight = 0.25f; // energy cost factor in energy glut
++        // v0.12: energy gains are worth this much in energy glut or energy saturation (v0.11.1: ~180 Floating Plants per AI
++        // bought with the last of the planet's material while energy went unspent).
++        public float GlutEnergyGainWeight = 0f;
++        // v0.12: material per turn the planet can still supply to the horizon turn (planet material left / turns left);
++        // -1 = unlimited planet. Planet drain is max(production, planet cost) (PlayerResourceHandler), so yield multipliers
++        // only spend the fixed planet pool faster.
++        public float SustainableMaterialIncome = -1f;
++        public float EnergySaturation = 1.5f; // energy income above this multiple of the wanted energy is saturated
++        public int MaterialReserve;           // v0.12: material the economy may not spend (planet about to run dry)
+     }
+ 
+     public sealed class WeaponStats
+@@ -71,21 +80,21 @@ namespace InterplanetaryAI.Brain
+         // Which resource is short against the target ratio decides the weights.
+         public static void Weights(EconomyBalance b, out float energyWeight, out float materialWeight)
+         {
+-            float wantedEnergy = b.TargetRatio * b.MaterialIncome + b.WeaponUpkeep;
+-            if (b.MaterialGlut)
++            float wantedEnergy = WantedEnergy(b);
++            if (b.EnergyGlut || EnergySaturated(b))
++            {
++                // v0.12: more energy is worthless when it already goes unspent, or exceeds what the planet's remaining material
++                // can use. v0.11.1 ranked material glut first and turned the last material into Floating Plants.
++                energyWeight = b.GlutEnergyGainWeight;
++                materialWeight = b.MaterialGlut ? b.GlutMaterialWeight : 1f;
++            }
++            else if (b.MaterialGlut)
+             {
+                 // v0.10: v0.9.1 Guts banked 15-37k material from T19 while energy-bound, and still preferred material
+                 // gains (energy income sat just above 0.6 x material income + upkeep).
+                 energyWeight = 1f;
+                 materialWeight = b.GlutMaterialWeight;
+             }
+-            else if (b.EnergyGlut)
+-            {
+-                // v0.11: v0.10.1 AIs ended turns with 8-59k energy unspent from T22 (material, then planet space binding)
+-                // while still preferring energy gains.
+-                energyWeight = b.GlutEnergyWeight;
+-                materialWeight = 1f;
+-            }
+             else if (b.EnergyPush || b.EnergyIncome < wantedEnergy)
+             {
+                 energyWeight = 1f;
+@@ -98,6 +107,37 @@ namespace InterplanetaryAI.Brain
+             }
+         }
+ 
++        // Energy income wanted: TargetRatio x material income (capped by what the planet can sustain) + weapon upkeep.
++        public static float WantedEnergy(EconomyBalance b)
++        {
++            float material = b.SustainableMaterialIncome >= 0f ? Math.Min(b.MaterialIncome, b.SustainableMaterialIncome) : b.MaterialIncome;
++            return b.TargetRatio * material + b.WeaponUpkeep;
++        }
++
++        // v0.12: energy is saturated when the planet, not the mines, limits material (the remaining pool cannot sustain the
++        // current extraction to the horizon) and energy income is above EnergySaturation x the wanted energy.
++        public static bool EnergySaturated(EconomyBalance b)
++        {
++            if (b.EnergySaturation <= 0f || b.SustainableMaterialIncome < 0f || b.SustainableMaterialIncome >= b.MaterialIncome) return false;
++            return b.EnergyIncome >= b.EnergySaturation * Math.Max(1f, WantedEnergy(b));
++        }
++
++        // v0.12: material per turn the planet can supply until horizonTurn (at least minTurns ahead). -1 = unlimited planet.
++        public static float SustainableMaterialIncome(int planetMaterial, bool limited, int turn, int horizonTurn, int minTurns)
++        {
++            if (!limited) return -1f;
++            return Math.Max(0, planetMaterial) / (float)Math.Max(Math.Max(1, minTurns), horizonTurn - turn);
++        }
++
++        // v0.12: material the economy keeps back once the planet runs dry within warningTurns (for defenses, weapons and
++        // rebuilding after it does). v0.11.1: ~30 material at construction from T28, nothing could be rebuilt.
++        public static int EconomyReserve(int planetMaterial, float drainPerTurn, bool limited, int warningTurns, int reserve)
++        {
++            if (!limited || reserve <= 0) return 0;
++            bool soon = planetMaterial <= 0 || (drainPerTurn > 0f && planetMaterial / drainPerTurn <= warningTurns);
++            return soon ? reserve : 0;
++        }
++
+         // Energy is only "expensive" when this turn's energy budget is the tighter one.
+         public static float EnergyCostFactor(EconomyBalance b)
+         {
+@@ -134,9 +174,10 @@ namespace InterplanetaryAI.Brain
+             float mFactor = b.MaterialGlut ? b.GlutMaterialWeight : 1f;
+             EconOption best = null;
+             float bestScore = 0f;
++            int materialBudget = b.MaterialBudget - Math.Max(0, b.MaterialReserve);
+             foreach (EconOption o in options)
+             {
+-                if (o.Energy > b.EnergyBudget || o.Material > b.MaterialBudget) continue;
++                if (o.Energy > b.EnergyBudget || o.Material > materialBudget) continue;
+                 if (o.NeedsSlot && slotsLeft <= 0) continue;
+                 float score = Score(o, wE, wM, eFactor, b.ScienceWeight, mFactor);
+                 if (score > bestScore)
+diff --git a/AI/Brain/Memory.cs b/AI/Brain/Memory.cs
+index 795d904..9496d8c 100644
+--- a/AI/Brain/Memory.cs
++++ b/AI/Brain/Memory.cs
+@@ -82,6 +82,38 @@ namespace InterplanetaryAI.Brain
+             else failed[targetId] = turn;
+         }
+ 
++        // v0.12: one turn's search results. A failure counts as "out of reach" only when enough weapons aimed at the same
++        // target did find a trajectory (minFoundShare): otherwise the search ran out of time (the native search runs only
++        // during the human's turn), not out of geometry. v0.11.1: 2-15 of ~50 weapons found one, the rest marked the target
++        // unreachable, and the committed target flipped every turn. Successes always count. Returns failures recorded.
++        public int ReportTurn(IList<string> weaponKeys, IList<int> targetIds, IList<bool> found, int turn, float minFoundShare)
++        {
++            Dictionary<int, int[]> byTarget = new Dictionary<int, int[]>(); // target -> [aimed, found]
++            for (int i = 0; i < targetIds.Count; i++)
++            {
++                int[] c;
++                if (!byTarget.TryGetValue(targetIds[i], out c)) { c = new int[2]; byTarget[targetIds[i]] = c; }
++                c[0]++;
++                if (found[i]) c[1]++;
++            }
++            int recorded = 0;
++            for (int i = 0; i < weaponKeys.Count; i++)
++            {
++                if (found[i])
++                {
++                    Report(weaponKeys[i], targetIds[i], turn, true);
++                    continue;
++                }
++                int[] c = byTarget[targetIds[i]];
++                if (c[1] >= minFoundShare * c[0])
++                {
++                    Report(weaponKeys[i], targetIds[i], turn, false);
++                    recorded++;
++                }
++            }
++            return recorded;
++        }
++
+         public void FillUnreachable(string weaponKey, int turn, HashSet<int> into)
+         {
+             into.Clear();
+diff --git a/AI/Brain/Strategy.cs b/AI/Brain/Strategy.cs
+index aeb5b2e..34f5d5c 100644
+--- a/AI/Brain/Strategy.cs
++++ b/AI/Brain/Strategy.cs
+@@ -46,7 +46,10 @@ namespace InterplanetaryAI.Brain
+         // shots through and so struck the other AI six times running while the human was the softer target every time.
+         public float LeaderInfluence = 0.5f;
+         public float CommitStickiness = 1.25f; // keep last turn's target unless another is worth this much more
+-        public float AbortBelowShare = 0.3f;   // at firing time, call a strike off below this share of weapons on target
++        // At firing time, call a strike off below max(AbortBelowWeapons, AbortBelowShare x weapons) on target. v0.12: share 0
++        // (v0.11.1 aborted 13 of 26 strikes at 30%, throwing away 6-15 aimed weapons while energy went unspent).
++        public float AbortBelowShare = 0f;
++        public int AbortBelowWeapons = 3;
+         public float BigSalvoShots = 24f;     // this many expected through fires whatever the share (v0.10.1: 40 held at 44%)
+         public float RollEnergyShare = 0.5f;   // share of its energy income a defender has left for rolls
+         public float RollCost = 150f;          // energy per defense roll
+@@ -146,6 +149,19 @@ namespace InterplanetaryAI.Brain
+             target.Value = target.Passing; // Decide adds the leader term across targets
+         }
+ 
++        // v0.12: at firing time, call the strike off when fewer than this many weapons found a trajectory onto the committed
++        // target. The max-hold fallback fires whatever it has.
++        public static float AbortThreshold(int weapons, StrategySettings s)
++        {
++            return Math.Max(Math.Max(1, s.AbortBelowWeapons), s.AbortBelowShare * weapons);
++        }
++
++        public static bool ShouldAbort(int hitsOnCommit, int weapons, string reason, StrategySettings s)
++        {
++            if (reason == "max-hold") return false;
++            return hitsOnCommit < AbortThreshold(weapons, s);
++        }
++
+         // lastStrikeTurn: last turn we fired (-1000 never); holdTurns: consecutive war turns held with weapons;
+         // lastCommitId: the enemy our weapons were pointed at last turn (-1 none).
+         public static StrategyDecision Decide(int turn, bool war, IDictionary<string, float> salvo, float accuracy, IList<SalvoTarget> targets,
+diff --git a/AI/DirectorPatches.cs b/AI/DirectorPatches.cs
+index 70f2469..885a1f3 100644
+--- a/AI/DirectorPatches.cs
++++ b/AI/DirectorPatches.cs
+@@ -98,6 +98,12 @@ namespace InterplanetaryAI
+             public int LastEnergyLeft, LastEnergyBudget;
+             public readonly Dictionary<string, int> AbandonedLastTurn = new Dictionary<string, int>();
+             public readonly Dictionary<string, int> QueuedById = new Dictionary<string, int>();
++            // v0.12 material budget and weapon cap
++            public float SustainableMaterial = -1f; // planet material per turn to MaterialHorizonTurn (-1 unlimited)
++            public int MaterialReserve;             // material the economy may not spend this turn
++            public bool EnergySaturated;
++            public int SoldMines, SoldMaterial;
++            public int AimedWeapons;                // own weapons needing a trajectory (not lasers, not superweapons), queued included
+             // across turns
+             public int WaterCooldownUntil;
+         }
+@@ -200,9 +206,26 @@ namespace InterplanetaryAI
+ 
+             PlayerData me = core.PlayerData;
+             d.RecentDamage = recentDamage;
++            // v0.12 material budget: the planet's pool is fixed (drain = max(production, planet cost)).
++            try
++            {
++                PlayerResourceHandler res = me.ResourceHandler;
++                bool limited = GameSessionManager.CurrentGameSettings.PlanetMaterial != -1;
++                float drain = Math.Max(res.PlanetMaterialCost, res.MaterialProductionPerTurn);
++                d.SustainableMaterial = EconomyDirector.SustainableMaterialIncome(res.PlanetMaterial, limited, turn, Plugin.MaterialHorizonTurn.Value, 3);
++                d.MaterialReserve = EconomyDirector.EconomyReserve(res.PlanetMaterial, drain, limited, Plugin.BankWarningTurns.Value, Plugin.MaterialReserve.Value);
++                if (limited && res.PlanetMaterial <= 0 && Plugin.SellDryMinesPerTurn.Value > 0) SellDryMines(core, d, Plugin.SellDryMinesPerTurn.Value);
++            }
++            catch (Exception e)
++            {
++                ReportOnce("material-budget", e);
++            }
+             foreach (BaseBuilding building in me.BuildingHandler.Buildings)
+             {
+-                if (building == null || building.IsCity || building.BuildingData == null || building.CurrentState != BaseBuilding.BuildingState.Normal) continue;
++                if (building == null || building.IsCity || building.BuildingData == null) continue;
++                if (IsAimedWeapon(building.BuildingData) && (building.CurrentState == BaseBuilding.BuildingState.Normal
++                    || building.CurrentState == BaseBuilding.BuildingState.UnderConstruction)) d.AimedWeapons++;
++                if (building.CurrentState != BaseBuilding.BuildingState.Normal) continue;
+                 d.NonCityBuildings++;
+                 if (Value(building.BuildingData.turn_yield_counterintel) > 0) d.OwnCounterintel++;
+                 if (Value(building.BuildingData.turn_yield_intel) > 0) d.IntelBuildings++;
+@@ -698,9 +721,44 @@ namespace InterplanetaryAI
+ 
+         // ---- weapons -------------------------------------------------------------------------------
+ 
++        // v0.12: a weapon that needs a trajectory search: not a laser (fired directly) and not a superweapon (savings logic).
++        private static bool IsAimedWeapon(BuildingData data)
++        {
++            if (data == null || !data.weapon_functionality.IsValueSet) return false;
++            if (data.max_amount_at_once.IsValueSet && data.max_amount_at_once.Value > 0) return false;
++            WeaponData weapon = GameDataFileManager.GetDataFile<WeaponsData>().GetWeapon(data.weapon_functionality.Value);
++            string type = weapon != null && weapon.type.IsValueSet ? weapon.type.Value : "";
++            return type != "type_Laser" && type != "type_EMPLaser" && type != "type_SolarLaser";
++        }
++
++        // v0.12: on a dry planet mines yield nothing; selling returns 80% of their material and upgrades
++        // (PlayerBuildingHandler.SellBuilding). Mines that relay power are kept. The material goes to this turn's budget.
++        private static void SellDryMines(AICore core, DirectorState d, int perTurn)
++        {
++            PlayerData me = core.PlayerData;
++            List<BaseBuilding> dry = new List<BaseBuilding>();
++            foreach (BaseBuilding b in me.BuildingHandler.Buildings)
++            {
++                if (dry.Count >= perTurn) break;
++                if (b == null || b.IsCity || b.BuildingData == null || b.CurrentState != BaseBuilding.BuildingState.Normal) continue;
++                if (Value(b.BuildingData.turn_yield_material) <= 0 || Value(b.BuildingData.turn_cost_planet_material) <= 0) continue;
++                if (b.Power != null && (b.Power.IsPotentiallyDistributingPower || b.Power.CanPotentiallyGeneratesPower)) continue;
++                dry.Add(b);
++            }
++            int before = me.ResourceHandler.Material;
++            foreach (BaseBuilding b in dry) me.BuildingHandler.SellBuilding(b, true);
++            int gained = Math.Max(0, me.ResourceHandler.Material - before);
++            core.Resources.Material += gained;
++            core.Construction.ConstructionQueue.AllottedMaterial += gained;
++            d.SoldMines = dry.Count;
++            d.SoldMaterial = gained;
++        }
++
+         private static bool TryWeapon(AIConstruction construction, AICore core, DirectorState d, float upkeepCap)
+         {
+             if (d.SlotsLeft <= 0) return false;
++            // v0.12: the trajectory search aims only so many weapons a turn; more add upkeep, not damage.
++            bool atCap = Plugin.MaxWeapons.Value > 0 && d.AimedWeapons >= Plugin.MaxWeapons.Value;
+             BuildingsData buildings = GameDataFileManager.GetDataFile<BuildingsData>();
+             WeaponsData weapons = GameDataFileManager.GetDataFile<WeaponsData>();
+             PlayerAvailableBuildings available = core.PlayerData.BuildingHandler.AvailableBuildings;
+@@ -715,6 +773,7 @@ namespace InterplanetaryAI
+                 if (weapon == null) continue;
+                 string type = weapon.type.IsValueSet ? weapon.type.Value : "";
+                 if (!Plugin.EnableLasers.Value && (type == "type_Laser" || type == "type_EMPLaser" || type == "type_SolarLaser")) continue;
++                if (atCap && IsAimedWeapon(data)) continue;
+                 int firing = weapon.firing_cost_energy.IsValueSet ? weapon.firing_cost_energy.Value : 0;
+                 if (d.Upkeep + firing > upkeepCap) continue;
+                 // Damage proxy: per-hit damage x fragments x projectiles, scaled by blast area (a railgun's 6.0
+@@ -739,6 +798,7 @@ namespace InterplanetaryAI
+             d.Upkeep += pick.FiringEnergy;
+             d.WeaponEnergySpent += pick.BuildEnergy;
+             d.WeaponsThisTurn++;
++            if (IsAimedWeapon(buildings.GetBuilding(pick.BuildingId))) d.AimedWeapons++;
+             return true;
+         }
+ 
+@@ -766,8 +826,12 @@ namespace InterplanetaryAI
+                 MaterialGlut = Plugin.MaterialGlutRatio.Value > 0f
+                     && EconomyDirector.IsMaterialGlut(d.TurnStartMaterial, d.TurnStartEnergy, Plugin.MaterialGlutRatio.Value, Plugin.MaterialGlutMin.Value),
+                 EnergyGlut = d.EnergyGlut,
++                SustainableMaterialIncome = d.SustainableMaterial,
++                EnergySaturation = Plugin.EnergySaturation.Value,
++                MaterialReserve = d.MaterialReserve,
+             };
+             d.MaterialGlut = balance.MaterialGlut;
++            d.EnergySaturated = EconomyDirector.EnergySaturated(balance);
+             for (int attempt = 0; attempt < 6; attempt++)
+             {
+                 EconOption best = EconomyDirector.Best(options, balance, d.SlotsLeft);
+@@ -1709,6 +1773,8 @@ namespace InterplanetaryAI
+                 .Int("upgradesInstalled", upgradesInstalled).Str("weaponTarget", d.TargetName).Map("targetDefenses", d.TargetDefenses)
+                 .Int("intelBuildings", d.IntelBuildings + d.IntelThisTurn).Int("blindEnemies", d.BlindEnemies).Int("defenseReserve", d.DefenseReserve)
+                 .Bool("holdingFire", d.HoldingFire).Int("releasedEnergy", d.ReleasedEnergy).Bool("materialGlut", d.MaterialGlut).Bool("energyGlut", d.EnergyGlut)
++                .Num("sustainableMaterial", d.SustainableMaterial).Bool("energySaturated", d.EnergySaturated).Int("materialReserve", d.MaterialReserve)
++                .Int("soldMines", d.SoldMines).Int("soldMaterial", d.SoldMaterial).Int("aimedWeapons", d.AimedWeapons)
+                 .Int("refunds", d.Refunds).Map("placementFailures", d.PlacementFailures).Int("steps", d.Steps)
+                 .Map("queued", d.Actions).ToString());
+         }
+diff --git a/AI/Patches.cs b/AI/Patches.cs
+index 72b690d..b4fe314 100644
+--- a/AI/Patches.cs
++++ b/AI/Patches.cs
+@@ -41,6 +41,8 @@ namespace InterplanetaryAI
+             {
+                 PlayerData me = __instance.PlayerData;
+                 if (!me.AIPlayer) return;
++                // v0.12: the long aiming window by default; with the strategy on, hold turns go back to the game's 20 s.
++                if (Plugin.Active) StrategyPatches.SetAimWindow(__instance, Plugin.AimingWindowSeconds.Value);
+                 Plugin.WriteDecision(new Json()
+                     .Str("e", "init").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName).Int("id", me.PlayerID).Int("lvl", me.AILevel)
+                     .Bool("active", Plugin.Active).Num("acc", AccuracyPlan.ForLevel(Plugin.Accuracy, me.AILevel))
+@@ -341,10 +343,15 @@ namespace InterplanetaryAI
+                 int powered = 0, primary = 0, secondary = 0;
+                 Dictionary<string, int> primaryByTarget = new Dictionary<string, int>();
+                 Dictionary<string, int> assignedByTarget = new Dictionary<string, int>();
++                List<string> reachKeys = new List<string>();
++                List<int> reachTargets = new List<int>();
++                List<bool> reachFound = new List<bool>();
+                 foreach (AITrajectoryWeapon weapon in weapons)
+                 {
+                     WeaponGameplayData data = weapon.TargetableWeapon != null ? weapon.TargetableWeapon.Weapon : null;
+-                    if (data == null || data.Building == null || !data.Building.Power.HasPower) continue;
++                    // v0.12: live weapons only (the targetable list keeps destroyed weapons: v0.11.1 logged 53-54 to the end).
++                    if (data == null || data.Building == null || data.Building.CurrentState != BaseBuilding.BuildingState.Normal
++                        || !data.Building.Power.HasPower) continue;
+                     powered++;
+                     string targetName = weapon.TargetEnemy != null && weapon.TargetEnemy.Player != null ? weapon.TargetEnemy.Player.UserNickName : "?";
+                     Increment(assignedByTarget, targetName);
+@@ -359,9 +366,13 @@ namespace InterplanetaryAI
+                     }
+                     if (weapon.TargetEnemy != null && weapon.TargetEnemy.Player != null)
+                     {
+-                        Plugin.Reach.Report(WeaponKey(data), weapon.TargetEnemy.Player.PlayerID, turn, weapon.HasFoundPrimaryTargetTrajectory);
++                        reachKeys.Add(WeaponKey(data));
++                        reachTargets.Add(weapon.TargetEnemy.Player.PlayerID);
++                        reachFound.Add(weapon.HasFoundPrimaryTargetTrajectory);
+                     }
+                 }
++                // v0.12: failures count as "out of reach" only where most weapons at that target found a trajectory.
++                int unreachableMarked = Plugin.Reach.ReportTurn(reachKeys, reachTargets, reachFound, turn, Plugin.ReachFailMinShare.Value);
+                 // v0.10: strike history follows what was actually put up for firing (0 on a hold turn).
+                 StrategyPatches.ReportFired(core.PlayerData.PlayerID, (hitting != null ? hitting.Count : 0) + (missing != null ? missing.Count : 0));
+ 
+@@ -370,7 +381,7 @@ namespace InterplanetaryAI
+                     .Int("weapons", weapons.Count).Int("powered", powered).Int("primaryFound", primary).Int("secondaryOnly", secondary)
+                     .Int("plannedHits", __instance.Hits).Int("plannedMisses", __instance.Misses)
+                     .Int("firingHits", hitting != null ? hitting.Count : -1).Int("firingMisses", missing != null ? missing.Count : -1)
+-                    .Map("assigned", assignedByTarget).Map("primaryByTarget", primaryByTarget).ToString());
++                    .Map("assigned", assignedByTarget).Map("primaryByTarget", primaryByTarget).Int("unreachableMarked", unreachableMarked).ToString());
+             }
+             catch (Exception e)
+             {
+diff --git a/AI/Plugin.cs b/AI/Plugin.cs
+index 6c487ef..c8b56ee 100644
+--- a/AI/Plugin.cs
++++ b/AI/Plugin.cs
+@@ -22,7 +22,7 @@ namespace InterplanetaryAI
+     {
+         public const string GUID = "pavol.interplanetary.ai";
+         public const string NAME = "Interplanetary EE: Smarter AI";
+-        public const string VERSION = "0.11.1";
++        public const string VERSION = "0.12.0";
+ 
+         internal static ManualLogSource Log;
+ 
+@@ -98,6 +98,14 @@ namespace InterplanetaryAI
+         internal static ConfigEntry<float> LeaderInfluence;
+         internal static ConfigEntry<float> BigSalvoShots;
+         internal static ConfigEntry<float> AbortBelowShare;
++        internal static ConfigEntry<int> AbortBelowWeapons;
++        internal static ConfigEntry<float> AimingWindowSeconds;
++        internal static ConfigEntry<float> ReachFailMinShare;
++        internal static ConfigEntry<int> MaxWeapons;
++        internal static ConfigEntry<int> MaterialHorizonTurn;
++        internal static ConfigEntry<int> MaterialReserve;
++        internal static ConfigEntry<float> EnergySaturation;
++        internal static ConfigEntry<int> SellDryMinesPerTurn;
+         internal static ConfigEntry<bool> CounterResearch;
+         internal static ConfigEntry<bool> StrategyEnabled;
+         internal static ConfigEntry<int> StrikeEvery;
+@@ -312,8 +320,17 @@ namespace InterplanetaryAI
+                 "v0.10: material counts as in glut once the banked stock is this many times the turn's energy budget; energy gains then count fully, material gains and material cost at 0.25. 0 = off.");
+             MaterialGlutMin = Config.Bind("Director", "MaterialGlutMin", 5000, "Smallest material stock that counts as glut.");
+             EnergyGlutShare = Config.Bind("Director", "EnergyGlutShare", 0.3f,
+-                "v0.11: energy counts as in glut when last turn ended with at least this share of its energy budget unspent; material gains then count fully, energy gains and energy cost at 0.25, and weapon upgrades are ranked by damage per building. 0 = off.");
++                "v0.11: energy counts as in glut when last turn ended with at least this share of its energy budget unspent; material gains then count fully, energy gains not at all (v0.12), energy cost at 0.25, and weapon upgrades are ranked by damage per building. 0 = off.");
+             EnergyGlutMin = Config.Bind("Director", "EnergyGlutMin", 5000, "Smallest unspent energy that counts as glut.");
++            MaxWeapons = Config.Bind("Director", "MaxWeapons", 30,
++                "v0.12: most aimed weapons (all but lasers and superweapons) per AI. The game's trajectory search is time-bound: v0.11.1 aimed 2-15 of ~50 at the human. Surplus goes to weapon upgrades. 0 = no cap.");
++            MaterialHorizonTurn = Config.Bind("Director", "MaterialHorizonTurn", 45,
++                "v0.12: the planet's remaining material is budgeted to last until this turn. Energy income above EnergySaturation x what that material can use is not built. v0.11.1 AIs ran their planets dry at T26-27, the human at T38.");
++            EnergySaturation = Config.Bind("Director", "EnergySaturation", 1.5f, "v0.12: see MaterialHorizonTurn. 0 = off.");
++            MaterialReserve = Config.Bind("Director", "MaterialReserve", 15000,
++                "v0.12: once the planet will run dry within BankWarningTurns, the economy keeps this much material back for defenses, weapons and rebuilding. 0 = off.");
++            SellDryMinesPerTurn = Config.Bind("Director", "SellDryMinesPerTurn", 10,
++                "v0.12: once the planet is dry, sell this many mines a turn (they yield nothing; selling returns 80% of their material and upgrades). 0 = off.");
+             CounterResearch = Config.Bind("Research", "CounterResearch", true,
+                 "v0.11: when a known enemy weapon has no counter-defense we can build (Lasers -> Shield), research the tech that unlocks it next.");
+ 
+@@ -329,8 +346,13 @@ namespace InterplanetaryAI
+             LeaderInfluence = Config.Bind("Strategy", "LeaderInfluence", 0.5f,
+                 "v0.11: commit value = expected shots through x (1 + this x target score / best score). v0.10.1 used score x shots through and struck the other AI while the human was the softer target.");
+             BigSalvoShots = Config.Bind("Strategy", "BigSalvoShots", 24f, "Strike when this many shots are expected through, whatever share of the salvo that is.");
+-            AbortBelowShare = Config.Bind("Strategy", "AbortBelowShare", 0.3f,
+-                "At firing time, call a strike off when fewer than this share of the weapons found a trajectory onto the committed target (at least MinWeapons).");
++            AbortBelowShare = Config.Bind("Strategy", "AbortBelowShare", 0f,
++                "At firing time, call a strike off when fewer than max(AbortBelowWeapons, this share of the weapons) found a trajectory onto the committed target. v0.12: 0 (v0.11.1 aborted 13 of 26 strikes at 0.3).");
++            AbortBelowWeapons = Config.Bind("Strategy", "AbortBelowWeapons", 3, "v0.12: call a strike off when fewer than this many weapons found a trajectory onto the committed target.");
++            AimingWindowSeconds = Config.Bind("Strategy", "AimingWindowSeconds", 40f,
++                "v0.12: on a strike turn the AI keeps searching for trajectories until this many seconds after its turn began, or the human ends the turn if later (the game: 20). Hold turns keep 20. Longer = more weapons aimed, more waiting between turns. 20-120.");
++            ReachFailMinShare = Config.Bind("Strategy", "ReachFailMinShare", 0.5f,
++                "v0.12: a weapon that found no trajectory marks its target unreachable only when at least this share of the weapons aimed at that target found one (otherwise the search ran out of time).");
+             RollEnergyShare = Config.Bind("Strategy", "RollEnergyShare", 0.5f, "Share of a target's energy income assumed left for its defense rolls (150 energy each).");
+ 
+             DirectorEnabled = Config.Bind("Director", "Enabled", true,
+@@ -380,6 +402,15 @@ namespace InterplanetaryAI
+                 }
+                 migrated.Value = "0.10";
+             }
++            if (migrated.Value == "0.10")
++            {
++                if (Math.Abs(AbortBelowShare.Value - 0.3f) < 1e-4f)
++                {
++                    AbortBelowShare.Value = 0f; // v0.11.1: aborted 13 of 26 strikes, throwing away 6-15 aimed weapons each
++                    Log.LogInfo("AbortBelowShare: replaced the unchanged default 0.3 with 0 (once).");
++                }
++                migrated.Value = "0.12";
++            }
+             DefensesPerTurn = Config.Bind("Director", "DefensesPerTurn", 3,
+                 "Defenses queued per turn when on target; more when behind (see DefenseCatchUpTurns).");
+             DefenseFloorShare = Config.Bind("Director", "DefenseFloorShare", 0.15f,
+@@ -499,6 +530,7 @@ namespace InterplanetaryAI
+             StrategyCfg.LeaderInfluence = Math.Max(0f, LeaderInfluence.Value);
+             StrategyCfg.BigSalvoShots = Math.Max(StrategyCfg.MinPassingShots, BigSalvoShots.Value);
+             StrategyCfg.AbortBelowShare = Clamp01(AbortBelowShare.Value);
++            StrategyCfg.AbortBelowWeapons = Math.Max(1, AbortBelowWeapons.Value);
+ 
+             Build.Growth = BuildPlanner.Parse(GrowthWeights.Value, Build.Growth);
+             Build.Pressure = BuildPlanner.Parse(PressureWeights.Value, Build.Pressure);
+diff --git a/AI/StrategyPatches.cs b/AI/StrategyPatches.cs
+index 6c4e879..fd90b74 100644
+--- a/AI/StrategyPatches.cs
++++ b/AI/StrategyPatches.cs
+@@ -36,6 +36,22 @@ namespace InterplanetaryAI
+         private static readonly Dictionary<int, State> s_states = new Dictionary<int, State>();
+         private static readonly HashSet<string> s_reportedErrors = new HashSet<string>();
+         private static readonly FieldInfo s_coreTargeting = AccessTools.Field(typeof(AICore), "m_weaponTargeting");
++        // v0.12: AICore is ready once m_timeOut seconds have passed since its BeginTurn and the human has ended the turn (or
++        // every weapon found a trajectory). The trajectory search runs only until then: 20 s in the game.
++        private static readonly FieldInfo s_coreTimeOut = AccessTools.Field(typeof(AICore), "m_timeOut");
++        internal const float NativeAimWindow = 20f;
++
++        internal static void SetAimWindow(AICore core, float seconds)
++        {
++            try
++            {
++                if (s_coreTimeOut != null && core != null) s_coreTimeOut.SetValue(core, Math.Max(NativeAimWindow, Math.Min(120f, seconds)));
++            }
++            catch (Exception e)
++            {
++                ReportOnce("aim-window", e);
++            }
++        }
+ 
+         internal static void Reset()
+         {
+@@ -208,6 +224,8 @@ namespace InterplanetaryAI
+             int aimedBefore = state.LastCommitId;
+             state.LastCommitId = decision.CommitTargetId;
+             if (!decision.Fire) Release(core, state);
++            // v0.12: a strike turn gets the long aiming window; a hold turn keeps the game's 20 s (nothing will fire).
++            SetAimWindow(core, decision.Fire ? Plugin.AimingWindowSeconds.Value : NativeAimWindow);
+             // Point the weapons. Native targeting already ran in AICore.BeginTurn; trajectory search starts in Update.
+             AssignTargets(core, decision.CommitTargetId);
+             Log(me, turn, decision, state, aimedBefore);
+@@ -220,9 +238,9 @@ namespace InterplanetaryAI
+         {
+             State s;
+             if (!s_states.TryGetValue(me.PlayerID, out s) || s.Decision == null || !s.Decision.Fire) return false;
+-            if (s.Decision.Reason == "max-hold") return false; // the fallback fires whatever it has
+-            float needed = Math.Max(Plugin.StrategyCfg.MinWeapons, Plugin.StrategyCfg.AbortBelowShare * s.Decision.Shots);
+-            if (hitsOnCommit >= needed) return false;
++            // v0.12: fire what can aim; only a strike with almost nothing aimed is called off (Strategy.ShouldAbort).
++            if (!Strategy.ShouldAbort(hitsOnCommit, s.Decision.Shots, s.Decision.Reason, Plugin.StrategyCfg)) return false;
++            float needed = Strategy.AbortThreshold(s.Decision.Shots, Plugin.StrategyCfg);
+             s.Aborted = true;
+             Plugin.WriteDecision(new Json().Str("e", "abort").Int("t", s.Turn).Str("ai", me.UserNickName)
+                 .Int("hitsOnCommit", hitsOnCommit).Num("needed", needed).Int("shots", s.Decision.Shots).ToString());
+diff --git a/AI/Tests/Program.cs b/AI/Tests/Program.cs
+index d2ab8c2..1f379f8 100644
+--- a/AI/Tests/Program.cs
++++ b/AI/Tests/Program.cs
+@@ -51,6 +51,7 @@ namespace InterplanetaryAI.Tests
+             CommittedAssignmentRules();
+             MaterialGlutRules();
+             V011Rules();
++            V012Rules();
+ 
+             Console.WriteLine(s_checks + " checks, " + s_failures + " failed");
+             return s_failures == 0 ? 0 : 1;
+@@ -309,7 +310,8 @@ namespace InterplanetaryAI.Tests
+             Check(EconomyDirector.Best(options, bal, 10) == material, "energy glut: material gains win");
+             Check(Math.Abs(EconomyDirector.EnergyCostFactor(bal) - bal.GlutEnergyWeight) < 1e-6, "energy glut: energy cost at GlutEnergyWeight");
+             bal.MaterialGlut = true;
+-            Check(EconomyDirector.Best(options, bal, 10) == energy, "material glut wins over energy glut (both: spend the material)");
++            // v0.12 (was: energy wins): v0.11.1 turned the last planet material into ~180 Floating Plants with energy unspent.
++            Check(EconomyDirector.Best(options, bal, 10) == material, "both gluts: energy gains are worthless, material wins");
+ 
+             // Counter research: Lasers known, no Shield buildable -> Shield tech first.
+             var countersWithShield = new Dictionary<string, Dictionary<string, float>>(counters);
+@@ -328,6 +330,93 @@ namespace InterplanetaryAI.Tests
+             Check(urgent.Count == 0, "a weapon no longer known (count 0) asks for nothing");
+         }
+ 
++        // ---- v0.12: material budget, energy saturation, fire what can aim, reachability ----------------
++        private static void V012Rules()
++        {
++            // Sustainable material: planet left / turns to the horizon (at least minTurns); -1 when unlimited.
++            Check(Math.Abs(EconomyDirector.SustainableMaterialIncome(124334, true, 24, 45, 3) - 124334f / 21f) < 1f, "Beam T24: 124k over 21 turns");
++            Check(Math.Abs(EconomyDirector.SustainableMaterialIncome(30000, true, 44, 45, 3) - 10000f) < 1f, "near the horizon: at least minTurns");
++            Check(EconomyDirector.SustainableMaterialIncome(0, true, 30, 45, 3) == 0f, "dry planet: 0");
++            Check(EconomyDirector.SustainableMaterialIncome(50000, false, 30, 45, 3) < 0f, "unlimited planet: -1");
++
++            // Energy saturation, v0.11.1 Beam numbers (Floating Plant wave T22-27).
++            EconomyBalance t18 = new EconomyBalance { EnergyIncome = 6792, MaterialIncome = 10884, TargetRatio = 0.6f,
++                SustainableMaterialIncome = EconomyDirector.SustainableMaterialIncome(276774, true, 18, 45, 3) };
++            Check(!EconomyDirector.EnergySaturated(t18), "T18 (6.8k energy, planet barely binding): not saturated");
++            EconomyBalance t22 = new EconomyBalance { EnergyIncome = 20118, MaterialIncome = 16193, TargetRatio = 0.6f, WeaponUpkeep = 6000,
++                SustainableMaterialIncome = EconomyDirector.SustainableMaterialIncome(190865, true, 22, 45, 3) };
++            Check(EconomyDirector.EnergySaturated(t22), "T22 (20k energy, 8.3k sustainable material): saturated");
++            t22.WeaponUpkeep = 12000;
++            Check(!EconomyDirector.EnergySaturated(t22), "upkeep counts toward wanted energy");
++            EconomyBalance roomy = new EconomyBalance { EnergyIncome = 50000, MaterialIncome = 5000, TargetRatio = 0.6f,
++                SustainableMaterialIncome = 8000f };
++            Check(!EconomyDirector.EnergySaturated(roomy), "planet not binding (sustainable above production): never saturated");
++            EconomyBalance unlimited = new EconomyBalance { EnergyIncome = 50000, MaterialIncome = 5000, TargetRatio = 0.6f };
++            Check(!EconomyDirector.EnergySaturated(unlimited), "unlimited planet: never saturated");
++            EconomyBalance dry = new EconomyBalance { EnergyIncome = 30000, MaterialIncome = 25000, TargetRatio = 0.6f, SustainableMaterialIncome = 0f };
++            Check(EconomyDirector.EnergySaturated(dry), "dry planet with income: saturated");
++            dry.EnergySaturation = 0f;
++            Check(!EconomyDirector.EnergySaturated(dry), "EnergySaturation 0 = off");
++
++            // Saturated: a Floating Plant loses to a material option even in material glut.
++            EconOption plant = new EconOption { Id = "fp", Kind = OptionKind.Plant, Energy = 250, Material = 300, EnergyGain = 100f };
++            EconOption mineUp = new EconOption { Id = "up", Kind = OptionKind.Upgrade, Energy = 50, Material = 250, MaterialGain = 40f };
++            EconomyBalance sat = new EconomyBalance { EnergyIncome = 20118, MaterialIncome = 16193, TargetRatio = 0.6f, WeaponUpkeep = 6000,
++                SustainableMaterialIncome = 8298f, EnergyBudget = 20000, MaterialBudget = 23000, MaterialGlut = true };
++            Check(EconomyDirector.Best(new List<EconOption> { plant, mineUp }, sat, 10) == mineUp, "saturated + material glut: no Floating Plant");
++            Check(EconomyDirector.Best(new List<EconOption> { plant }, sat, 10) == null, "saturated: a plant alone is not worth buying");
++            sat.SustainableMaterialIncome = -1f;
++            Check(EconomyDirector.Best(new List<EconOption> { plant }, sat, 10) == plant, "setup: unlimited planet, material glut buys the plant");
++
++            // Economy reserve: once the planet runs dry within the warning, the economy cannot spend the reserve.
++            Check(EconomyDirector.EconomyReserve(124334, 27504, true, 8, 15000) == 15000, "Beam T24 (4.5 turns left): reserve on");
++            Check(EconomyDirector.EconomyReserve(190865, 16193, true, 8, 15000) == 0, "Beam T22 (11.8 turns left): off");
++            Check(EconomyDirector.EconomyReserve(0, 0f, true, 8, 15000) == 15000, "dry planet: on");
++            Check(EconomyDirector.EconomyReserve(0, 0f, false, 8, 15000) == 0, "unlimited planet: off");
++            Check(EconomyDirector.EconomyReserve(0, 0f, true, 8, 0) == 0, "reserve 0 = off");
++            EconomyBalance reserved = new EconomyBalance { EnergyIncome = 1000, MaterialIncome = 1000, TargetRatio = 0.6f,
++                EnergyBudget = 20000, MaterialBudget = 15200, MaterialReserve = 15000 };
++            Check(EconomyDirector.Best(new List<EconOption> { mineUp }, reserved, 10) == null, "250 material over a 15k reserve of 15.2k: not affordable");
++            reserved.MaterialBudget = 15300;
++            Check(EconomyDirector.Best(new List<EconOption> { mineUp }, reserved, 10) == mineUp, "15.3k: affordable");
++
++            // Fire what can aim: abort only below AbortBelowWeapons (share 0 by default).
++            StrategySettings s = new StrategySettings();
++            Check(!Strategy.ShouldAbort(6, 53, "saturated", s), "v0.11.1 Brother T27: 6 of 53 aimed fires now");
++            Check(Strategy.ShouldAbort(2, 52, "saturated", s), "2 aimed: called off");
++            Check(!Strategy.ShouldAbort(3, 52, "saturated", s), "3 aimed (the minimum): fires");
++            Check(!Strategy.ShouldAbort(0, 52, "max-hold", s), "max-hold fires whatever it has");
++            s.AbortBelowShare = 0.3f;
++            Check(Strategy.ShouldAbort(15, 52, "saturated", s), "with the v0.11 share 0.3: 15 of 52 is called off");
++
++            // Reachability: failures count only where enough weapons at that target found a trajectory.
++            ReachabilityMemory reach = new ReachabilityMemory(3);
++            List<string> keys = new List<string>();
++            List<int> targets = new List<int>();
++            List<bool> found = new List<bool>();
++            for (int i = 0; i < 50; i++) { keys.Add("w" + i); targets.Add(7); found.Add(i < 10); }
++            int marked = reach.ReportTurn(keys, targets, found, 25, 0.5f);
++            HashSet<int> unreachable = new HashSet<int>();
++            reach.FillUnreachable("w20", 26, unreachable);
++            Check(marked == 0 && !unreachable.Contains(7), "10 of 50 found (search out of time): nobody marks the target unreachable");
++            keys.Clear(); targets.Clear(); found.Clear();
++            for (int i = 0; i < 10; i++) { keys.Add("w" + i); targets.Add(8); found.Add(i < 7); }
++            marked = reach.ReportTurn(keys, targets, found, 25, 0.5f);
++            reach.FillUnreachable("w8", 26, unreachable);
++            Check(marked == 3 && unreachable.Contains(8), "7 of 10 found: the 3 that failed mark it unreachable");
++            reach.FillUnreachable("w2", 26, unreachable);
++            Check(!unreachable.Contains(8), "a weapon that found one is not marked");
++            reach.ReportTurn(new List<string> { "w8" }, new List<int> { 8 }, new List<bool> { true }, 26, 0.5f);
++            reach.FillUnreachable("w8", 27, unreachable);
++            Check(!unreachable.Contains(8), "a later success clears the mark");
++            // Per target: a well-aimed target does not lend its share to a badly aimed one.
++            keys.Clear(); targets.Clear(); found.Clear();
++            for (int i = 0; i < 10; i++) { keys.Add("a" + i); targets.Add(1); found.Add(true); }
++            for (int i = 0; i < 10; i++) { keys.Add("b" + i); targets.Add(2); found.Add(i < 2); }
++            marked = reach.ReportTurn(keys, targets, found, 30, 0.5f);
++            Check(marked == 0, "target 2 at 2 of 10 is not marked even though target 1 was 10 of 10");
++        }
++
+         private static void MaterialGlutRules()
+         {
+             Check(EconomyDirector.IsMaterialGlut(17836, 1829, 3f, 5000), "v0.9.1 Guts T21 (17.8k material, 1.8k energy) is glut");
+diff --git a/AI/tools/live_monitor.py b/AI/tools/live_monitor.py
+index 6faece0..380f1f3 100644
+--- a/AI/tools/live_monitor.py
++++ b/AI/tools/live_monitor.py
+@@ -105,8 +105,17 @@ def main():
+                       f"bld {sum(buildings.values())} [{top}] upg {r['upgradesInstalled']} slots {r['slotsAtStart']}"
+                       f" intel {r.get('intelBuildings', '?')} blind {r.get('blindEnemies', '?')} reserveE {r.get('defenseReserve', '?')}"
+                       f"{' WAR' if r['war'] else ''}{' HOLD+' + str(r.get('releasedEnergy')) + 'E' if r.get('holdingFire') else ''}"
+-                      f"{' GLUT' if r.get('materialGlut') else ''}{' EGLUT' if r.get('energyGlut') else ''} | {describe_queued(r.get('queued') or {})} | unspent E{r['energyLeft']}"
++                      f"{' GLUT' if r.get('materialGlut') else ''}{' EGLUT' if r.get('energyGlut') else ''}{' ESAT' if r.get('energySaturated') else ''}"
++                      f" planet {e.get('planetMaterial', '?')} stockM {r.get('materialStart', '?')}"
++                      f"{' keepM ' + str(r.get('materialReserve')) if r.get('materialReserve') else ''}"
++                      f"{' SOLD ' + str(r.get('soldMines')) + ' mines +' + str(r.get('soldMaterial')) + 'M' if r.get('soldMines') else ''}"
++                      f" aimedW {r.get('aimedWeapons', '?')}"
++                      f" | {describe_queued(r.get('queued') or {})} | unspent E{r['energyLeft']}"
+                       + (f" | placement gave up {fails}" if fails else ""), flush=True)
++            elif kind == "fire":
++                if (r.get("firingHits", 0) or 0) + (r.get("firingMisses", 0) or 0) > 0 or (r.get("primaryFound", 0) or 0) > 0:
++                    print(f"T{r['t']} {r['ai']}: aimed {r.get('primaryFound')}/{r.get('powered')} live weapons {r.get('primaryByTarget')}"
++                          f" -> firing {r.get('firingHits')} hits + {r.get('firingMisses')} misses; unreachable marked {r.get('unreachableMarked', '?')}", flush=True)
+             elif kind == "strategy":
+                 passing = r.get("passingBy") or {}
+                 defenses = r.get("defensesBy") or {}

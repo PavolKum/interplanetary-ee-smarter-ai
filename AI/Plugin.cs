@@ -22,7 +22,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.12.0";
+        public const string VERSION = "0.12.1";
 
         internal static ManualLogSource Log;
 
@@ -472,6 +472,7 @@ namespace InterplanetaryAI
             patched += TryPatch(typeof(AIWeaponTargeting), "HandleSecondPhaseTargeting", "SecondPhasePrefix", null);
             patched += TryPatch(typeof(PlayerBuildingHandler), "DealDamageToBuilding", "DealDamagePrefix", null);
             patched += TryPatch(typeof(AICore), "BeginTurn", null, "CoreBeginTurnPostfix", typeof(EconomyPatches));
+            patched += TryPatch(typeof(AICore), "BeginTurn", "CoreBeginTurnPrefix", null, typeof(DirectorPatches)); // v0.12 dry-mine sales
             patched += TryPatch(typeof(AICore), "EndTurn", null, "CoreEndTurnPostfix", typeof(EconomyPatches));
             patched += TryPatch(typeof(AIConstruction), "tryConstructNewBuilding", "TryConstructPrefix", null, typeof(EconomyPatches));
             patched += TryPatch(typeof(AITechQueue), "BeginTurn", "TechQueueBeginTurnPrefix", null, typeof(EconomyPatches));
@@ -480,7 +481,7 @@ namespace InterplanetaryAI
             patched += TryPatch(typeof(AIBuildingPlacementFinder), "Update", "FinderUpdatePrefix", null, typeof(DirectorPatches));
             patched += TryPatch(typeof(PlayerDefenseHandler), "IsHitIntercepted", "BeforeIntercept", "AfterIntercept", typeof(LedgerPatches));
             int laserPatches = EnableLasers.Value ? LaserPatches.Install(new Harmony(GUID + ".lasers")) : 0;
-            Log.LogInfo(NAME + " " + VERSION + " loaded; " + patched + " of 14 hooks patched. Director " + (DirectorEnabled.Value ? "on" : "off")
+            Log.LogInfo(NAME + " " + VERSION + " loaded; " + patched + " of 15 hooks patched. Director " + (DirectorEnabled.Value ? "on" : "off")
                 + ", war from turn " + WarFromTurn.Value + ". Accuracy by level: " + AccuracyByLevel.Value
                 + "; research plan " + ResearchPlanIds.Count + " techs; superweapons " + Superweapons.Value
                 + "; lasers " + (EnableLasers.Value ? laserPatches + " of 5 patches" : "off"));

@@ -31,6 +31,7 @@ namespace InterplanetaryAI
             public bool Aborted;                // this turn's strike was called off at firing time
             public StrategyDecision Decision;
             public readonly HashSet<int> PlanetsSeen = new HashSet<int>(); // enemies whose buildings our intel has seen
+            public readonly Dictionary<int, int> LowYield = new Dictionary<int, int>(); // v0.12: enemy -> low-yield turns running
         }
 
         private static readonly Dictionary<int, State> s_states = new Dictionary<int, State>();
@@ -103,11 +104,21 @@ namespace InterplanetaryAI
 
         // From AiPatches.GoalTargetWeaponsPostfix: what actually went into the firing lists this turn. The strike
         // history follows real shots, not the plan (a strike whose trajectories all failed does not use the pulse).
-        internal static void ReportFired(int playerId, int fired)
+        // v0.12 (Sol #2): also how many weapons pointed at the committed enemy found a primary trajectory this turn (hold turns
+        // included: the search still runs). Fewer than AbortBelowWeapons with at least MinWeapons pointed = a low-yield turn.
+        internal static void ReportFired(int playerId, int fired, Dictionary<int, int> assignedById, Dictionary<int, int> primaryById)
         {
             State s;
             if (!s_states.TryGetValue(playerId, out s) || s.Decision == null || s.Reported) return;
             s.Reported = true;
+            int commit = s.Decision.CommitTargetId, assigned, found;
+            if (commit >= 0 && assignedById != null && assignedById.TryGetValue(commit, out assigned) && assigned >= Plugin.StrategyCfg.MinWeapons)
+            {
+                primaryById.TryGetValue(commit, out found);
+                int low;
+                s.LowYield.TryGetValue(commit, out low);
+                s.LowYield[commit] = found < Plugin.StrategyCfg.AbortBelowWeapons ? low + 1 : 0;
+            }
             if (fired > 0)
             {
                 s.LastStrikeTurn = s.Turn;
@@ -202,6 +213,7 @@ namespace InterplanetaryAI
                         EnergyProduction = view.EnergyProduction,
                         Shots = perEnemy[view.PlayerId],
                         Observed = Plugin.Ledger.ObservedAll(me.PlayerID, view.PlayerId, 1),
+                        LowYieldTurns = state.LowYield.ContainsKey(view.PlayerId) ? state.LowYield[view.PlayerId] : 0,
                     });
                 }
                 decision = Strategy.Decide(turn, war, salvo, accuracy, targets, DefensePlanner.Counters, state.LastStrikeTurn, state.HoldTurns,

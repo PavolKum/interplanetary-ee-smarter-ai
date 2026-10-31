@@ -333,19 +333,21 @@ namespace InterplanetaryAI.Tests
         // ---- v0.12: material budget, energy saturation, fire what can aim, reachability ----------------
         private static void V012Rules()
         {
-            // Sustainable material: planet left / turns to the horizon (at least minTurns); -1 when unlimited.
-            Check(Math.Abs(EconomyDirector.SustainableMaterialIncome(124334, true, 24, 45, 3) - 124334f / 21f) < 1f, "Beam T24: 124k over 21 turns");
-            Check(Math.Abs(EconomyDirector.SustainableMaterialIncome(30000, true, 44, 45, 3) - 10000f) < 1f, "near the horizon: at least minTurns");
-            Check(EconomyDirector.SustainableMaterialIncome(0, true, 30, 45, 3) == 0f, "dry planet: 0");
-            Check(EconomyDirector.SustainableMaterialIncome(50000, false, 30, 45, 3) < 0f, "unlimited planet: -1");
+            // Sustainable material: (planet + bank) / turns to the horizon (at least minTurns); -1 when unlimited.
+            Check(Math.Abs(EconomyDirector.SustainableMaterialIncome(124334, 0, true, 24, 45, 3) - 124334f / 21f) < 1f, "Beam T24: 124k over 21 turns");
+            Check(Math.Abs(EconomyDirector.SustainableMaterialIncome(100000, 26000, true, 24, 45, 3) - 6000f) < 1f, "the bank counts");
+            Check(Math.Abs(EconomyDirector.SustainableMaterialIncome(30000, 0, true, 44, 45, 3) - 10000f) < 1f, "near the horizon: at least minTurns");
+            Check(EconomyDirector.SustainableMaterialIncome(0, 0, true, 30, 45, 3) == 0f, "dry planet, no bank: 0");
+            Check(EconomyDirector.SustainableMaterialIncome(50000, 0, false, 30, 45, 3) < 0f, "unlimited planet: -1");
+            Check(EconomyDirector.PlanetMaterialFactor(0, 0f, 10) == 0f, "dry planet: extraction gains worth nothing (Sol #1)");
 
             // Energy saturation, v0.11.1 Beam numbers (Floating Plant wave T22-27).
             EconomyBalance t18 = new EconomyBalance { EnergyIncome = 6792, MaterialIncome = 10884, TargetRatio = 0.6f,
-                SustainableMaterialIncome = EconomyDirector.SustainableMaterialIncome(276774, true, 18, 45, 3) };
-            Check(!EconomyDirector.EnergySaturated(t18), "T18 (6.8k energy, planet barely binding): not saturated");
+                SustainableMaterialIncome = EconomyDirector.SustainableMaterialIncome(276774, 17282, true, 18, 45, 3) };
+            Check(!EconomyDirector.EnergySaturated(t18), "T18 (6.8k energy, planet not yet binding): not saturated");
             EconomyBalance t22 = new EconomyBalance { EnergyIncome = 20118, MaterialIncome = 16193, TargetRatio = 0.6f, WeaponUpkeep = 6000,
-                SustainableMaterialIncome = EconomyDirector.SustainableMaterialIncome(190865, true, 22, 45, 3) };
-            Check(EconomyDirector.EnergySaturated(t22), "T22 (20k energy, 8.3k sustainable material): saturated");
+                SustainableMaterialIncome = EconomyDirector.SustainableMaterialIncome(190865, 23378, true, 22, 45, 3) };
+            Check(EconomyDirector.EnergySaturated(t22), "T22 (20k energy, 9.3k sustainable material): saturated");
             t22.WeaponUpkeep = 12000;
             Check(!EconomyDirector.EnergySaturated(t22), "upkeep counts toward wanted energy");
             EconomyBalance roomy = new EconomyBalance { EnergyIncome = 50000, MaterialIncome = 5000, TargetRatio = 0.6f,
@@ -353,18 +355,33 @@ namespace InterplanetaryAI.Tests
             Check(!EconomyDirector.EnergySaturated(roomy), "planet not binding (sustainable above production): never saturated");
             EconomyBalance unlimited = new EconomyBalance { EnergyIncome = 50000, MaterialIncome = 5000, TargetRatio = 0.6f };
             Check(!EconomyDirector.EnergySaturated(unlimited), "unlimited planet: never saturated");
-            EconomyBalance dry = new EconomyBalance { EnergyIncome = 30000, MaterialIncome = 25000, TargetRatio = 0.6f, SustainableMaterialIncome = 0f };
-            Check(EconomyDirector.EnergySaturated(dry), "dry planet with income: saturated");
+            // Sol v0.12 #1: the adapter's real dry state - material income 0, Brother T26 (75.7k banked, material glut, no energy glut).
+            EconomyBalance dry = new EconomyBalance { EnergyIncome = 37034, MaterialIncome = 0, TargetRatio = 0.6f, WeaponUpkeep = 8000,
+                SustainableMaterialIncome = EconomyDirector.SustainableMaterialIncome(0, 75735, true, 26, 45, 3),
+                EnergyBudget = 30000, MaterialBudget = 75735, MaterialGlut = true };
+            Check(EconomyDirector.EnergySaturated(dry), "dry planet (income 0): saturated");
+            EconOption plant = new EconOption { Id = "fp", Kind = OptionKind.Plant, Energy = 250, Material = 300, EnergyGain = 100f };
+            Check(EconomyDirector.Best(new List<EconOption> { plant }, dry, 10) == null, "dry + material glut: no Floating Plant");
+            dry.WeaponUpkeep = 30000;
+            Check(!EconomyDirector.EnergySaturated(dry), "dry, but firing needs the energy: not saturated");
+            dry.WeaponUpkeep = 8000;
+            dry.EnergyIncome = 14000;
+            Check(!EconomyDirector.EnergySaturated(dry), "dry: spending the 75.7k bank needs energy too (14k < 1.5 x (8k + 0.6 x 4k))");
+            dry.EnergyIncome = 37034;
+            dry.WeaponUpkeep = 8000;
             dry.EnergySaturation = 0f;
             Check(!EconomyDirector.EnergySaturated(dry), "EnergySaturation 0 = off");
 
-            // Saturated: a Floating Plant loses to a material option even in material glut.
-            EconOption plant = new EconOption { Id = "fp", Kind = OptionKind.Plant, Energy = 250, Material = 300, EnergyGain = 100f };
+            // Saturated: plants and energy upgrades are filtered; projects (Reactor Trials) and material options are not.
             EconOption mineUp = new EconOption { Id = "up", Kind = OptionKind.Upgrade, Energy = 50, Material = 250, MaterialGain = 40f };
+            EconOption energyUp = new EconOption { Id = "eup", Kind = OptionKind.Upgrade, Energy = 50, Material = 150, EnergyGain = 75f };
+            EconOption trials = new EconOption { Id = "trials", Kind = OptionKind.Project, Energy = 150, Material = 300, EnergyGain = 3000f, MaterialGain = -500f };
             EconomyBalance sat = new EconomyBalance { EnergyIncome = 20118, MaterialIncome = 16193, TargetRatio = 0.6f, WeaponUpkeep = 6000,
-                SustainableMaterialIncome = 8298f, EnergyBudget = 20000, MaterialBudget = 23000, MaterialGlut = true };
+                SustainableMaterialIncome = 9300f, EnergyBudget = 20000, MaterialBudget = 23000, MaterialGlut = true };
             Check(EconomyDirector.Best(new List<EconOption> { plant, mineUp }, sat, 10) == mineUp, "saturated + material glut: no Floating Plant");
-            Check(EconomyDirector.Best(new List<EconOption> { plant }, sat, 10) == null, "saturated: a plant alone is not worth buying");
+            Check(EconomyDirector.Best(new List<EconOption> { plant }, sat, 10) == null, "saturated: a plant alone is not bought");
+            Check(EconomyDirector.Best(new List<EconOption> { energyUp }, sat, 10) == null, "saturated: an energy yield upgrade is not bought");
+            Check(EconomyDirector.Best(new List<EconOption> { trials }, sat, 10) == trials, "saturated: Reactor Trials still can be (Sol #5)");
             sat.SustainableMaterialIncome = -1f;
             Check(EconomyDirector.Best(new List<EconOption> { plant }, sat, 10) == plant, "setup: unlimited planet, material glut buys the plant");
 
@@ -388,6 +405,24 @@ namespace InterplanetaryAI.Tests
             Check(!Strategy.ShouldAbort(0, 52, "max-hold", s), "max-hold fires whatever it has");
             s.AbortBelowShare = 0.3f;
             Check(Strategy.ShouldAbort(15, 52, "saturated", s), "with the v0.11 share 0.3: 15 of 52 is called off");
+
+            // Sol v0.12 #2: a target nothing aims at moves the commit; max-hold comes before another "saturated" strike.
+            StrategySettings st = new StrategySettings();
+            var rails = Railguns(40);
+            SalvoTarget hard = Target(1, 0.5f, 0, false, 0f);
+            SalvoTarget other = Target(2, 0.5f, 6, false, 0f);
+            StrategyDecision pick = Strategy.Decide(30, true, rails, 0.8f, new List<SalvoTarget> { hard, other }, EnhancedCounters(), -1000, 0, 40, st, 1);
+            Check(pick.CommitTargetId == 1, "setup: the undefended target is committed");
+            hard = Target(1, 0.5f, 0, false, 0f); hard.LowYieldTurns = 2;
+            other = Target(2, 0.5f, 6, false, 0f);
+            pick = Strategy.Decide(30, true, rails, 0.8f, new List<SalvoTarget> { hard, other }, EnhancedCounters(), -1000, 0, 40, st, 1);
+            Check(pick.CommitTargetId == 2, "two low-yield turns at it: the commit moves; got " + pick.CommitTargetId);
+            hard = Target(1, 0.5f, 0, false, 0f); hard.LowYieldTurns = 1;
+            other = Target(2, 0.5f, 6, false, 0f);
+            pick = Strategy.Decide(30, true, rails, 0.8f, new List<SalvoTarget> { hard, other }, EnhancedCounters(), -1000, 0, 40, st, 1);
+            Check(pick.CommitTargetId == 1, "one low-yield turn: not yet");
+            pick = Strategy.Decide(30, true, rails, 0.8f, new List<SalvoTarget> { Target(1, 0.5f, 0, false, 0f) }, EnhancedCounters(), -1000, 5, 40, st, 1);
+            Check(pick.Fire && pick.Reason == "max-hold", "5 held turns and saturated: max-hold (exempt from the abort); got " + pick.Reason);
 
             // Reachability: failures count only where enough weapons at that target found a trajectory.
             ReachabilityMemory reach = new ReachabilityMemory(3);

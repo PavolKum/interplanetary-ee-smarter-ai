@@ -343,6 +343,7 @@ namespace InterplanetaryAI
                 int powered = 0, primary = 0, secondary = 0;
                 Dictionary<string, int> primaryByTarget = new Dictionary<string, int>();
                 Dictionary<string, int> assignedByTarget = new Dictionary<string, int>();
+                Dictionary<int, int> assignedById = new Dictionary<int, int>(), primaryById = new Dictionary<int, int>();
                 List<string> reachKeys = new List<string>();
                 List<int> reachTargets = new List<int>();
                 List<bool> reachFound = new List<bool>();
@@ -366,19 +367,29 @@ namespace InterplanetaryAI
                     }
                     if (weapon.TargetEnemy != null && weapon.TargetEnemy.Player != null)
                     {
+                        int targetId = weapon.TargetEnemy.Player.PlayerID;
                         reachKeys.Add(WeaponKey(data));
-                        reachTargets.Add(weapon.TargetEnemy.Player.PlayerID);
+                        reachTargets.Add(targetId);
                         reachFound.Add(weapon.HasFoundPrimaryTargetTrajectory);
+                        int n;
+                        assignedById.TryGetValue(targetId, out n);
+                        assignedById[targetId] = n + 1;
+                        if (weapon.HasFoundPrimaryTargetTrajectory)
+                        {
+                            primaryById.TryGetValue(targetId, out n);
+                            primaryById[targetId] = n + 1;
+                        }
                     }
                 }
                 // v0.12: failures count as "out of reach" only where most weapons at that target found a trajectory.
                 int unreachableMarked = Plugin.Reach.ReportTurn(reachKeys, reachTargets, reachFound, turn, Plugin.ReachFailMinShare.Value);
                 // v0.10: strike history follows what was actually put up for firing (0 on a hold turn).
-                StrategyPatches.ReportFired(core.PlayerData.PlayerID, (hitting != null ? hitting.Count : 0) + (missing != null ? missing.Count : 0));
+                StrategyPatches.ReportFired(core.PlayerData.PlayerID, (hitting != null ? hitting.Count : 0) + (missing != null ? missing.Count : 0),
+                    assignedById, primaryById);
 
                 Plugin.WriteDecision(new Json()
                     .Str("e", "fire").Int("t", turn).Str("ai", core.PlayerData.UserNickName)
-                    .Int("weapons", weapons.Count).Int("powered", powered).Int("primaryFound", primary).Int("secondaryOnly", secondary)
+                    .Int("retainedEntries", weapons.Count).Int("powered", powered).Int("primaryFound", primary).Int("secondaryOnly", secondary)
                     .Int("plannedHits", __instance.Hits).Int("plannedMisses", __instance.Misses)
                     .Int("firingHits", hitting != null ? hitting.Count : -1).Int("firingMisses", missing != null ? missing.Count : -1)
                     .Map("assigned", assignedByTarget).Map("primaryByTarget", primaryByTarget).Int("unreachableMarked", unreachableMarked).ToString());

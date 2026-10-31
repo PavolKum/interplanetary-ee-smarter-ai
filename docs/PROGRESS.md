@@ -26,7 +26,7 @@ The human has won every match so far.
 | 7 | 0.8.x | 2 AIs | - | - | Anti-nuke city protection (Ion over cities) | (no separate note) |
 | 8 | 0.9.1 | 2 AIs | T39 | ~7k vs 24k (T35) | Science projects, weapon upgrades, research reorder | War from T15 ate ~60% of energy (firing reserve + defense reserve); 15-37k material idle; AIs fought each other |
 | 9 | 0.10.1 | 2 AIs | T39 | 67.1k vs 23.4k (T30) | Strategy layer: hold fire and release the firing reservation, saturation strikes, committed target, Reactor Trials research early, material-glut pricing | Kingmaking (first 6 strikes AI vs AI); planet space and material caps (8-59k energy unspent per turn); strikes at the human did nothing (11 of 48 weapons found a trajectory); human's 111 shots/turn met no eligible defense 70-98% of the time; no Shields |
-| 10 | 0.11.1 | 2 AIs | T47 | 61.5k vs 23.7k (T29) | Commit by expected shots through; abort strikes without trajectories; live projectile counts; energy glut; counter research and counter-defenses (Shields); placement throttle | Both AIs mined their planets dry by T26-27 (human: T38), then could not build or repair; only 21% of weapons found a trajectory; 13 of 26 strikes aborted; target flip-flopped every turn (reachability memory misreads search time-outs) |
+| 10 | 0.11.1 | 2 AIs | T47 | 61.5k vs 23.7k (T29) | Commit by expected shots through; abort strikes without trajectories; live projectile counts; energy glut; counter research and counter-defenses (Shields); placement throttle | Both AIs mined their planets dry by T26-27 (human: T38), then could not build or repair; only 36% of live weapons found a trajectory; 13 of 26 strikes aborted; target flip-flopped every turn (reachability memory misreads search time-outs) |
 
 ## The arc so far
 
@@ -41,7 +41,7 @@ The human has won every match so far.
 4. **v0.11: convert the lead.** Pick targets by expected damage, not by economy rank; abort strikes the engine cannot
    aim; spend surplus energy on material and per-building damage; counter the human's weapon mix (Shields vs Lasers).
    Result: the longest match (T47) and the best defenses yet, but the AIs mined their planets dry by T27 and the
-   engine's trajectory search (time-bound during the human's turn) aimed only a fifth of their weapons.
+   engine's trajectory search (bounded by work per frame and geometry) aimed only about a third of their live weapons.
 5. **v0.12 (next): budget the planet, fire what can aim.** Material is a whole-game budget, not a flow.
 
 ## Recurring lessons

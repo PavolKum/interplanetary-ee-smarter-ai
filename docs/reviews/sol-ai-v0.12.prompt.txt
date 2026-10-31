@@ -1,0 +1,26 @@
+READ-ONLY review. Do not edit, create or delete any file. Stay inside this repository: any path outside it is auto-rejected and ends your run. Finish with the complete written report.
+
+Strategy and code review of AI v0.12.0 (diff against 8fa8f19 = v0.11.1 in docs/reviews/sol-ai-v0.12.diff). Evidence: docs/playtests/2026-10-31-v0.11.1.md (eleventh match, human won at T47). Data: docs/playtests/data/v0111-*.jsonl (AI decision log; human telemetry). Progress so far: docs/PROGRESS.md. Earlier reviews and dispositions: docs/reviews/terra-ai-v0.11*.md, docs/reviews/sol-ai-strategy-v0.10.md. decompiled/ is the game source.
+
+The diagnosis behind v0.12 (verify it against the data and the game code before judging the fixes):
+1. Planet material is a fixed pool (350k). PlayerResourceHandler.TurnStartInit drains max(planet cost, production) a turn, so yield multipliers only spend it faster. Both AIs ran dry at T26-27 (the human at T38), spent the last material on ~180 Floating Plants each while energy went unspent, then could not build or rebuild anything (30-135 material at construction from T28).
+2. The native trajectory search (AIWeaponTargeting.Update, AICore.Update m_timeOut = 20 s, step allowance clamp(1200 x AIs / total AI weapons, 30, 100)) runs only during the human's turn; 537 of 2,568 weapons (21%) found a primary trajectory over the match, mostly 6-15 of ~50 at the human, 14-32 at the other AI.
+3. The v0.11 abort gate (30% of weapons on target) called off 13 of 26 strikes.
+4. ReachabilityMemory marked a target unreachable for every weapon that found no trajectory, so after aiming at X most weapons excluded X next turn and the commit flipped almost every turn.
+
+v0.12 changes:
+A. AI/Brain/Director.cs: Weights gives energy gains GlutEnergyGainWeight (0) in energy glut OR energy saturation (checked before material glut). EnergySaturated: only when the planet binds (SustainableMaterialIncome = planet left / max(3, 45 - turn) < material income) and energy income >= 1.5 x (0.6 x min(material income, sustainable) + weapon upkeep). EconomyReserve: 15k material the economy (Best) may not spend once the planet runs dry within BankWarningTurns 8.
+B. AI/DirectorPatches.cs: SellDryMines (planet at 0: sell up to 10 non-power mines a turn via PlayerBuildingHandler.SellBuilding(b, true), proceeds added to core.Resources and AllottedMaterial at BeginTurn); MaxWeapons 30 aimed weapons (not lasers, not superweapons) in TryWeapon.
+C. AI/Brain/Strategy.cs + StrategyPatches.cs: abort only below max(AbortBelowWeapons 3, AbortBelowShare 0 x weapons); config 0.3 migrates to 0. SetAimWindow writes AICore.m_timeOut: 40 s on strike turns, 20 s on hold turns (also 40 s at AICore.Initialize when the mod is active).
+D. AI/Brain/Memory.cs ReportTurn + AI/Patches.cs postfix: a failure is recorded only when at least ReachFailMinShare 0.5 of the weapons aimed at that target found a trajectory; the fire log counts live (Normal-state) weapons only.
+
+Check, with file:line evidence:
+1. Strategy: is the diagnosis right, and does v0.12 address the decisive causes? What is the most important thing still missing for the AI to beat this human (who paced mining, struck the AIs while they fought each other, and won with ~190 buildings vs 400-500 per AI)? Rank at most 5 next moves.
+2. Material: is horizon T45 / saturation 1.5 / reserve 15k sensible against the T10-T27 data? Can saturation starve energy too early (before war at T20) or block Reactor Trials / science projects that matter? Is 0 the right energy-gain weight?
+3. Selling at BeginTurn: is SellBuilding safe for an AI during AICore.BeginTurn (power grid, AIPowerGridMaintaining caches, construction queue, upgrades already planned on that building, network sold-building lists in single player)? Is the IsPotentiallyDistributingPower / CanPotentiallyGeneratesPower guard enough to avoid unpowering other buildings? Does the material land in core.Resources correctly?
+4. Aim window: does writing m_timeOut per turn work (when is AICore.Update's timer compared; does BeginTurn reset m_timeOutTimer before or after our postfix)? Does a 40 s window actually give the search more steps (frame-bound), and does anything else (AIWeaponTargeting.m_isReady, UpdateEndTurn, m_endTurnTimeout 5 s) cut it short? Effect on the human's wait.
+5. Reach gate and abort: any case where the target is truly out of reach but never gets marked now (e.g. all weapons fail at a target forever) - does the commit then stick on an unreachable target? Interaction with max-hold, stickiness, and the 3-weapon abort.
+6. Weapon cap: AimedWeapons counts Normal + UnderConstruction weapons at BeginTurn plus queued; abandoned placements; lasers when EnableLasers is off. Any way to exceed or deadlock?
+7. Any regression against v0.11.1 behaviour or the tests (AI/Tests/Program.cs).
+
+Report format: a verdict line ("Verdict: ship" / "fix first" / "rethink"), then findings ranked High/Medium/Low, each with file:line evidence, the failure scenario, and a concrete fix. Then the ranked next moves for question 1.
