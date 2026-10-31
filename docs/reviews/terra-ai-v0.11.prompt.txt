@@ -1,0 +1,21 @@
+READ-ONLY review. Do not edit, create or delete any file. Stay inside this repository: any path outside it is auto-rejected and ends your run. Finish with the complete written report.
+
+Code review of AI v0.11.0 (diff against 7cb13b8 in docs/reviews/terra-ai-v0.11.diff). Evidence: docs/playtests/2026-10-31-v0.10.1.md (AIs out-produced the human 4-5x in energy and still lost: AI-vs-AI kingmaking, material then planet-space caps with 8-59k energy unspent per turn, strikes at the human that did nothing, 70-98% of the human's 111-shot turns meeting no eligible defense, no Shield vs Lasers). Data: docs/playtests/data/v0101-*.jsonl. Your v0.10 review and its disposition: docs/reviews/terra-ai-v0.10*.md.
+
+v0.11 changes:
+1. AI/Brain/Strategy.cs Decide: commit value = passing x (1 + LeaderInfluence 0.5 x score/maxScore); sticky commit (keep last turn's target unless best >= 1.25x it); "aim first": a strike needs best == lastCommitId (weapons were pointed at it last turn), else reason "aiming"; BigSalvoShots 24 fires regardless of MinPassShare; OverlapDefenses default 1000 (overlap off; measured stop|eligible 0.72 over 38 defender-turns).
+2. AI/StrategyPatches.cs: LastCommitId carried only between consecutive turns; ShouldAbort at firing time; log adds aimedAt and our observed impacts/intercepted per target.
+3. AI/Patches.cs GoalTargetWeaponsPrefix: after rebuilding the lists, a Fire turn is called off (both lists cleared) when hitting weapons with a primary trajectory onto the committed enemy < max(MinWeapons, 0.3 x weapons); max-hold strikes exempt. The refresh block's early returns were restructured so this always runs.
+4. Economy (AI/Brain/Director.cs, AI/DirectorPatches.cs): EnergyGlut from the previous consecutive turn (EndEnergyLeft set in DirectorPatches.EndTurn, >= 30% of last TurnStartEnergy and >= 5000) -> weights energy 0.25 / material 1, EnergyCostFactor 0.25 (material glut wins when both). In energy glut TryWeaponUpgrade ranks by ImmediateDamageRatio - 1 (damage per building) instead of damage per firing energy. QueueBuilding: a type abandoned >= 3 times last turn is queued at most twice this turn.
+5. Research (AI/Brain/EconomyPlan.cs CounterTechs, AI/EconomyPatches.cs TechQueueBeginTurnPrefix): known enemy weapons with no buildable defense stopping them at >= 0.5 put the counter's tech first (hard-coded defense->tech map). Plan v0.11 (40 techs): Experimental Matter Control #10, Magnetic Radiation Shielding + Ultracapacitors (Railgun projectile upgrades) before Uranium Alloys, Ultrasonic Projection added; unchanged v0.10 default migrates.
+
+Check with file:line evidence (decompiled/ is the game source):
+A. Abort path: are m_hittingWeapons entries' TargetEnemy / HasFoundPrimaryTargetTrajectory still valid at TargetWeapons time? Is clearing both lists after DetermineShootingWeapons safe? Does the energy stay unspent for defense rolls? Interaction with ReportFired (strike history) and LastStrikeTurn.
+B. Aim-first + stickiness: can the AI get stuck aiming forever (commit flips each turn between near-equal targets, eliminated targets, LastCommitId reset rules)? Max-hold as backstop?
+C. Energy glut: EndTurn ordering (is EndEnergyLeft the true unspent energy, before or after the defense reserve, refunds)? Can energy and material glut both flip the economy into starving energy income? Damage-per-building ranking: any upgrade that raises firing cost past the upkeep cap or loses damage?
+D. Placement cap: QueuedById vs AbandonedLastTurn keyed by building id; could it block needed power plants or defenses after a one-off bad turn?
+E. Counter research: EnemyWeapons keys vs DefensePlanner.Counters weapon ids (do they match, e.g. wea_Laser vs type ids)? Queue interactions (IsTechQueued early return, s_refused), prerequisites of Ultrasonic Projection.
+F. Fairness: everything from own state, intel-visible data, own observations?
+G. Tests (279 checks, 20 mutations caught): gaps that matter in play.
+
+Output: verdict (ship / fix first), findings ranked High/Medium/Low with file:line and a concrete fix, then "checked and fine". Under 1,100 words.
