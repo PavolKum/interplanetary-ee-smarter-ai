@@ -1,0 +1,15 @@
+READ-ONLY review. Do not edit, create or delete any file. Stay inside this repository: any path outside it is auto-rejected and ends your run. Finish with the complete written report.
+
+Code review of AI v0.8.0 (diff against v0.7.3 c7f4ec0 in docs/reviews/terra-ai-v0.8.diff). Match that motivated it: docs/playtests/2026-10-31-v0.7.3.md - the human built no conventional weapons, then 9-17 Nuclear Missiles from T32, and took both AIs' cities (5 -> 1) while their economies stood. Pavol decided AI-vs-AI fighting is fine (independent players): not in scope.
+
+v0.8: (1) nuke threat = enemy wea_NuclearMissile known (visible or remembered in EconomyPatches weapon memory) or a Nuclear Missile reached our planet within NukeMemoryTurns (12) (DefenseLedger.ImpactsByWeapon, rolled at the AI's turn start); (2) anti-nuke defense id = the defense in DefensePlanner.Counters with the highest probability vs wea_NuclearMissile; wanted = 2 per remaining city once a nuke is seen, 1 per city from turn 28 as a prior; added on top of DesiredDefenses; TryDefense picks it first while owned (incl. queued) < wanted; (3) placement scores marginal interception with stacking: each target gains value x p x (1-p)^k (k = same-id working + queued defenses over it); city value 20 for the anti-nuke defense while wanted > 0, else 4.
+
+Check with file:line evidence (AI/, decompiled/: PlayerDefenseHandler, WeaponGameplayData for how nuclear impacts reach IsHitIntercepted, city defenses/projects):
+1. Do Nuclear Missile impacts go through IsHitIntercepted with weaponData.id == "wea_NuclearMissile" (fragments? fallout bypassing defenses: FalloutEffect.IgnoresDefenses)? If fallout ignores defenses, how much does Ion actually protect a city?
+2. Is the threat detection fair and timely (counterintel hides the human's nukes; first hit already costs a city)? Is the T28 prior reasonable given TechTreeData for Thermonuclear Warheads?
+3. Is Ion the right counter in Enhanced (DefensesData) and is a city covered by an Ion placed near it (city radius vs defense radius; impact point vs city centre)? Would city projects (City Barrier / DDI in ProjectsData) be a better or complementary answer?
+4. Interactions: DesiredDefenses + anti-nuke on top of MaxDefenses, DefenseTurnCap, the reserve (Ion rolls cost 200), slots; TryDefense choice when Ion unavailable; Classic ruleset (no Ion: Kinetic counters Missile, not Nuclear).
+5. Stacking math and PickAnchorsMarginal; any regression for Kinetic placement now that marginal value replaces uncovered value.
+6. Tests: what they prove; what's missing.
+
+Output: verdict (ship / fix first), findings ranked High/Medium/Low with file:line and a concrete fix, then "checked and fine". Under 1,000 words.

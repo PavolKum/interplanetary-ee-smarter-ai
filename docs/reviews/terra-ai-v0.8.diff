@@ -1,0 +1,365 @@
+diff --git a/AI/Brain/Coverage.cs b/AI/Brain/Coverage.cs
+index b3fc741..7ee375c 100644
+--- a/AI/Brain/Coverage.cs
++++ b/AI/Brain/Coverage.cs
+@@ -151,6 +151,69 @@ namespace InterplanetaryAI.Brain
+             return picks;
+         }
+ 
++        // v0.8: how many defenses cover each target (each with its own radius). Stacking matters: n defenses of
++        // interception chance p stop a shot with 1-(1-p)^n, so a second Ion Defense over a city lifts 0.8 to 0.96.
++        public static int[] CoverCounts(IList<Point> targets, IList<Point> defenses, IList<float> radii)
++        {
++            int[] counts = new int[targets.Count];
++            for (int i = 0; i < targets.Count; i++)
++            {
++                for (int j = 0; j < defenses.Count; j++)
++                {
++                    if (targets[i].DistanceSquared(defenses[j]) < radii[j] * radii[j]) counts[i]++;
++                }
++            }
++            return counts;
++        }
++
++        // Interception a new defense at `center` adds: each target within reach gains p x (1-p)^k of its value, k = the
++        // defenses already over it.
++        public static float MarginalValue(Point center, IList<Point> targets, IList<float> values, int[] counts, float radius, float p)
++        {
++            float r2 = radius * radius;
++            float total = 0f;
++            for (int i = 0; i < targets.Count; i++)
++            {
++                if (center.DistanceSquared(targets[i]) < r2) total += values[i] * p * (float)Math.Pow(1f - p, counts[i]);
++            }
++            return total;
++        }
++
++        // PickAnchors on marginal value: `count` draws among anchors scoring at least `band` of the best (score squared).
++        public static List<int> PickAnchorsMarginal(IList<Point> anchors, IList<Point> targets, IList<float> values, int[] counts, float radius, float p,
++            float band, Random rng, int count)
++        {
++            List<int> picks = new List<int>();
++            float[] weights = new float[anchors.Count];
++            float best = 0f;
++            for (int i = 0; i < anchors.Count; i++)
++            {
++                weights[i] = MarginalValue(anchors[i], targets, values, counts, radius, p);
++                best = Math.Max(best, weights[i]);
++            }
++            if (best <= 1e-6f) return picks;
++            float total = 0f;
++            for (int i = 0; i < weights.Length; i++)
++            {
++                weights[i] = weights[i] >= band * best ? weights[i] * weights[i] : 0f;
++                total += weights[i];
++            }
++            for (int n = 0; n < count; n++)
++            {
++                double roll = rng.NextDouble() * total;
++                int chosen = -1;
++                for (int i = 0; i < weights.Length; i++)
++                {
++                    if (weights[i] <= 0f) continue;
++                    chosen = i;
++                    roll -= weights[i];
++                    if (roll <= 0) break;
++                }
++                if (chosen >= 0) picks.Add(chosen);
++            }
++            return picks;
++        }
++
+         // Share of the total value that is covered (for the decision log).
+         public static float CoveredShare(IList<float> values, bool[] covered)
+         {
+diff --git a/AI/Brain/DefenseLedger.cs b/AI/Brain/DefenseLedger.cs
+index 9dce5ef..82c0d47 100644
+--- a/AI/Brain/DefenseLedger.cs
++++ b/AI/Brain/DefenseLedger.cs
+@@ -21,6 +21,7 @@ namespace InterplanetaryAI.Brain
+         public int NoResource;         // a defense in range could not roll: not enough energy OR material
+         public int Disconnected;       // a defense in range had no power
+         public int EnergySpent;
++        public readonly Dictionary<string, int> ImpactsByWeapon = new Dictionary<string, int>(); // what hit us (shown in playback)
+     }
+ 
+     public sealed class DefenseLedger
+@@ -55,6 +56,9 @@ namespace InterplanetaryAI.Brain
+                 m_pendingDefender[defenderId] = d;
+             }
+             d.Impacts++;
++            int byWeapon;
++            d.ImpactsByWeapon.TryGetValue(weaponId ?? "?", out byWeapon);
++            d.ImpactsByWeapon[weaponId ?? "?"] = byWeapon + 1;
+             if (!eligibleDefenseInRange) d.NoEligibleDefense++;
+             if (nearCity) d.NearCity++;
+             if (!anyDefenseNearby) d.NoDefenseNearby++;
+diff --git a/AI/Brain/Director.cs b/AI/Brain/Director.cs
+index 3ff4f20..44ae092 100644
+--- a/AI/Brain/Director.cs
++++ b/AI/Brain/Director.cs
+@@ -131,6 +131,17 @@ namespace InterplanetaryAI.Brain
+             return Math.Min(cap, (int)Math.Round(wanted));
+         }
+ 
++        // v0.8: defenses that stop Nuclear Missiles (Ion in Enhanced) wanted over our cities. 31 Oct v0.7.3: the human
++        // built no conventional weapon, then 9-17 Nuclear Missiles from T32, and took both AIs' cities (5 -> 1) while
++        // their economies stood. Once a nuke is seen or lands: perCitySeen per city; before that, from priorTurn on,
++        // perCityPrior per city (Thermonuclear Warheads arrive around T27-32 in every match so far).
++        public static int AntiNukeDefenses(int cities, bool nukeSeen, int turn, int priorTurn, int perCitySeen, int perCityPrior)
++        {
++            if (cities <= 0) return 0;
++            if (nukeSeen) return cities * Math.Max(0, perCitySeen);
++            return priorTurn > 0 && turn >= priorTurn ? cities * Math.Max(0, perCityPrior) : 0;
++        }
++
+         // Defenses queued per turn: the base rate, or faster to close a gap within catchUpTurns. v0.4.1 built
+         // 3/turn while losing 40-90 buildings a turn. Without damage taken the catch-up uses at most half the
+         // free power slots, so a small planet keeps room for weapons and growth; under attack it may use all.
+diff --git a/AI/DirectorPatches.cs b/AI/DirectorPatches.cs
+index 19da79b..b214e63 100644
+--- a/AI/DirectorPatches.cs
++++ b/AI/DirectorPatches.cs
+@@ -53,6 +53,9 @@ namespace InterplanetaryAI
+             public float ObservedDefenseNeed;   // v0.6: energy our defenses needed in the last action phase (x margin)
+             public int LastImpacts, LastIntercepted, LastNoEligible, LastUnpaid, LastEnergySpent, LastNearCity, LastNoDefenseNearby;
+             public float CoverageShare;
++            public bool NukeThreat;          // v0.8: an enemy Nuclear Missile seen/remembered or recently landed
++            public int AntiNukeWanted, AntiNukeOwned;
++            public string AntiNukeId;        // the defense that stops Nuclear Missiles best (Ion in Enhanced)
+             public int CitiesCovered, CitiesTotal;
+             public Dictionary<string, float> ObservedPass = new Dictionary<string, float>();
+             public string TargetName = "";
+@@ -190,6 +193,23 @@ namespace InterplanetaryAI
+             d.ObservedDefenseNeed = EconomyDirector.ObservedDefenseNeed(last.EnergySpent, last.NoResource, last.Impacts - last.NoEligibleDefense, 100f, Plugin.DefenseObservedMargin.Value);
+             d.DesiredDefenses = EconomyDirector.DesiredDefenses(visibleEnemyWeapons, recentDamage, Plugin.DefensePerEnemyWeapon.Value, Plugin.DamagePerDefense.Value, Plugin.MaxDefenses.Value,
+                 d.War, d.NonCityBuildings, Plugin.DefenseFloorShare.Value);
++            // v0.8 anti-nuke: a Nuclear Missile seen (visible or remembered) or one that landed on us recently.
++            int nukeHits;
++            if (last.ImpactsByWeapon.TryGetValue(NuclearWeaponId, out nukeHits) && nukeHits > 0) economy.LastNukeHitTurn = turn;
++            int knownNukes;
++            economy.EnemyWeapons.TryGetValue(NuclearWeaponId, out knownNukes);
++            d.NukeThreat = knownNukes > 0 || turn - economy.LastNukeHitTurn <= Plugin.NukeMemoryTurns.Value;
++            d.AntiNukeId = AntiNukeDefenseId();
++            if (d.AntiNukeId != null && Plugin.AntiNukePerCity.Value > 0)
++            {
++                int cities = me.BuildingHandler.GetRemainingCities().Count;
++                d.AntiNukeWanted = EconomyDirector.AntiNukeDefenses(cities, d.NukeThreat, turn, Plugin.AntiNukePriorTurn.Value, Plugin.AntiNukePerCity.Value, Plugin.AntiNukePriorPerCity.Value);
++                int owned;
++                economy.OwnDefenses.TryGetValue(d.AntiNukeId, out owned);
++                d.AntiNukeOwned = owned;
++                // They come on top of what the rest of the threat asks for.
++                d.DesiredDefenses = Math.Min(Plugin.MaxDefenses.Value + d.AntiNukeWanted, d.DesiredDefenses + Math.Max(0, d.AntiNukeWanted - owned));
++            }
+ 
+             // Weapon choice is made against the strongest visible economy: the enemy most worth hitting.
+             float bestEconomy = -1f;
+@@ -481,6 +501,25 @@ namespace InterplanetaryAI
+             return false;
+         }
+ 
++        private const string NuclearWeaponId = "wea_NuclearMissile";
++
++        // The defense building that stops Nuclear Missiles best in the active ruleset (Ion in Enhanced), or null.
++        private static string AntiNukeDefenseId()
++        {
++            string best = null;
++            float bestP = 0f;
++            foreach (KeyValuePair<string, Dictionary<string, float>> pair in DefensePlanner.Counters)
++            {
++                float p;
++                if (pair.Value.TryGetValue(NuclearWeaponId, out p) && p > bestP)
++                {
++                    best = pair.Key;
++                    bestP = p;
++                }
++            }
++            return best;
++        }
++
+         // ---- defense -------------------------------------------------------------------------------
+ 
+         private static bool TryDefense(AIConstruction construction, AICore core, EconomyPatches.AiEconomyState economy, DirectorState d)
+@@ -502,7 +541,14 @@ namespace InterplanetaryAI
+                 owned.TryGetValue(pair.Key, out n);
+                 owned[pair.Key] = n + pair.Value;
+             }
+-            string choice = DefensePlanner.Choose(economy.EnemyWeapons, owned, candidates);
++            string choice = null;
++            if (d.AntiNukeId != null && candidates.Contains(d.AntiNukeId))
++            {
++                int antiNukeHave;
++                owned.TryGetValue(d.AntiNukeId, out antiNukeHave);
++                if (antiNukeHave < d.AntiNukeWanted) choice = d.AntiNukeId; // cities first: nukes decide the game
++            }
++            if (choice == null) choice = DefensePlanner.Choose(economy.EnemyWeapons, owned, candidates);
+             // No known threat (the floor, or hit by weapons we never saw): Kinetic first, then Ion.
+             if (choice == null) choice = DefensePlanner.ChooseBlind(owned, candidates);
+             if (choice == null) return false;
+@@ -964,14 +1010,27 @@ namespace InterplanetaryAI
+         {
+             public readonly List<Point> Targets = new List<Point>();
+             public readonly List<float> Values = new List<float>();
+-            public bool[] Covered;
++            public int[] Counts;     // defenses of this id already over each target (v0.8: stacking)
+             public float Radius;
++            public float P;          // this defense's best interception chance
+         }
+ 
+         private static CoverageModel BuildCoverageModel(AICore core, BuildingData data)
+         {
+             CoverageModel m = new CoverageModel { Radius = DefenseRadius(data) };
+             if (m.Radius <= 0f) return null;
++            Dictionary<string, float> stops;
++            m.P = 0.8f;
++            if (DefensePlanner.Counters.TryGetValue(data.id.Value, out stops))
++            {
++                float bestStop = 0f;
++                foreach (float v in stops.Values) bestStop = Math.Max(bestStop, v);
++                if (bestStop > 0f) m.P = Math.Min(0.95f, bestStop);
++            }
++            DirectorState ds;
++            // An anti-nuke defense (wanted this turn) is placed for the cities: they decide the game.
++            bool antiNuke = s_states.TryGetValue(core.PlayerData.PlayerID, out ds) && ds.AntiNukeWanted > 0 && data.id.Value == ds.AntiNukeId;
++            float cityValue = antiNuke ? Plugin.AntiNukeCityValue.Value : Plugin.CoverageCityValue.Value;
+             BuildingsData buildings = GameDataFileManager.GetDataFile<BuildingsData>();
+             string id = data.id.Value;
+             List<Point> defenses = new List<Point>();
+@@ -982,7 +1041,7 @@ namespace InterplanetaryAI
+                 Vector3 p = b.transform.position;
+                 m.Targets.Add(new Point(p.x, p.y, p.z));
+                 bool defense = b.BuildingData != null && b.BuildingData.defense_functionality.IsValueSet;
+-                m.Values.Add(b.IsCity ? Plugin.CoverageCityValue.Value : (defense ? 0.25f : 1f));
++                m.Values.Add(b.IsCity ? cityValue : (defense ? 0.25f : 1f));
+                 if (b.BuildingData != null && b.BuildingData.id.Value == id && b.CurrentState == BaseBuilding.BuildingState.Normal && b.Power.HasPower)
+                 {
+                     defenses.Add(new Point(p.x, p.y, p.z));
+@@ -1003,7 +1062,7 @@ namespace InterplanetaryAI
+                     radii.Add(m.Radius);
+                 }
+             }
+-            m.Covered = DefenseCoverage.Covered(m.Targets, defenses, radii);
++            m.Counts = DefenseCoverage.CoverCounts(m.Targets, defenses, radii);
+             return m;
+         }
+ 
+@@ -1086,7 +1145,7 @@ namespace InterplanetaryAI
+             if (st.Steps <= 8)
+             {
+                 float band = st.Steps <= 3 ? Plugin.CoverageBand.Value : 0f;
+-                picks = DefenseCoverage.PickAnchors(anchors, model.Targets, model.Values, model.Covered, model.Radius, band, Plugin.Rng, CoverageCandidatesPerStep);
++                picks = DefenseCoverage.PickAnchorsMarginal(anchors, model.Targets, model.Values, model.Counts, model.Radius, model.P, band, Plugin.Rng, CoverageCandidatesPerStep);
+             }
+             if (picks.Count == 0)
+             {
+@@ -1119,7 +1178,7 @@ namespace InterplanetaryAI
+                 if (placed == null || !placed.IsSuccessful) continue;
+                 if (Vector3.Distance(placed.BuildingWorldPosition, anchor.transform.position) > lineLimit) continue; // line would be refused
+                 Vector3 at = placed.BuildingWorldPosition;
+-                float score = DefenseCoverage.UncoveredValue(new Point(at.x, at.y, at.z), model.Targets, model.Values, model.Covered, model.Radius);
++                float score = DefenseCoverage.MarginalValue(new Point(at.x, at.y, at.z), model.Targets, model.Values, model.Counts, model.Radius, model.P);
+                 if (score > bestScore)
+                 {
+                     bestScore = score;
+@@ -1306,7 +1365,7 @@ namespace InterplanetaryAI
+                 .Int("energyLeft", core.Resources.Energy).Int("materialLeft", core.Resources.Material)
+                 .Num("upkeep", d.Upkeep).Int("ownDefenses", d.OwnDefenses).Int("desiredDefenses", d.DesiredDefenses).Int("defenseTurnCap", d.DefenseTurnCap)
+                 .Int("lastImpacts", d.LastImpacts).Int("lastIntercepted", d.LastIntercepted).Int("lastNoEligibleDefense", d.LastNoEligible).Int("lastNearCity", d.LastNearCity).Int("lastNoDefenseNearby", d.LastNoDefenseNearby)
+-                .Num("coverageKinetic", d.CoverageShare).Int("citiesCovered", d.CitiesCovered).Int("cities", d.CitiesTotal)
++                .Num("coverageKinetic", d.CoverageShare).Bool("nukeThreat", d.NukeThreat).Int("antiNukeWanted", d.AntiNukeWanted).Int("antiNukeOwned", d.AntiNukeOwned).Int("citiesCovered", d.CitiesCovered).Int("cities", d.CitiesTotal)
+                 .Int("lastUnpaidRolls", d.LastUnpaid).Int("lastDefenseEnergy", d.LastEnergySpent).Int("observedNeed", (int)d.ObservedDefenseNeed)
+                 .Str("observedPass", ObservedPassText(d.ObservedPass))
+                 .Int("upgradesInstalled", upgradesInstalled).Str("weaponTarget", d.TargetName).Map("targetDefenses", d.TargetDefenses)
+diff --git a/AI/EconomyPatches.cs b/AI/EconomyPatches.cs
+index e1f445d..355abd3 100644
+--- a/AI/EconomyPatches.cs
++++ b/AI/EconomyPatches.cs
+@@ -38,6 +38,7 @@ namespace InterplanetaryAI
+             public readonly Dictionary<string, int> VisibleWeapons = new Dictionary<string, int>(); // visible this turn, all enemies
+             public readonly Dictionary<int, Dictionary<string, int>> VisibleByEnemy = new Dictionary<int, Dictionary<string, int>>();
+             public readonly Dictionary<string, float> WeaponMemory = new Dictionary<string, float>();
++            public int LastNukeHitTurn = -1000; // v0.8: last turn a Nuclear Missile reached our planet
+             // v0.6: enemy defenses once seen, per enemy (a Kinetic wall seen at T24 is still there when counterintel hides it)
+             public readonly Dictionary<int, Dictionary<string, float>> DefenseMemory = new Dictionary<int, Dictionary<string, float>>();
+             public readonly Dictionary<int, Dictionary<string, int>> KnownDefenses = new Dictionary<int, Dictionary<string, int>>();
+diff --git a/AI/Plugin.cs b/AI/Plugin.cs
+index d8facde..990b899 100644
+--- a/AI/Plugin.cs
++++ b/AI/Plugin.cs
+@@ -22,7 +22,7 @@ namespace InterplanetaryAI
+     {
+         public const string GUID = "pavol.interplanetary.ai";
+         public const string NAME = "Interplanetary EE: Smarter AI";
+-        public const string VERSION = "0.7.3";
++        public const string VERSION = "0.8.0";
+ 
+         internal static ManualLogSource Log;
+ 
+@@ -131,6 +131,11 @@ namespace InterplanetaryAI
+         internal static ConfigEntry<int> ObservedMinImpacts;
+         internal static ConfigEntry<float> DefenseRecoveryShare;
+         internal static ConfigEntry<bool> CoveragePlacement;
++        internal static ConfigEntry<int> AntiNukePerCity;
++        internal static ConfigEntry<int> AntiNukePriorPerCity;
++        internal static ConfigEntry<int> AntiNukePriorTurn;
++        internal static ConfigEntry<float> AntiNukeCityValue;
++        internal static ConfigEntry<int> NukeMemoryTurns;
+         internal static ConfigEntry<float> CoverageCityValue;
+         internal static ConfigEntry<float> CoverageBand;
+         internal static ConfigEntry<float> ObservedPriorWeight;
+@@ -275,6 +280,12 @@ namespace InterplanetaryAI
+                 "Observed interception is blended with the estimate from remembered defenses as if this many shots had matched the estimate: few shots barely move it.");
+             CoveragePlacement = Config.Bind("Director", "CoveragePlacement", true,
+                 "Place each new defense next to the building whose neighbourhood holds the most value no defense of that type covers yet (cities weigh CoverageCityValue). Off = the game's own placement: random city, no memory.");
++            AntiNukePerCity = Config.Bind("Director", "AntiNukePerCity", 2,
++                "Once an enemy Nuclear Missile is seen or lands on us: this many defenses that stop it (Ion in Enhanced) per city, placed over the cities. 0 = off.");
++            AntiNukePriorPerCity = Config.Bind("Director", "AntiNukePriorPerCity", 1, "Before any nuke is seen, from AntiNukePriorTurn: this many per city.");
++            AntiNukePriorTurn = Config.Bind("Director", "AntiNukePriorTurn", 28, "Turn from which nukes are expected without having seen one (0 = never).");
++            AntiNukeCityValue = Config.Bind("Director", "AntiNukeCityValue", 20f, "Weight of a city when placing an anti-nuke defense (an ordinary building is 1).");
++            NukeMemoryTurns = Config.Bind("Director", "NukeMemoryTurns", 12, "A Nuclear Missile that hit us keeps the threat on for this many turns.");
+             CoverageCityValue = Config.Bind("Director", "CoverageCityValue", 4f, "Weight of a city when judging what a defense covers (an ordinary building is 1).");
+             CoverageBand = Config.Bind("Director", "CoverageBand", 0.6f, "Anchors scoring at least this share of the best are all candidates, picked weighted by score squared, so defenses spread.");
+             WeaponMemoryDecay = Config.Bind("Director", "WeaponMemoryDecay", 0.95f,
+diff --git a/AI/Tests/Program.cs b/AI/Tests/Program.cs
+index c63a6ff..2d11f36 100644
+--- a/AI/Tests/Program.cs
++++ b/AI/Tests/Program.cs
+@@ -365,6 +365,26 @@ namespace InterplanetaryAI.Tests
+             Check(DefenseCoverage.PickAnchors(anchors, targets, tv, DefenseCoverage.Covered(targets, new List<Point> { P(2f), P(31f) }, r), r, 0.6f, rng, 12).Count == 0,
+                 "everything covered: no draws (the adapter then places anywhere safe)");
+ 
++            // v0.8 stacking: a second defense over a city still adds 0.8 x 0.2 of its value.
++            var city = new List<Point> { P(0f), P(30f) };
++            var cv8 = new List<float> { 20f, 1f };
++            int[] counts = DefenseCoverage.CoverCounts(city, new List<Point> { P(1f), P(-1f), P(60f) }, new List<float> { 5.9f, 5.9f, 5.9f });
++            Check(counts[0] == 2 && counts[1] == 0, "cover counts: the city has 2 defenses over it, the far building none");
++            Check(Math.Abs(DefenseCoverage.MarginalValue(P(0f), city, cv8, new[] { 0, 0 }, r, 0.8f) - 16f) < 1e-3f, "first Ion over a city of value 20: 0.8 x 20 = 16");
++            Check(Math.Abs(DefenseCoverage.MarginalValue(P(0f), city, cv8, new[] { 1, 0 }, r, 0.8f) - 3.2f) < 1e-3f, "second Ion over it: 0.8 x 0.2 x 20 = 3.2");
++            Check(DefenseCoverage.MarginalValue(P(0f), city, cv8, new[] { 1, 0 }, r, 0.8f) > DefenseCoverage.MarginalValue(P(30f), city, cv8, new[] { 1, 0 }, r, 0.8f),
++                "a second Ion over a city (3.2) beats the first over an ordinary building (0.8)");
++            var nukePicks = DefenseCoverage.PickAnchorsMarginal(new List<Point> { P(0.5f), P(30f) }, city, cv8, new[] { 1, 0 }, r, 0.8f, 0.6f, rng, 10);
++            Check(nukePicks.Count == 10 && nukePicks.TrueForAll(i => i == 0), "anti-nuke placement stacks over the city");
++            Check(DefenseCoverage.PickAnchorsMarginal(new List<Point> { P(100f) }, city, cv8, new[] { 0, 0 }, r, 0.8f, 0.6f, rng, 5).Count == 0, "nothing in reach: no draws");
++
++            // v0.8 anti-nuke defenses wanted.
++            Check(EconomyDirector.AntiNukeDefenses(5, true, 20, 28, 2, 1) == 10, "nuke seen: 2 per city x 5 cities = 10");
++            Check(EconomyDirector.AntiNukeDefenses(5, false, 27, 28, 2, 1) == 0, "no nuke seen, before T28: none");
++            Check(EconomyDirector.AntiNukeDefenses(5, false, 28, 28, 2, 1) == 5, "no nuke seen, from T28: 1 per city");
++            Check(EconomyDirector.AntiNukeDefenses(3, false, 40, 0, 2, 1) == 0, "prior turn 0: never without a sighting");
++            Check(EconomyDirector.AntiNukeDefenses(0, true, 40, 28, 2, 1) == 0, "no cities left: none");
++
+             // Impact geometry counters.
+             var ledger = new DefenseLedger(2);
+             ledger.Record(1, 2, "wea_Railgun", false, 0, 0, 0, 0, false, true, false);
+@@ -372,6 +392,11 @@ namespace InterplanetaryAI.Tests
+             ledger.Roll(1);
+             DefenderStats d = ledger.LastDefender(1);
+             Check(d.NearCity == 1 && d.NoDefenseNearby == 1 && d.NoEligibleDefense == 1, "impact geometry: 1 near a city, 1 with no defense nearby, 1 with none eligible");
++            ledger.Record(3, 2, "wea_NuclearMissile", false, 0, 0, 0, 0, false);
++            ledger.Record(3, 2, "wea_NuclearMissile", true, 0, 0, 0, 200, true);
++            ledger.Roll(3);
++            int nukes;
++            Check(ledger.LastDefender(3).ImpactsByWeapon.TryGetValue("wea_NuclearMissile", out nukes) && nukes == 2, "impacts by weapon: 2 Nuclear Missiles reached us");
+         }
+ 
+         private static Dictionary<int, Dictionary<string, int>> Seen(int enemy, string weapon, int count)
