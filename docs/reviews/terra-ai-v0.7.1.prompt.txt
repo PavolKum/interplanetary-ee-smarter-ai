@@ -1,0 +1,15 @@
+READ-ONLY review. Do not edit, create or delete any file. Stay inside this repository: any path outside it is auto-rejected and ends your run. Finish with the complete written report.
+
+Focused re-review of AI v0.7.1 (commit b80cadc; diff against v0.7.0 in docs/reviews/terra-ai-v0.7.1.diff). You reviewed v0.7.0 in docs/reviews/terra-ai-v0.7.md; my disposition is docs/reviews/terra-ai-v0.7-disposition.md.
+
+The defense placement no longer invokes the native tryPlaceBuildingNextToExistingBuilding. CoverageStep (AI/DirectorPatches.cs) now, per step: builds a coverage model (own buildings + this turn's queued ConstructedBuildings positions as targets; working same-id defenses with Stats.Defenses.Radius plus queued same-id placements as coverage); lists anchors (Normal, IsPotentiallyDistributingPower, HasBuildingAvailableSlots); samples 12 candidates (anchor via PickAnchor, ring distance between ownRadius+anchor.Radius and min(connector ring x0.9, defense radius), anchor.transform.TransformPoint, ray toward the planet centre as native does); keeps candidates passing core.Construction.IsBuildingPlacementValid and a Physics.Raycast(layer 256); scores the uncovered value within the defense radius of the hit point; calls PlayerBuildingHandler.TryPlaceBuilding for the best; on success sets m_result.Result, m_result.PowerGridConnection = anchor.Power and IsComplete=true via the private setter. Gives up to the native step after 60 steps or when no anchor has uncovered value.
+
+Check against decompiled/ (AIBuildingPlacementSearch.cs, AIConstruction.IsBuildingPlacementValid, PlayerBuildingHandler.TryPlaceBuilding, PlayerPowerGridHandler, AIConstructionQueue, AIActions, AIConstructBuildingAction.Execute):
+1. Is this a faithful, safe replacement of the native success path (anything native does on success that I skip, e.g. power registration, result fields, events; does setting IsComplete inside step() make Update() call Success() as before)?
+2. Is the ring math right (local vs world units with TransformPoint and building scale; is the connector-reach cap correct so the line is accepted at execution)?
+3. Does TryPlaceBuilding have side effects when it fails, or when it succeeds but the search is later abandoned (refund path in DirectorPatches.Abandon/FinderUpdatePrefix)?
+4. Raycast layer 256 and hit.point as the building position vs BuildingPlacementResult.BuildingWorldPosition.
+5. Cost per step (targets x candidates; finder step allowance) and any way this blocks a turn.
+6. Anything wrong in BuildCoverageModel (ConstructedBuildings lifetime: cleared per turn? includes executed actions?).
+
+Output: verdict (ship / fix first), findings ranked High/Medium/Low with file:line and a concrete fix, then "checked and fine". Under 900 words.

@@ -1,0 +1,485 @@
+diff --git a/AI/Brain/Coverage.cs b/AI/Brain/Coverage.cs
+index 60ff388..f72c745 100644
+--- a/AI/Brain/Coverage.cs
++++ b/AI/Brain/Coverage.cs
+@@ -49,6 +49,24 @@ namespace InterplanetaryAI.Brain
+             return covered;
+         }
+ 
++        // Same, with each defense's own radius (upgrades change it).
++        public static bool[] Covered(IList<Point> targets, IList<Point> defenses, IList<float> radii)
++        {
++            bool[] covered = new bool[targets.Count];
++            for (int i = 0; i < targets.Count; i++)
++            {
++                for (int j = 0; j < defenses.Count; j++)
++                {
++                    if (targets[i].DistanceSquared(defenses[j]) < radii[j] * radii[j])
++                    {
++                        covered[i] = true;
++                        break;
++                    }
++                }
++            }
++            return covered;
++        }
++
+         // Value of the targets within `radius` of `center` that no defense covers yet.
+         public static float UncoveredValue(Point center, IList<Point> targets, IList<float> values, bool[] covered, float radius)
+         {
+diff --git a/AI/DirectorPatches.cs b/AI/DirectorPatches.cs
+index b26bf68..d235519 100644
+--- a/AI/DirectorPatches.cs
++++ b/AI/DirectorPatches.cs
+@@ -3,6 +3,7 @@ using System.Collections.Generic;
+ using System.Reflection;
+ using HarmonyLib;
+ using Interplanetary.AI;
++using Interplanetary.AI.Actions;
+ using Interplanetary.AI.Construction;
+ using Interplanetary.GameDataFiles;
+ using Interplanetary.GameEngine;
+@@ -938,16 +939,15 @@ namespace InterplanetaryAI
+ 
+         private sealed class CoverageState
+         {
+-            public List<BaseBuilding> Bases;
+-            public BaseBuilding Anchor;
+-            public int AnchorIndex = -1;
+             public int Steps;
+             public bool GaveUp;
+-            public readonly HashSet<int> Excluded = new HashSet<int>();
+         }
+ 
+         private static readonly Dictionary<AIBuildingPlacementSearch, CoverageState> s_coverage = new Dictionary<AIBuildingPlacementSearch, CoverageState>();
+-        private const int NativeDefenseStepTimeout = 100;
++        private static readonly FieldInfo s_searchResult = AccessTools.Field(typeof(AIBuildingPlacementSearch), "m_result");
++        private static readonly MethodInfo s_setSearchComplete = AccessTools.PropertySetter(typeof(AIBuildingPlacementSearch), "IsComplete");
++        private const int CoverageCandidatesPerStep = 12;
++        private const int CoverageMaxSteps = 60;
+ 
+         private static float DefenseRadius(BuildingData data)
+         {
+@@ -957,6 +957,58 @@ namespace InterplanetaryAI
+             return defense.defense_radius.Value * (defense.defense_scale.IsValueSet ? defense.defense_scale.Value : 1f);
+         }
+ 
++        // What a new defense of this id would protect: our buildings plus this turn's queued placements as targets; as
++        // coverage, our working (normal, powered) defenses of the same id with their current radius, plus this turn's
++        // queued ones of that id (Terra v0.7: same-turn placements did not see each other).
++        private sealed class CoverageModel
++        {
++            public readonly List<Point> Targets = new List<Point>();
++            public readonly List<float> Values = new List<float>();
++            public bool[] Covered;
++            public float Radius;
++        }
++
++        private static CoverageModel BuildCoverageModel(AICore core, BuildingData data)
++        {
++            CoverageModel m = new CoverageModel { Radius = DefenseRadius(data) };
++            if (m.Radius <= 0f) return null;
++            string id = data.id.Value;
++            List<Point> defenses = new List<Point>();
++            List<float> radii = new List<float>();
++            foreach (BaseBuilding b in core.PlayerData.BuildingHandler.Buildings)
++            {
++                if (b == null || b.CurrentState == BaseBuilding.BuildingState.Ruins || b.CurrentState == BaseBuilding.BuildingState.Destroyed) continue;
++                Vector3 p = b.transform.position;
++                m.Targets.Add(new Point(p.x, p.y, p.z));
++                bool defense = b.BuildingData != null && b.BuildingData.defense_functionality.IsValueSet;
++                m.Values.Add(b.IsCity ? Plugin.CoverageCityValue.Value : (defense ? 0.25f : 1f));
++                if (b.BuildingData != null && b.BuildingData.id.Value == id && b.CurrentState == BaseBuilding.BuildingState.Normal && b.Power.HasPower)
++                {
++                    defenses.Add(new Point(p.x, p.y, p.z));
++                    radii.Add(b.Stats.Defenses.Radius);
++                }
++            }
++            foreach (AIConstructBuildingAction action in core.Actions.ConstructedBuildings)
++            {
++                if (action == null || action.BuildingPlacementResult == null || action.BuildingPlacementResult.Result == null) continue;
++                Vector3 p = action.BuildingPlacementResult.Result.BuildingWorldPosition;
++                Point point = new Point(p.x, p.y, p.z);
++                m.Targets.Add(point);
++                m.Values.Add(1f);
++                if (action.BuildingID == id)
++                {
++                    defenses.Add(point);
++                    radii.Add(m.Radius);
++                }
++            }
++            m.Covered = DefenseCoverage.Covered(m.Targets, defenses, radii);
++            return m;
++        }
++
++        // One placement step for a defense: sample candidate spots around buildings with a free power slot, keep the
++        // ones the game accepts, score each by the value it would newly cover, and place at the best. The sampling ring
++        // is the game's own for that anchor, capped at the defense radius AND the power-line reach, so the building
++        // gets connected (Terra v0.7: the native defense branch samples up to the defense radius, beyond line reach).
+         private static bool CoverageStep(AIBuildingPlacementSearch search, BuildingData data, AICore core)
+         {
+             if (s_coverage.Count > 300) s_coverage.Clear(); // finished searches are never removed otherwise
+@@ -967,61 +1019,78 @@ namespace InterplanetaryAI
+                 s_coverage[search] = st;
+             }
+             if (st.GaveUp) return false;
+-            bool usable = st.Anchor != null && st.Anchor.CurrentState == BaseBuilding.BuildingState.Normal && core.PowerGrid.HasBuildingAvailableSlots(st.Anchor);
+-            if (!usable || st.Steps >= Plugin.CoverageAnchorSteps.Value)
++            if (++st.Steps > CoverageMaxSteps)
+             {
+-                if (st.AnchorIndex >= 0) st.Excluded.Add(st.AnchorIndex);
+-                if (!PickCoverageAnchor(core, data, st))
+-                {
+-                    st.GaveUp = true;
+-                    return false;
+-                }
++                st.GaveUp = true; // the game's own search takes over
++                return false;
+             }
+-            st.Steps++;
+-            int steps = (int)s_searchSteps.GetValue(search);
+-            s_searchSteps.SetValue(search, Math.Max(steps, NativeDefenseStepTimeout) + 1);
+-            s_placeNextTo.Invoke(search, new object[] { new List<BaseBuilding> { st.Anchor } });
+-            return true;
+-        }
++            s_searchSteps.SetValue(search, (int)s_searchSteps.GetValue(search) + 1); // the abandon valve counts every step
+ 
+-        private static bool PickCoverageAnchor(AICore core, BuildingData data, CoverageState st)
+-        {
+-            float radius = DefenseRadius(data);
+-            if (radius <= 0f) return false;
+-            List<BaseBuilding> all = core.PlayerData.BuildingHandler.Buildings;
+-            if (st.Bases == null)
++            CoverageModel model = BuildCoverageModel(core, data);
++            if (model == null)
+             {
+-                st.Bases = new List<BaseBuilding>();
+-                foreach (BaseBuilding b in all)
+-                {
+-                    if (b == null || b.CurrentState == BaseBuilding.BuildingState.Ruins || b.CurrentState == BaseBuilding.BuildingState.Destroyed) continue;
+-                    if (b.Power.IsPotentiallyDistributingPower && core.PowerGrid.HasBuildingAvailableSlots(b)) st.Bases.Add(b);
+-                }
++                st.GaveUp = true;
++                return false;
+             }
+-            if (st.Bases.Count == 0) return false;
+-            List<Point> targets = new List<Point>(), sameDefenses = new List<Point>(), anchors = new List<Point>();
+-            List<float> values = new List<float>();
+-            string id = data.id.Value;
+-            foreach (BaseBuilding b in all)
++            List<BaseBuilding> bases = new List<BaseBuilding>();
++            List<Point> anchors = new List<Point>();
++            foreach (BaseBuilding b in core.PlayerData.BuildingHandler.Buildings)
+             {
+-                if (b == null || b.CurrentState == BaseBuilding.BuildingState.Ruins || b.CurrentState == BaseBuilding.BuildingState.Destroyed) continue;
++                if (b == null || b.CurrentState != BaseBuilding.BuildingState.Normal) continue;
++                if (!b.Power.IsPotentiallyDistributingPower || !core.PowerGrid.HasBuildingAvailableSlots(b)) continue;
++                bases.Add(b);
+                 Vector3 p = b.transform.position;
+-                targets.Add(new Point(p.x, p.y, p.z));
+-                bool defense = b.BuildingData != null && b.BuildingData.defense_functionality.IsValueSet;
+-                values.Add(b.IsCity ? Plugin.CoverageCityValue.Value : (defense ? 0.25f : 1f));
+-                if (b.BuildingData != null && b.BuildingData.id.Value == id) sameDefenses.Add(new Point(p.x, p.y, p.z));
++                anchors.Add(new Point(p.x, p.y, p.z));
+             }
+-            foreach (BaseBuilding b in st.Bases)
++            if (bases.Count == 0)
+             {
+-                Vector3 p = b.transform.position;
+-                anchors.Add(new Point(p.x, p.y, p.z));
++                st.GaveUp = true;
++                return false;
++            }
++
++            float scale = data.building_scale.IsValueSet ? data.building_scale.Value : 1f;
++            float ownRadius = (data.building_radius.IsValueSet ? data.building_radius.Value : 1f) * scale;
++            float ownReach = data.power_connector_range.IsValueSet ? data.power_connector_range.Value : 1000f;
++            Vector3 planetCentre = core.Planet.transform.position;
++            float bestScore = 0f;
++            Ray bestRay = new Ray();
++            BaseBuilding bestAnchor = null;
++            for (int c = 0; c < CoverageCandidatesPerStep; c++)
++            {
++                int a = DefenseCoverage.PickAnchor(anchors, model.Targets, model.Values, model.Covered, model.Radius, Plugin.CoverageBand.Value, Plugin.Rng, null);
++                if (a < 0)
++                {
++                    st.GaveUp = true; // nothing left to cover near any anchor: let the game place it
++                    return false;
++                }
++                BaseBuilding anchor = bases[a];
++                float inner = ownRadius + anchor.Radius;
++                float outer = Math.Min((inner + Math.Max(ownReach, anchor.Power.PowerConnectorRange)) * 0.9f, model.Radius);
++                if (outer < inner) outer = inner;
++                float distance = inner + (float)Plugin.Rng.NextDouble() * (outer - inner);
++                float angle = (float)(Plugin.Rng.NextDouble() * Math.PI * 2.0);
++                Vector3 world = anchor.transform.TransformPoint(new Vector3((float)Math.Cos(angle), 0f, (float)Math.Sin(angle)) * distance);
++                Vector3 down = (planetCentre - world).normalized;
++                world += -down * 2f;
++                Ray ray = new Ray(world, down);
++                if (!core.Construction.IsBuildingPlacementValid(data, core.Planet, ray)) continue;
++                RaycastHit hit;
++                if (!Physics.Raycast(ray, out hit, 1000f, 256)) continue;
++                float score = DefenseCoverage.UncoveredValue(new Point(hit.point.x, hit.point.y, hit.point.z), model.Targets, model.Values, model.Covered, model.Radius);
++                if (score > bestScore)
++                {
++                    bestScore = score;
++                    bestRay = ray;
++                    bestAnchor = anchor;
++                }
+             }
+-            bool[] covered = DefenseCoverage.Covered(targets, sameDefenses, radius);
+-            int pick = DefenseCoverage.PickAnchor(anchors, targets, values, covered, radius, Plugin.CoverageBand.Value, Plugin.Rng, st.Excluded);
+-            if (pick < 0) return false;
+-            st.Anchor = st.Bases[pick];
+-            st.AnchorIndex = pick;
+-            st.Steps = 0;
++            if (bestAnchor == null) return true; // no acceptable spot this step: try again next step
++
++            AIBuildingPlacementResult result = (AIBuildingPlacementResult)s_searchResult.GetValue(search);
++            result.Result = core.PlayerData.BuildingHandler.TryPlaceBuilding(data, bestRay, core.Planet, result.Result);
++            if (result.Result == null || !result.Result.IsSuccessful) return true;
++            result.PowerGridConnection = bestAnchor.Power;
++            s_setSearchComplete.Invoke(search, new object[] { true });
+             return true;
+         }
+ 
+@@ -1034,8 +1103,8 @@ namespace InterplanetaryAI
+             BuildingsData buildings = GameDataFileManager.GetDataFile<BuildingsData>();
+             BuildingData kinetic = buildings.HasBuilding("bui_KineticDefense") ? buildings.GetBuilding("bui_KineticDefense") : null;
+             if (kinetic == null || !kinetic.defense_functionality.IsValueSet) return;
+-            float radius = DefenseRadius(kinetic);
+             List<Point> targets = new List<Point>(), defenses = new List<Point>();
++            List<float> radii = new List<float>();
+             List<float> values = new List<float>();
+             List<bool> isCity = new List<bool>();
+             foreach (BaseBuilding b in core.PlayerData.BuildingHandler.Buildings)
+@@ -1045,9 +1114,13 @@ namespace InterplanetaryAI
+                 targets.Add(new Point(p.x, p.y, p.z));
+                 values.Add(b.IsCity ? Plugin.CoverageCityValue.Value : 1f);
+                 isCity.Add(b.IsCity);
+-                if (b.BuildingData != null && b.BuildingData.id.Value == "bui_KineticDefense" && b.CurrentState == BaseBuilding.BuildingState.Normal) defenses.Add(new Point(p.x, p.y, p.z));
++                if (b.BuildingData != null && b.BuildingData.id.Value == "bui_KineticDefense" && b.CurrentState == BaseBuilding.BuildingState.Normal && b.Power.HasPower)
++                {
++                    defenses.Add(new Point(p.x, p.y, p.z));
++                    radii.Add(b.Stats.Defenses.Radius);
++                }
+             }
+-            bool[] covered = DefenseCoverage.Covered(targets, defenses, radius);
++            bool[] covered = DefenseCoverage.Covered(targets, defenses, radii);
+             share = DefenseCoverage.CoveredShare(values, covered);
+             for (int i = 0; i < isCity.Count; i++)
+             {
+diff --git a/AI/LedgerPatches.cs b/AI/LedgerPatches.cs
+index a88afd2..fd14243 100644
+--- a/AI/LedgerPatches.cs
++++ b/AI/LedgerPatches.cs
+@@ -48,13 +48,27 @@ namespace InterplanetaryAI
+                 // counter this weapon is not listed): "no eligible defense", not "no defense nearby".
+                 bool eligibleInRange = events.Count > __state;
+                 // Where did it land: near one of our cities, and is any defense of ours close by?
+-                bool nearCity = false, anyDefenseNearby = false;
+-                foreach (BaseBuilding b in defender.BuildingHandler.Buildings)
++                // Proxies, for AI defenders only (their own buildings): near = within city radius + 2; a defense "nearby"
++                // = any defense building within its own current radius, any type, powered or not.
++                bool nearCity = false, anyDefenseNearby = true;
++                if (defender.AIPlayer)
+                 {
+-                    if (b == null || b.CurrentState != BaseBuilding.BuildingState.Normal) continue;
+-                    float d = (b.transform.position - worldPositionHit).magnitude;
+-                    if (b.IsCity) { if (d < b.Radius + 2f) nearCity = true; }
+-                    else if (b.BuildingData != null && b.BuildingData.defense_functionality.IsValueSet && d < 6.5f) anyDefenseNearby = true;
++                    anyDefenseNearby = false;
++                    foreach (BaseBuilding b in defender.BuildingHandler.Buildings)
++                    {
++                        if (b == null || b.CurrentState != BaseBuilding.BuildingState.Normal) continue;
++                        float d2 = (b.transform.position - worldPositionHit).sqrMagnitude;
++                        if (b.IsCity)
++                        {
++                            float r = b.Radius + 2f;
++                            if (d2 < r * r) nearCity = true;
++                        }
++                        else if (b.BuildingData != null && b.BuildingData.defense_functionality.IsValueSet)
++                        {
++                            float r = b.Stats.Defenses.Radius;
++                            if (d2 < r * r) anyDefenseNearby = true;
++                        }
++                    }
+                 }
+                 Plugin.Ledger.Record(defender.PlayerID, shooterID, weaponData.id.Value, __result, probabilityFails, noResource, disconnected, energySpent, eligibleInRange, nearCity, anyDefenseNearby);
+             }
+diff --git a/AI/Plugin.cs b/AI/Plugin.cs
+index c60480c..095237e 100644
+--- a/AI/Plugin.cs
++++ b/AI/Plugin.cs
+@@ -22,7 +22,7 @@ namespace InterplanetaryAI
+     {
+         public const string GUID = "pavol.interplanetary.ai";
+         public const string NAME = "Interplanetary EE: Smarter AI";
+-        public const string VERSION = "0.7.0";
++        public const string VERSION = "0.7.1";
+ 
+         internal static ManualLogSource Log;
+ 
+@@ -133,7 +133,6 @@ namespace InterplanetaryAI
+         internal static ConfigEntry<bool> CoveragePlacement;
+         internal static ConfigEntry<float> CoverageCityValue;
+         internal static ConfigEntry<float> CoverageBand;
+-        internal static ConfigEntry<int> CoverageAnchorSteps;
+         internal static ConfigEntry<float> ObservedPriorWeight;
+         internal static ReachabilityMemory Reach;
+         internal static readonly Dictionary<int, float> AccuracyCarry = new Dictionary<int, float>();
+@@ -278,7 +277,6 @@ namespace InterplanetaryAI
+                 "Place each new defense next to the building whose neighbourhood holds the most value no defense of that type covers yet (cities weigh CoverageCityValue). Off = the game's own placement: random city, no memory.");
+             CoverageCityValue = Config.Bind("Director", "CoverageCityValue", 4f, "Weight of a city when judging what a defense covers (an ordinary building is 1).");
+             CoverageBand = Config.Bind("Director", "CoverageBand", 0.6f, "Anchors scoring at least this share of the best are all candidates, picked weighted by score squared, so defenses spread.");
+-            CoverageAnchorSteps = Config.Bind("Director", "CoverageAnchorSteps", 25, "Placement attempts near one anchor before another is tried.");
+             WeaponMemoryDecay = Config.Bind("Director", "WeaponMemoryDecay", 0.95f,
+                 "Enemy weapons once seen are remembered while hidden by counterintel, shrinking by this factor per turn. 0 = forget at once (v0.4 behaviour).");
+             DefensesForFullCover = Config.Bind("Director", "DefensesForFullCover", 10f,
+diff --git a/AI/Tests/Program.cs b/AI/Tests/Program.cs
+index b5b529b..e731f68 100644
+--- a/AI/Tests/Program.cs
++++ b/AI/Tests/Program.cs
+@@ -304,6 +304,9 @@ namespace InterplanetaryAI.Tests
+             bool[] c = DefenseCoverage.Covered(line, new List<Point> { P(0f) }, r);
+             Check(c[0] && c[1] && !c[2] && !c[3], "radius 5.9: 0 and 3 covered, 5.9 (not strictly inside) and 7 not");
+ 
++            bool[] upgraded = DefenseCoverage.Covered(line, new List<Point> { P(0f), P(40f) }, new List<float> { 7.5f, 5.9f });
++            Check(upgraded[2] && upgraded[3], "per-defense radius: an upgraded defense (7.5) also covers 5.9 and 7");
++            Check(!DefenseCoverage.Covered(line, new List<Point> { P(0f) }, new List<float> { 2f })[1], "per-defense radius 2: 3 is outside");
+             var values = new List<float> { 4f, 1f, 1f, 1f };
+             Check(Math.Abs(DefenseCoverage.UncoveredValue(P(2f), line, values, new[] { false, false, false, false }, r) - 7f) < 1e-4f, "everything within 5.9 of 2 and uncovered: 4+1+1+1 = 7");
+             Check(Math.Abs(DefenseCoverage.UncoveredValue(P(2f), line, values, new[] { true, false, false, false }, r) - 3f) < 1e-4f, "the covered city is not counted again");
+diff --git a/AI/tools/terra_review.py b/AI/tools/terra_review.py
+new file mode 100644
+index 0000000..5ea282f
+--- /dev/null
++++ b/AI/tools/terra_review.py
+@@ -0,0 +1,127 @@
++"""Run a read-only Terra (GPT-6.1 via OpenCode) review and refuse to accept a silent failure.
++
++Usage (from the repo root):
++    python AI/tools/terra_review.py terra-ai-v0.7
++reads docs/reviews/terra-ai-v0.7.prompt.txt, writes docs/reviews/terra-ai-v0.7.md (report) and .err (tool trace).
++
++Why: on 31 Oct 2026 Terra failed silently four times. Two runs hung with nothing written (27 and 40 minutes,
++cause unknown). Two ended with exit code 0 after two progress notes because a read outside the repo was
++auto-rejected in read-only mode. "Exit 0 and a non-empty file" is not a report.
++
++Guards:
++  - stall:   the trace (.err) is still empty after --stall seconds -> kill, retry
++  - timeout: the run takes longer than --timeout seconds -> kill, retry
++  - no report: the output has no "verdict" line or is shorter than --min-bytes -> retry
++Rejected tool calls ("auto-rejecting") are reported either way. A failed attempt is kept as <name>.attemptN.md/.err.
++Exit code 0 only when an accepted report exists.
++"""
++import argparse
++import os
++import re
++import shutil
++import subprocess
++import sys
++import time
++
++MODEL = "openai/gpt-6.1-terra"
++
++
++def find_opencode():
++    """The real opencode.exe: running npm's opencode.cmd through cmd.exe mangles a multi-line prompt argument."""
++    found = shutil.which("opencode")
++    if not found:
++        return None
++    if found.lower().endswith((".cmd", ".bat", ".ps1")) or not os.path.splitext(found)[1]:
++        exe = os.path.join(os.path.dirname(found), "node_modules", "opencode-ai", "bin", "opencode.exe")
++        if os.path.isfile(exe):
++            return exe
++    return found
++
++
++def run_once(cmd, out_path, err_path, stall, timeout, poll):
++    """Run cmd; return (reason or None, seconds). reason is 'stalled' or 'timeout' when the run was killed."""
++    start = time.time()
++    with open(out_path, "wb") as out, open(err_path, "wb") as err:
++        proc = subprocess.Popen(cmd, stdout=out, stderr=err, stdin=subprocess.DEVNULL)
++        while True:
++            try:
++                proc.wait(timeout=poll)
++                return None, time.time() - start
++            except subprocess.TimeoutExpired:
++                pass
++            elapsed = time.time() - start
++            err.flush()
++            if elapsed > stall and os.path.getsize(err_path) == 0:
++                proc.kill()
++                proc.wait()
++                return "stalled (no trace after %ds)" % stall, elapsed
++            if elapsed > timeout:
++                proc.kill()
++                proc.wait()
++                return "timeout (%ds)" % timeout, elapsed
++
++
++def check_report(out_path, err_path, min_bytes):
++    """Return (accepted, problems, rejections)."""
++    text = open(out_path, encoding="utf-8", errors="replace").read() if os.path.exists(out_path) else ""
++    trace = open(err_path, encoding="utf-8", errors="replace").read() if os.path.exists(err_path) else ""
++    trace = re.sub(r"\x1b\[[0-9;]*m", "", trace)
++    rejections = [line.strip() for line in trace.splitlines() if "auto-rejecting" in line]
++    problems = []
++    if len(text.encode("utf-8")) < min_bytes:
++        problems.append("report only %d bytes (< %d)" % (len(text.encode("utf-8")), min_bytes))
++    if not re.search(r"verdict", text, re.IGNORECASE):
++        problems.append("no 'verdict' line")
++    return not problems, problems, rejections
++
++
++def main():
++    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
++    ap.add_argument("name", help="review name, e.g. terra-ai-v0.7 (docs/reviews/<name>.prompt.txt)")
++    ap.add_argument("--dir", default="docs/reviews")
++    ap.add_argument("--retries", type=int, default=1)
++    ap.add_argument("--stall", type=int, default=180, help="seconds without any trace before killing")
++    ap.add_argument("--timeout", type=int, default=2400)
++    ap.add_argument("--min-bytes", type=int, default=1500)
++    ap.add_argument("--poll", type=float, default=5.0)
++    ap.add_argument("--cmd", nargs=argparse.REMAINDER, help="test only: run this instead of opencode (prompt appended)")
++    args = ap.parse_args()
++
++    prompt_path = os.path.join(args.dir, args.name + ".prompt.txt")
++    if not os.path.isfile(prompt_path):
++        print("FAIL: prompt not found: " + prompt_path)
++        return 2
++    prompt = open(prompt_path, encoding="utf-8").read()
++    if args.cmd:
++        cmd = list(args.cmd) + [prompt]
++    else:
++        exe = find_opencode()
++        if not exe:
++            print("FAIL: opencode not on PATH")
++            return 2
++        cmd = [exe, "run", "-m", MODEL, "--variant", "xhigh", "--agent", "plan", "--dir", ".", prompt]
++
++    out_path = os.path.join(args.dir, args.name + ".md")
++    err_path = os.path.join(args.dir, args.name + ".err")
++    for attempt in range(1, args.retries + 2):
++        print("attempt %d: running (stall %ds, timeout %ds)" % (attempt, args.stall, args.timeout), flush=True)
++        killed, seconds = run_once(cmd, out_path, err_path, args.stall, args.timeout, args.poll)
++        accepted, problems, rejections = (False, [killed], []) if killed else check_report(out_path, err_path, args.min_bytes)
++        if killed:
++            _, _, rejections = check_report(out_path, err_path, args.min_bytes)
++        for line in rejections:
++            print("  rejected tool call: " + line[:200])
++        if accepted:
++            print("OK: report accepted after %.0fs: %s" % (seconds, out_path))
++            return 0
++        print("  attempt %d failed after %.0fs: %s" % (attempt, seconds, "; ".join(problems)))
++        for path in (out_path, err_path):
++            if os.path.exists(path):
++                base, ext = os.path.splitext(path)
++                shutil.move(path, "%s.attempt%d%s" % (base, attempt, ext))
++    print("FAIL: no accepted report after %d attempts (kept as %s.attemptN.*)" % (args.retries + 1, args.name))
++    return 1
++
++
++if __name__ == "__main__":
++    sys.exit(main())
