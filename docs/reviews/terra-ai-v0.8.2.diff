@@ -1,0 +1,120 @@
+diff --git a/AI/Brain/Coverage.cs b/AI/Brain/Coverage.cs
+index db2ad93..20cc369 100644
+--- a/AI/Brain/Coverage.cs
++++ b/AI/Brain/Coverage.cs
+@@ -215,9 +215,11 @@ namespace InterplanetaryAI.Brain
+         }
+ 
+         // v0.8.1: anti-nuke defenses still missing, city by city (Terra v0.8: an inventory of Ions anywhere is not
+-        // protection). A defense protects a city only if the city's whole footprint lies inside its radius (interception
+-        // is tested at the impact point, so an impact on the city's edge must still be in reach): distance < radius -
+-        // cityRadius. Deficit = sum over cities of max(0, perCity - defenses protecting it). protectedCities: cities with >= 1.
++        // protection). v0.8.2: a defense protects a city when the city centre is within radius - cityRadius/2 (most of
++        // the footprint in reach). v0.8.1 demanded the whole footprint (radius - cityRadius = 3.3 for Ion 5.3 / city 2),
++        // which a defense cannot reach: it must stand at least its own radius + the city's (~3.1) away, so no city ever
++        // counted as protected and the AIs built 3 Ions a turn without end (31 Oct v0.8.1: Junker 21 Ions, 0 cities
++        // protected). Deficit = sum over cities of max(0, perCity - defenses protecting it). protectedCities: cities with >= 1.
+         public static int CityProtectionDeficit(IList<Point> cities, IList<float> cityRadii, IList<Point> defenses, IList<float> defenseRadii,
+             int perCity, out int protectedCities)
+         {
+@@ -228,7 +230,7 @@ namespace InterplanetaryAI.Brain
+                 int k = 0;
+                 for (int j = 0; j < defenses.Count; j++)
+                 {
+-                    float reach = defenseRadii[j] - cityRadii[c];
++                    float reach = defenseRadii[j] - 0.5f * cityRadii[c];
+                     if (reach > 0f && cities[c].DistanceSquared(defenses[j]) < reach * reach) k++;
+                 }
+                 if (k > 0) protectedCities++;
+diff --git a/AI/Brain/Director.cs b/AI/Brain/Director.cs
+index 2d05cf6..bc32a92 100644
+--- a/AI/Brain/Director.cs
++++ b/AI/Brain/Director.cs
+@@ -141,6 +141,15 @@ namespace InterplanetaryAI.Brain
+             return cities * AntiNukePerCity(nukeSeen, turn, priorTurn, perCitySeen, perCityPrior);
+         }
+ 
++        // v0.8.2 safety cap: never more anti-nuke defenses than capMultiplier x perCity x cities in total, whatever the
++        // per-city count says (a geometry or counting error must not turn into runaway building again).
++        public static int AntiNukeMissing(int deficit, int owned, int cities, int perCity, float capMultiplier)
++        {
++            int cap = (int)Math.Ceiling(Math.Max(0f, capMultiplier) * Math.Max(0, perCity) * Math.Max(0, cities));
++            if (owned >= cap) return 0;
++            return Math.Max(0, Math.Min(deficit, cap - owned));
++        }
++
+         // Anti-nuke defenses wanted over each city.
+         public static int AntiNukePerCity(bool nukeSeen, int turn, int priorTurn, int perCitySeen, int perCityPrior)
+         {
+diff --git a/AI/DirectorPatches.cs b/AI/DirectorPatches.cs
+index 4248319..12da111 100644
+--- a/AI/DirectorPatches.cs
++++ b/AI/DirectorPatches.cs
+@@ -225,7 +225,8 @@ namespace InterplanetaryAI
+                     defenseRadii.Add(b.Stats.Defenses.Radius);
+                 }
+                 d.AntiNukeOwned = defensePoints.Count;
+-                d.AntiNukeWanted = DefenseCoverage.CityProtectionDeficit(cityPoints, cityRadii, defensePoints, defenseRadii, perCity, out d.CitiesProtected);
++                int deficit = DefenseCoverage.CityProtectionDeficit(cityPoints, cityRadii, defensePoints, defenseRadii, perCity, out d.CitiesProtected);
++                d.AntiNukeWanted = EconomyDirector.AntiNukeMissing(deficit, d.AntiNukeOwned, cityPoints.Count, perCity, 2f);
+             }
+ 
+             // Weapon choice is made against the strongest visible economy: the enemy most worth hitting.
+@@ -1064,6 +1065,8 @@ namespace InterplanetaryAI
+             float nukeStop;
+             if (antiNuke && stops != null && stops.TryGetValue(NuclearWeaponId, out nukeStop)) m.P = Math.Min(0.95f, nukeStop);
+             else m.P = 1f;
++            // v0.8.2: aim anti-nuke defenses inside the reach that counts as protecting a city (radius - half a city).
++            if (antiNuke) m.Radius = Math.Max(1f, m.Radius - 1f);
+             BuildingsData buildings = GameDataFileManager.GetDataFile<BuildingsData>();
+             string id = data.id.Value;
+             List<Point> defenses = new List<Point>();
+diff --git a/AI/Plugin.cs b/AI/Plugin.cs
+index d2e0a29..4b887d1 100644
+--- a/AI/Plugin.cs
++++ b/AI/Plugin.cs
+@@ -22,7 +22,7 @@ namespace InterplanetaryAI
+     {
+         public const string GUID = "pavol.interplanetary.ai";
+         public const string NAME = "Interplanetary EE: Smarter AI";
+-        public const string VERSION = "0.8.1";
++        public const string VERSION = "0.8.2";
+ 
+         internal static ManualLogSource Log;
+ 
+diff --git a/AI/Tests/Program.cs b/AI/Tests/Program.cs
+index 5653165..54c1c07 100644
+--- a/AI/Tests/Program.cs
++++ b/AI/Tests/Program.cs
+@@ -378,17 +378,24 @@ namespace InterplanetaryAI.Tests
+             Check(nukePicks.Count == 10 && nukePicks.TrueForAll(i => i == 0), "anti-nuke placement stacks over the city");
+             Check(DefenseCoverage.PickAnchorsMarginal(new List<Point> { P(100f) }, city, cv8, new[] { 0, 0 }, r, 0.8f, 0.6f, rng, 5).Count == 0, "nothing in reach: no draws");
+ 
+-            // v0.8.1 per-city protection: an Ion protects a city only if the whole city (radius 2) is inside its radius (5.3).
++            // v0.8.2 per-city protection: centre within radius - cityRadius/2 (Ion 5.3, city 2 -> 4.3).
+             var cities2 = new List<Point> { P(0f), P(40f) };
+             var cityR = new List<float> { 2f, 2f };
+             int prot;
+             Check(DefenseCoverage.CityProtectionDeficit(cities2, cityR, new List<Point>(), new List<float>(), 2, out prot) == 4 && prot == 0, "no Ions, 2 cities x 2 = 4 missing");
+-            Check(DefenseCoverage.CityProtectionDeficit(cities2, cityR, new List<Point> { P(3f) }, new List<float> { 5.3f }, 2, out prot) == 3 && prot == 1,
+-                "Ion 3 from city A (reach 5.3 - 2 = 3.3): A has 1 of 2, B 0 of 2 -> 3 missing");
+-            Check(DefenseCoverage.CityProtectionDeficit(cities2, cityR, new List<Point> { P(4f) }, new List<float> { 5.3f }, 2, out prot) == 4 && prot == 0,
+-                "Ion 4 from city A covers its centre but not its far edge: not protected (Terra v0.8 #3)");
+-            Check(DefenseCoverage.CityProtectionDeficit(cities2, cityR, new List<Point> { P(1f), P(-1f), P(60f) }, new List<float> { 5.3f, 5.3f, 5.3f }, 2, out prot) == 2 && prot == 1,
+-                "5 Ions elsewhere do not count: A full (2), B missing 2 (Terra v0.8 #2)");
++            Check(DefenseCoverage.CityProtectionDeficit(cities2, cityR, new List<Point> { P(3.5f) }, new List<float> { 5.3f }, 2, out prot) == 3 && prot == 1,
++                "Ion 3.5 from city A (the nearest a defense can stand is ~3.1): protects it -> A 1 of 2, B 0 of 2 = 3 missing");
++            Check(DefenseCoverage.CityProtectionDeficit(cities2, cityR, new List<Point> { P(4.2f) }, new List<float> { 5.3f }, 2, out prot) == 3 && prot == 1,
++                "Ion 4.2 from city A: within 4.3, protected (v0.8.1 said no: the bug)");
++            Check(DefenseCoverage.CityProtectionDeficit(cities2, cityR, new List<Point> { P(4.5f) }, new List<float> { 5.3f }, 2, out prot) == 4 && prot == 0,
++                "Ion 4.5 from city A: beyond 4.3, not protected");
++            Check(DefenseCoverage.CityProtectionDeficit(cities2, cityR, new List<Point> { P(3.5f), P(-3.5f), P(60f) }, new List<float> { 5.3f, 5.3f, 5.3f }, 2, out prot) == 2 && prot == 1,
++                "Ions elsewhere do not count: A full (2), B missing 2");
++            // v0.8.2 cap: at most 2 x perCity x cities, whatever the deficit says.
++            Check(EconomyDirector.AntiNukeMissing(3, 21, 3, 1, 2f) == 0, "Junker T32 (21 Ions, 3 cities, 1 per city): capped at 6 -> 0 more");
++            Check(EconomyDirector.AntiNukeMissing(3, 4, 3, 1, 2f) == 2, "4 owned, cap 6: at most 2 more even if 3 are missing");
++            Check(EconomyDirector.AntiNukeMissing(2, 0, 3, 2, 2f) == 2, "under the cap: the deficit");
++            Check(EconomyDirector.AntiNukeMissing(5, 0, 0, 2, 2f) == 0, "no cities: nothing");
+             Check(EconomyDirector.AntiNukePerCity(true, 10, 24, 2, 1) == 2 && EconomyDirector.AntiNukePerCity(false, 24, 24, 2, 1) == 1 && EconomyDirector.AntiNukePerCity(false, 23, 24, 2, 1) == 0,
+                 "per city: 2 once seen, 1 from the prior turn, 0 before");
+ 

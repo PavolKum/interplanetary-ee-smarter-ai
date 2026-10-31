@@ -1,0 +1,15 @@
+READ-ONLY review. Do not edit, create or delete any file. Stay inside this repository: any path outside it is auto-rejected and ends your run. Finish with the complete written report.
+
+Focused review of AI v0.8.2 (diff against v0.8.1 in docs/reviews/terra-ai-v0.8.2.diff). You reviewed v0.8.0 (docs/reviews/terra-ai-v0.8.md; disposition terra-ai-v0.8-disposition.md).
+
+The v0.8.1 match (docs/playtests/data/v081-ai-decisions.jsonl; director records have cities, citiesProtected, antiNukeOwned, antiNukeMissing, antiNukeQueued, nukeThreat) showed citiesProtected = 0 for both AIs all game while they owned up to 21 Ion Defenses, so antiNukeMissing never fell and they queued 3 Ions every turn. My diagnosis: v0.8.1 counted a city protected only if distance < ionRadius - cityRadius (5.3 - 2 = 3.3), but a defense can only stand >= ownRadius + cityRadius (~1.1 + 2 = 3.1) from the city centre (placement ring inner bound in CoverageStep), so protection was almost unreachable.
+
+v0.8.2: (1) protected if distance < radius - cityRadius/2; (2) safety cap AntiNukeMissing: total anti-nuke owned <= 2 x perCity x cities; (3) anti-nuke placement aims inside radius - 1.
+
+Check with file:line evidence (AI/, decompiled/, docs/ruleset/embedded/enhanced/):
+1. Is my diagnosis right? Verify from the log and from the actual radii (CitiesData city_radius x scale, BuildingsData building_radius for bui_IonDefense, DefensesData defense_radius) and the placement ring; any other reason citiesProtected could stay 0 (e.g. Power.HasPower false for new Ions, Stats.Defenses.Radius units, city.Radius vs world distance, planet scale, GetRemainingCities)?
+2. Is "radius - cityRadius/2" a reasonable protection rule given impacts are tested at the impact point and the nuclear blast radius (WeaponsData)? Is it reachable with the placement ring and the shrunk target radius?
+3. The cap and its interaction with the deficit, nukeThreat (which also switched on from the OTHER AI's Nuclear Missiles in that match - fine, they are enemies), and per-turn queueing.
+4. Anything else in the diff that is wrong.
+
+Output: verdict (ship / fix first), findings ranked High/Medium/Low with file:line and a concrete fix, then "checked and fine". Under 800 words.
