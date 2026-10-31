@@ -141,6 +141,15 @@ namespace InterplanetaryAI.Brain
             return cities * AntiNukePerCity(nukeSeen, turn, priorTurn, perCitySeen, perCityPrior);
         }
 
+        // v0.8.2 safety cap: never more anti-nuke defenses than capMultiplier x perCity x cities in total, whatever the
+        // per-city count says (a geometry or counting error must not turn into runaway building again).
+        public static int AntiNukeMissing(int deficit, int owned, int cities, int perCity, float capMultiplier)
+        {
+            int cap = (int)Math.Ceiling(Math.Max(0f, capMultiplier) * Math.Max(0, perCity) * Math.Max(0, cities));
+            if (owned >= cap) return 0;
+            return Math.Max(0, Math.Min(deficit, cap - owned));
+        }
+
         // Anti-nuke defenses wanted over each city.
         public static int AntiNukePerCity(bool nukeSeen, int turn, int priorTurn, int perCitySeen, int perCityPrior)
         {

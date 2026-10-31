@@ -215,9 +215,11 @@ namespace InterplanetaryAI.Brain
         }
 
         // v0.8.1: anti-nuke defenses still missing, city by city (Terra v0.8: an inventory of Ions anywhere is not
-        // protection). A defense protects a city only if the city's whole footprint lies inside its radius (interception
-        // is tested at the impact point, so an impact on the city's edge must still be in reach): distance < radius -
-        // cityRadius. Deficit = sum over cities of max(0, perCity - defenses protecting it). protectedCities: cities with >= 1.
+        // protection). v0.8.2: a defense protects a city when the city centre is within radius - cityRadius/2 (most of
+        // the footprint in reach). v0.8.1 demanded the whole footprint (radius - cityRadius = 3.3 for Ion 5.3 / city 2),
+        // which a defense cannot reach: it must stand at least its own radius + the city's (~3.1) away, so no city ever
+        // counted as protected and the AIs built 3 Ions a turn without end (31 Oct v0.8.1: Junker 21 Ions, 0 cities
+        // protected). Deficit = sum over cities of max(0, perCity - defenses protecting it). protectedCities: cities with >= 1.
         public static int CityProtectionDeficit(IList<Point> cities, IList<float> cityRadii, IList<Point> defenses, IList<float> defenseRadii,
             int perCity, out int protectedCities)
         {
@@ -228,7 +230,7 @@ namespace InterplanetaryAI.Brain
                 int k = 0;
                 for (int j = 0; j < defenses.Count; j++)
                 {
-                    float reach = defenseRadii[j] - cityRadii[c];
+                    float reach = defenseRadii[j] - 0.5f * cityRadii[c];
                     if (reach > 0f && cities[c].DistanceSquared(defenses[j]) < reach * reach) k++;
                 }
                 if (k > 0) protectedCities++;

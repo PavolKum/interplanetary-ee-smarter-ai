@@ -378,17 +378,24 @@ namespace InterplanetaryAI.Tests
             Check(nukePicks.Count == 10 && nukePicks.TrueForAll(i => i == 0), "anti-nuke placement stacks over the city");
             Check(DefenseCoverage.PickAnchorsMarginal(new List<Point> { P(100f) }, city, cv8, new[] { 0, 0 }, r, 0.8f, 0.6f, rng, 5).Count == 0, "nothing in reach: no draws");
 
-            // v0.8.1 per-city protection: an Ion protects a city only if the whole city (radius 2) is inside its radius (5.3).
+            // v0.8.2 per-city protection: centre within radius - cityRadius/2 (Ion 5.3, city 2 -> 4.3).
             var cities2 = new List<Point> { P(0f), P(40f) };
             var cityR = new List<float> { 2f, 2f };
             int prot;
             Check(DefenseCoverage.CityProtectionDeficit(cities2, cityR, new List<Point>(), new List<float>(), 2, out prot) == 4 && prot == 0, "no Ions, 2 cities x 2 = 4 missing");
-            Check(DefenseCoverage.CityProtectionDeficit(cities2, cityR, new List<Point> { P(3f) }, new List<float> { 5.3f }, 2, out prot) == 3 && prot == 1,
-                "Ion 3 from city A (reach 5.3 - 2 = 3.3): A has 1 of 2, B 0 of 2 -> 3 missing");
-            Check(DefenseCoverage.CityProtectionDeficit(cities2, cityR, new List<Point> { P(4f) }, new List<float> { 5.3f }, 2, out prot) == 4 && prot == 0,
-                "Ion 4 from city A covers its centre but not its far edge: not protected (Terra v0.8 #3)");
-            Check(DefenseCoverage.CityProtectionDeficit(cities2, cityR, new List<Point> { P(1f), P(-1f), P(60f) }, new List<float> { 5.3f, 5.3f, 5.3f }, 2, out prot) == 2 && prot == 1,
-                "5 Ions elsewhere do not count: A full (2), B missing 2 (Terra v0.8 #2)");
+            Check(DefenseCoverage.CityProtectionDeficit(cities2, cityR, new List<Point> { P(3.5f) }, new List<float> { 5.3f }, 2, out prot) == 3 && prot == 1,
+                "Ion 3.5 from city A (the nearest a defense can stand is ~3.1): protects it -> A 1 of 2, B 0 of 2 = 3 missing");
+            Check(DefenseCoverage.CityProtectionDeficit(cities2, cityR, new List<Point> { P(4.2f) }, new List<float> { 5.3f }, 2, out prot) == 3 && prot == 1,
+                "Ion 4.2 from city A: within 4.3, protected (v0.8.1 said no: the bug)");
+            Check(DefenseCoverage.CityProtectionDeficit(cities2, cityR, new List<Point> { P(4.5f) }, new List<float> { 5.3f }, 2, out prot) == 4 && prot == 0,
+                "Ion 4.5 from city A: beyond 4.3, not protected");
+            Check(DefenseCoverage.CityProtectionDeficit(cities2, cityR, new List<Point> { P(3.5f), P(-3.5f), P(60f) }, new List<float> { 5.3f, 5.3f, 5.3f }, 2, out prot) == 2 && prot == 1,
+                "Ions elsewhere do not count: A full (2), B missing 2");
+            // v0.8.2 cap: at most 2 x perCity x cities, whatever the deficit says.
+            Check(EconomyDirector.AntiNukeMissing(3, 21, 3, 1, 2f) == 0, "Junker T32 (21 Ions, 3 cities, 1 per city): capped at 6 -> 0 more");
+            Check(EconomyDirector.AntiNukeMissing(3, 4, 3, 1, 2f) == 2, "4 owned, cap 6: at most 2 more even if 3 are missing");
+            Check(EconomyDirector.AntiNukeMissing(2, 0, 3, 2, 2f) == 2, "under the cap: the deficit");
+            Check(EconomyDirector.AntiNukeMissing(5, 0, 0, 2, 2f) == 0, "no cities: nothing");
             Check(EconomyDirector.AntiNukePerCity(true, 10, 24, 2, 1) == 2 && EconomyDirector.AntiNukePerCity(false, 24, 24, 2, 1) == 1 && EconomyDirector.AntiNukePerCity(false, 23, 24, 2, 1) == 0,
                 "per city: 2 once seen, 1 from the prior turn, 0 before");
 

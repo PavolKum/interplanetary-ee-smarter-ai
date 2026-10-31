@@ -225,7 +225,8 @@ namespace InterplanetaryAI
                     defenseRadii.Add(b.Stats.Defenses.Radius);
                 }
                 d.AntiNukeOwned = defensePoints.Count;
-                d.AntiNukeWanted = DefenseCoverage.CityProtectionDeficit(cityPoints, cityRadii, defensePoints, defenseRadii, perCity, out d.CitiesProtected);
+                int deficit = DefenseCoverage.CityProtectionDeficit(cityPoints, cityRadii, defensePoints, defenseRadii, perCity, out d.CitiesProtected);
+                d.AntiNukeWanted = EconomyDirector.AntiNukeMissing(deficit, d.AntiNukeOwned, cityPoints.Count, perCity, 2f);
             }
 
             // Weapon choice is made against the strongest visible economy: the enemy most worth hitting.
@@ -1064,6 +1065,8 @@ namespace InterplanetaryAI
             float nukeStop;
             if (antiNuke && stops != null && stops.TryGetValue(NuclearWeaponId, out nukeStop)) m.P = Math.Min(0.95f, nukeStop);
             else m.P = 1f;
+            // v0.8.2: aim anti-nuke defenses inside the reach that counts as protecting a city (radius - half a city).
+            if (antiNuke) m.Radius = Math.Max(1f, m.Radius - 1f);
             BuildingsData buildings = GameDataFileManager.GetDataFile<BuildingsData>();
             string id = data.id.Value;
             List<Point> defenses = new List<Point>();
