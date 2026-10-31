@@ -21,6 +21,7 @@ namespace InterplanetaryAI.Brain
         public int NoResource;         // a defense in range could not roll: not enough energy OR material
         public int Disconnected;       // a defense in range had no power
         public int EnergySpent;
+        public readonly Dictionary<string, int> ImpactsByWeapon = new Dictionary<string, int>(); // what hit us (shown in playback)
     }
 
     public sealed class DefenseLedger
@@ -55,6 +56,9 @@ namespace InterplanetaryAI.Brain
                 m_pendingDefender[defenderId] = d;
             }
             d.Impacts++;
+            int byWeapon;
+            d.ImpactsByWeapon.TryGetValue(weaponId ?? "?", out byWeapon);
+            d.ImpactsByWeapon[weaponId ?? "?"] = byWeapon + 1;
             if (!eligibleDefenseInRange) d.NoEligibleDefense++;
             if (nearCity) d.NearCity++;
             if (!anyDefenseNearby) d.NoDefenseNearby++;

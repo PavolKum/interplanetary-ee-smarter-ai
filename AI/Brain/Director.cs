@@ -131,6 +131,17 @@ namespace InterplanetaryAI.Brain
             return Math.Min(cap, (int)Math.Round(wanted));
         }
 
+        // v0.8: defenses that stop Nuclear Missiles (Ion in Enhanced) wanted over our cities. 31 Oct v0.7.3: the human
+        // built no conventional weapon, then 9-17 Nuclear Missiles from T32, and took both AIs' cities (5 -> 1) while
+        // their economies stood. Once a nuke is seen or lands: perCitySeen per city; before that, from priorTurn on,
+        // perCityPrior per city (Thermonuclear Warheads arrive around T27-32 in every match so far).
+        public static int AntiNukeDefenses(int cities, bool nukeSeen, int turn, int priorTurn, int perCitySeen, int perCityPrior)
+        {
+            if (cities <= 0) return 0;
+            if (nukeSeen) return cities * Math.Max(0, perCitySeen);
+            return priorTurn > 0 && turn >= priorTurn ? cities * Math.Max(0, perCityPrior) : 0;
+        }
+
         // Defenses queued per turn: the base rate, or faster to close a gap within catchUpTurns. v0.4.1 built
         // 3/turn while losing 40-90 buildings a turn. Without damage taken the catch-up uses at most half the
         // free power slots, so a small planet keeps room for weapons and growth; under attack it may use all.

@@ -22,7 +22,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.7.3";
+        public const string VERSION = "0.8.0";
 
         internal static ManualLogSource Log;
 
@@ -131,6 +131,11 @@ namespace InterplanetaryAI
         internal static ConfigEntry<int> ObservedMinImpacts;
         internal static ConfigEntry<float> DefenseRecoveryShare;
         internal static ConfigEntry<bool> CoveragePlacement;
+        internal static ConfigEntry<int> AntiNukePerCity;
+        internal static ConfigEntry<int> AntiNukePriorPerCity;
+        internal static ConfigEntry<int> AntiNukePriorTurn;
+        internal static ConfigEntry<float> AntiNukeCityValue;
+        internal static ConfigEntry<int> NukeMemoryTurns;
         internal static ConfigEntry<float> CoverageCityValue;
         internal static ConfigEntry<float> CoverageBand;
         internal static ConfigEntry<float> ObservedPriorWeight;
@@ -275,6 +280,12 @@ namespace InterplanetaryAI
                 "Observed interception is blended with the estimate from remembered defenses as if this many shots had matched the estimate: few shots barely move it.");
             CoveragePlacement = Config.Bind("Director", "CoveragePlacement", true,
                 "Place each new defense next to the building whose neighbourhood holds the most value no defense of that type covers yet (cities weigh CoverageCityValue). Off = the game's own placement: random city, no memory.");
+            AntiNukePerCity = Config.Bind("Director", "AntiNukePerCity", 2,
+                "Once an enemy Nuclear Missile is seen or lands on us: this many defenses that stop it (Ion in Enhanced) per city, placed over the cities. 0 = off.");
+            AntiNukePriorPerCity = Config.Bind("Director", "AntiNukePriorPerCity", 1, "Before any nuke is seen, from AntiNukePriorTurn: this many per city.");
+            AntiNukePriorTurn = Config.Bind("Director", "AntiNukePriorTurn", 28, "Turn from which nukes are expected without having seen one (0 = never).");
+            AntiNukeCityValue = Config.Bind("Director", "AntiNukeCityValue", 20f, "Weight of a city when placing an anti-nuke defense (an ordinary building is 1).");
+            NukeMemoryTurns = Config.Bind("Director", "NukeMemoryTurns", 12, "A Nuclear Missile that hit us keeps the threat on for this many turns.");
             CoverageCityValue = Config.Bind("Director", "CoverageCityValue", 4f, "Weight of a city when judging what a defense covers (an ordinary building is 1).");
             CoverageBand = Config.Bind("Director", "CoverageBand", 0.6f, "Anchors scoring at least this share of the best are all candidates, picked weighted by score squared, so defenses spread.");
             WeaponMemoryDecay = Config.Bind("Director", "WeaponMemoryDecay", 0.95f,

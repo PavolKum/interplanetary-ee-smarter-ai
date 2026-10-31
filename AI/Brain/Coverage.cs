@@ -151,6 +151,69 @@ namespace InterplanetaryAI.Brain
             return picks;
         }
 
+        // v0.8: how many defenses cover each target (each with its own radius). Stacking matters: n defenses of
+        // interception chance p stop a shot with 1-(1-p)^n, so a second Ion Defense over a city lifts 0.8 to 0.96.
+        public static int[] CoverCounts(IList<Point> targets, IList<Point> defenses, IList<float> radii)
+        {
+            int[] counts = new int[targets.Count];
+            for (int i = 0; i < targets.Count; i++)
+            {
+                for (int j = 0; j < defenses.Count; j++)
+                {
+                    if (targets[i].DistanceSquared(defenses[j]) < radii[j] * radii[j]) counts[i]++;
+                }
+            }
+            return counts;
+        }
+
+        // Interception a new defense at `center` adds: each target within reach gains p x (1-p)^k of its value, k = the
+        // defenses already over it.
+        public static float MarginalValue(Point center, IList<Point> targets, IList<float> values, int[] counts, float radius, float p)
+        {
+            float r2 = radius * radius;
+            float total = 0f;
+            for (int i = 0; i < targets.Count; i++)
+            {
+                if (center.DistanceSquared(targets[i]) < r2) total += values[i] * p * (float)Math.Pow(1f - p, counts[i]);
+            }
+            return total;
+        }
+
+        // PickAnchors on marginal value: `count` draws among anchors scoring at least `band` of the best (score squared).
+        public static List<int> PickAnchorsMarginal(IList<Point> anchors, IList<Point> targets, IList<float> values, int[] counts, float radius, float p,
+            float band, Random rng, int count)
+        {
+            List<int> picks = new List<int>();
+            float[] weights = new float[anchors.Count];
+            float best = 0f;
+            for (int i = 0; i < anchors.Count; i++)
+            {
+                weights[i] = MarginalValue(anchors[i], targets, values, counts, radius, p);
+                best = Math.Max(best, weights[i]);
+            }
+            if (best <= 1e-6f) return picks;
+            float total = 0f;
+            for (int i = 0; i < weights.Length; i++)
+            {
+                weights[i] = weights[i] >= band * best ? weights[i] * weights[i] : 0f;
+                total += weights[i];
+            }
+            for (int n = 0; n < count; n++)
+            {
+                double roll = rng.NextDouble() * total;
+                int chosen = -1;
+                for (int i = 0; i < weights.Length; i++)
+                {
+                    if (weights[i] <= 0f) continue;
+                    chosen = i;
+                    roll -= weights[i];
+                    if (roll <= 0) break;
+                }
+                if (chosen >= 0) picks.Add(chosen);
+            }
+            return picks;
+        }
+
         // Share of the total value that is covered (for the decision log).
         public static float CoveredShare(IList<float> values, bool[] covered)
         {

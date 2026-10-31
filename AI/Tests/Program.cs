@@ -365,6 +365,26 @@ namespace InterplanetaryAI.Tests
             Check(DefenseCoverage.PickAnchors(anchors, targets, tv, DefenseCoverage.Covered(targets, new List<Point> { P(2f), P(31f) }, r), r, 0.6f, rng, 12).Count == 0,
                 "everything covered: no draws (the adapter then places anywhere safe)");
 
+            // v0.8 stacking: a second defense over a city still adds 0.8 x 0.2 of its value.
+            var city = new List<Point> { P(0f), P(30f) };
+            var cv8 = new List<float> { 20f, 1f };
+            int[] counts = DefenseCoverage.CoverCounts(city, new List<Point> { P(1f), P(-1f), P(60f) }, new List<float> { 5.9f, 5.9f, 5.9f });
+            Check(counts[0] == 2 && counts[1] == 0, "cover counts: the city has 2 defenses over it, the far building none");
+            Check(Math.Abs(DefenseCoverage.MarginalValue(P(0f), city, cv8, new[] { 0, 0 }, r, 0.8f) - 16f) < 1e-3f, "first Ion over a city of value 20: 0.8 x 20 = 16");
+            Check(Math.Abs(DefenseCoverage.MarginalValue(P(0f), city, cv8, new[] { 1, 0 }, r, 0.8f) - 3.2f) < 1e-3f, "second Ion over it: 0.8 x 0.2 x 20 = 3.2");
+            Check(DefenseCoverage.MarginalValue(P(0f), city, cv8, new[] { 1, 0 }, r, 0.8f) > DefenseCoverage.MarginalValue(P(30f), city, cv8, new[] { 1, 0 }, r, 0.8f),
+                "a second Ion over a city (3.2) beats the first over an ordinary building (0.8)");
+            var nukePicks = DefenseCoverage.PickAnchorsMarginal(new List<Point> { P(0.5f), P(30f) }, city, cv8, new[] { 1, 0 }, r, 0.8f, 0.6f, rng, 10);
+            Check(nukePicks.Count == 10 && nukePicks.TrueForAll(i => i == 0), "anti-nuke placement stacks over the city");
+            Check(DefenseCoverage.PickAnchorsMarginal(new List<Point> { P(100f) }, city, cv8, new[] { 0, 0 }, r, 0.8f, 0.6f, rng, 5).Count == 0, "nothing in reach: no draws");
+
+            // v0.8 anti-nuke defenses wanted.
+            Check(EconomyDirector.AntiNukeDefenses(5, true, 20, 28, 2, 1) == 10, "nuke seen: 2 per city x 5 cities = 10");
+            Check(EconomyDirector.AntiNukeDefenses(5, false, 27, 28, 2, 1) == 0, "no nuke seen, before T28: none");
+            Check(EconomyDirector.AntiNukeDefenses(5, false, 28, 28, 2, 1) == 5, "no nuke seen, from T28: 1 per city");
+            Check(EconomyDirector.AntiNukeDefenses(3, false, 40, 0, 2, 1) == 0, "prior turn 0: never without a sighting");
+            Check(EconomyDirector.AntiNukeDefenses(0, true, 40, 28, 2, 1) == 0, "no cities left: none");
+
             // Impact geometry counters.
             var ledger = new DefenseLedger(2);
             ledger.Record(1, 2, "wea_Railgun", false, 0, 0, 0, 0, false, true, false);
@@ -372,6 +392,11 @@ namespace InterplanetaryAI.Tests
             ledger.Roll(1);
             DefenderStats d = ledger.LastDefender(1);
             Check(d.NearCity == 1 && d.NoDefenseNearby == 1 && d.NoEligibleDefense == 1, "impact geometry: 1 near a city, 1 with no defense nearby, 1 with none eligible");
+            ledger.Record(3, 2, "wea_NuclearMissile", false, 0, 0, 0, 0, false);
+            ledger.Record(3, 2, "wea_NuclearMissile", true, 0, 0, 0, 200, true);
+            ledger.Roll(3);
+            int nukes;
+            Check(ledger.LastDefender(3).ImpactsByWeapon.TryGetValue("wea_NuclearMissile", out nukes) && nukes == 2, "impacts by weapon: 2 Nuclear Missiles reached us");
         }
 
         private static Dictionary<int, Dictionary<string, int>> Seen(int enemy, string weapon, int count)

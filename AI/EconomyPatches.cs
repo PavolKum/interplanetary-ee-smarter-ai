@@ -38,6 +38,7 @@ namespace InterplanetaryAI
             public readonly Dictionary<string, int> VisibleWeapons = new Dictionary<string, int>(); // visible this turn, all enemies
             public readonly Dictionary<int, Dictionary<string, int>> VisibleByEnemy = new Dictionary<int, Dictionary<string, int>>();
             public readonly Dictionary<string, float> WeaponMemory = new Dictionary<string, float>();
+            public int LastNukeHitTurn = -1000; // v0.8: last turn a Nuclear Missile reached our planet
             // v0.6: enemy defenses once seen, per enemy (a Kinetic wall seen at T24 is still there when counterintel hides it)
             public readonly Dictionary<int, Dictionary<string, float>> DefenseMemory = new Dictionary<int, Dictionary<string, float>>();
             public readonly Dictionary<int, Dictionary<string, int>> KnownDefenses = new Dictionary<int, Dictionary<string, int>>();
