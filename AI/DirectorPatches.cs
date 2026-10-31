@@ -940,13 +940,14 @@ namespace InterplanetaryAI
         private sealed class CoverageState
         {
             public int Steps;
-            public bool GaveUp;   // only for a building without a defense radius
         }
 
         private static readonly Dictionary<AIBuildingPlacementSearch, CoverageState> s_coverage = new Dictionary<AIBuildingPlacementSearch, CoverageState>();
         private static readonly FieldInfo s_searchResult = AccessTools.Field(typeof(AIBuildingPlacementSearch), "m_result");
         private static readonly MethodInfo s_setSearchComplete = AccessTools.PropertySetter(typeof(AIBuildingPlacementSearch), "IsComplete");
         private const int CoverageCandidatesPerStep = 12;
+        private const int CoverageCandidatesPerFrame = 120;
+        private const int CoverageStepCap = 150;
 
         private static float DefenseRadius(BuildingData data)
         {
@@ -1013,7 +1014,31 @@ namespace InterplanetaryAI
         // one covering the most uncovered value wins. With nothing left to cover the same safe path places it anywhere
         // legal and connected: we never hand a defense back to the game's search, which samples past line reach
         // (Terra v0.7.1). No legal spot this step -> try again next step; the abandon valve refunds a hopeless search.
+        // Defense searches fail closed (Terra v0.7.2): on an error, a missing radius or too many fruitless steps the search
+        // is pushed to the abandon valve (refund) instead of the game's own search, which can leave the defense unconnected.
+        private static void AbandonSoon(AIBuildingPlacementSearch search)
+        {
+            s_searchSteps.SetValue(search, Math.Max((int)s_searchSteps.GetValue(search), Math.Max(100, Plugin.PlacementStepCap.Value)));
+        }
+
         private static bool CoverageStep(AIBuildingPlacementSearch search, BuildingData data, AICore core)
+        {
+            try
+            {
+                return CoverageStepUnsafe(search, data, core);
+            }
+            catch (Exception e)
+            {
+                ReportOnce("defense-placement", e);
+                AbandonSoon(search);
+                return true;
+            }
+        }
+
+        private static int s_budgetFrame = -1;
+        private static int s_candidatesThisFrame;
+
+        private static bool CoverageStepUnsafe(AIBuildingPlacementSearch search, BuildingData data, AICore core)
         {
             if (s_coverage.Count > 300) s_coverage.Clear(); // finished searches are never removed otherwise
             CoverageState st;
@@ -1022,14 +1047,25 @@ namespace InterplanetaryAI
                 st = new CoverageState();
                 s_coverage[search] = st;
             }
-            if (st.GaveUp) return false;
+            // Frame budget: the finder may run ~100 steps in one update; candidates beyond the budget wait for the next
+            // frame (the step is not counted, so waiting never pushes a search toward abandonment).
+            if (Time.frameCount != s_budgetFrame)
+            {
+                s_budgetFrame = Time.frameCount;
+                s_candidatesThisFrame = 0;
+            }
+            if (s_candidatesThisFrame >= CoverageCandidatesPerFrame) return true;
             CoverageModel model = BuildCoverageModel(core, data);
             if (model == null)
             {
-                st.GaveUp = true; // not a defense with a radius: nothing to plan
-                return false;
+                AbandonSoon(search); // a defense without a radius: nothing safe to plan
+                return true;
             }
-            st.Steps++;
+            if (++st.Steps > CoverageStepCap)
+            {
+                AbandonSoon(search);
+                return true;
+            }
             s_searchSteps.SetValue(search, (int)s_searchSteps.GetValue(search) + 1); // the abandon valve counts every step
 
             List<BaseBuilding> bases = new List<BaseBuilding>();
@@ -1044,12 +1080,19 @@ namespace InterplanetaryAI
             }
             if (bases.Count == 0) return true; // nothing to connect to yet
 
-            List<int> picks = DefenseCoverage.PickAnchors(anchors, model.Targets, model.Values, model.Covered, model.Radius,
-                Plugin.CoverageBand.Value, Plugin.Rng, CoverageCandidatesPerStep);
+            // Widen as steps fail (Terra v0.7.2: a blocked best anchor must not trap the search): first the near-best
+            // anchors, then every anchor with something uncovered, then any anchor at all (coverage is still scored).
+            List<int> picks = new List<int>();
+            if (st.Steps <= 8)
+            {
+                float band = st.Steps <= 3 ? Plugin.CoverageBand.Value : 0f;
+                picks = DefenseCoverage.PickAnchors(anchors, model.Targets, model.Values, model.Covered, model.Radius, band, Plugin.Rng, CoverageCandidatesPerStep);
+            }
             if (picks.Count == 0)
             {
-                for (int n = 0; n < CoverageCandidatesPerStep; n++) picks.Add(Plugin.Rng.Next(bases.Count)); // all covered: any safe spot
+                for (int n = 0; n < CoverageCandidatesPerStep; n++) picks.Add(Plugin.Rng.Next(bases.Count)); // any safe spot
             }
+            s_candidatesThisFrame += picks.Count;
 
             float scale = data.building_scale.IsValueSet ? data.building_scale.Value : 1f;
             float ownRadius = (data.building_radius.IsValueSet ? data.building_radius.Value : 1f) * scale;

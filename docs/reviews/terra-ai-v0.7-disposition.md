@@ -27,3 +27,11 @@ game's own step after 60 steps, when nothing uncovered is near any anchor, or on
 | Low 5 | Queued defenses weighted 1 | **Fixed**: 0.25 like existing defenses |
 
 174 checks. Surviving mutant (removing the early return in PickAnchors) is output-equivalent (all weights zero -> no draws); it only advances the RNG.
+
+## Confirming review of v0.7.2 (`terra-ai-v0.7.2.md`, fix first) - fixed in v0.7.3 (installed without a further review, at Pavol's go)
+
+| # | Finding | Disposition |
+|---|---|---|
+| High 1 | Blocked best anchors can trap the search until abandonment | **Fixed**: widening by failed steps - steps 1-3 near-best band, 4-8 any anchor with uncovered value, then any anchor (coverage still scored) |
+| Medium 2 | Exceptions / missing radius fall back to the unsafe native search | **Fixed**: defense searches fail closed - the step counter is pushed to the abandon cap (refund next finder update) |
+| Medium 3 | Unbounded per-frame work | **Fixed in part**: 120 candidates per frame (excess waits a frame, uncounted), 150-step cap per defense search. Frame cost still unmeasured; a first search can hold the budget for a few frames |
