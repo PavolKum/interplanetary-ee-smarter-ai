@@ -104,8 +104,15 @@ def main():
                 print(f"T{r['t']} {r['ai']}: E/t {e.get('energyPerTurn', '?')} M/t {e.get('materialPerTurn', '?')} sci {e.get('sciencePerTurn', '?')} "
                       f"bld {sum(buildings.values())} [{top}] upg {r['upgradesInstalled']} slots {r['slotsAtStart']}"
                       f" intel {r.get('intelBuildings', '?')} blind {r.get('blindEnemies', '?')} reserveE {r.get('defenseReserve', '?')}"
-                      f"{' WAR' if r['war'] else ''} | {describe_queued(r.get('queued') or {})} | unspent E{r['energyLeft']}"
+                      f"{' WAR' if r['war'] else ''}{' HOLD+' + str(r.get('releasedEnergy')) + 'E' if r.get('holdingFire') else ''}"
+                      f"{' GLUT' if r.get('materialGlut') else ''} | {describe_queued(r.get('queued') or {})} | unspent E{r['energyLeft']}"
                       + (f" | placement gave up {fails}" if fails else ""), flush=True)
+            elif kind == "strategy":
+                passing = r.get("passingBy") or {}
+                defenses = r.get("defensesBy") or {}
+                per = " ".join(f"{k}:{passing.get(k)}thru/{defenses.get(k)}def" for k in passing)
+                print(f"T{r['t']} {r['ai']}: {'FIRE' if r.get('fire') else 'hold'} ({r.get('reason')}) shots {r.get('shots')} "
+                      f"-> {r.get('commit') or '-'} ~{r.get('passing')} through ({r.get('passShare')}) | {per}", flush=True)
             elif kind == "superweapon":
                 print(f"T{r['t']} {r['ai']}: SUPERWEAPON queued {short(r['building'])}", flush=True)
             elif kind == "init":
