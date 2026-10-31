@@ -1,0 +1,16 @@
+READ-ONLY review. Do not edit, create or delete any file. Stay inside this repository: any path outside it is auto-rejected and ends your run. Finish with the complete written report.
+
+Code review of AI v0.9.0 (diff against v0.8.3 fb359bf in docs/reviews/terra-ai-v0.9.diff). Pavol asked for offense and science. Evidence: across six matches the AIs never bought a weapon upgrade (the director priced only economy upgrades) and never a science project; AI science = 0.18 x population exactly (no multiplier) vs the human's 2-4x; the human's late energy 30-100k/turn vs AI 10-15k; AI fire mostly intercepted by 27-34 Kinetic Defenses. Data: docs/playtests/data/v081-*.jsonl, docs/ruleset/embedded/enhanced/ (WeaponsData, UpgradesData, TechTreeData, ProjectsData, CitiesData).
+
+v0.9: (1) AI/Brain/Offense.cs WeaponUpgrades: value = damage per firing energy ((bd + 1.5 pd) x fragments x projectiles x (0.5 + aoe/6) x lockOn 1.5 / firing energy); step 5b in DirectorPatches.Step buys the best weapon upgrade (gain >= 15%) at war, at most 6 a turn and 30% of the turn's starting material; updates d.Upkeep by the firing-cost change. (2) ScienceValue.Weight: science weight x clamp(required pace / current, 1, 4), required = remaining research-plan science / max(5, 40 - turn); fed into the economy Balance. (3) Science-addition upgrades (+20 Radiotelescope / Data science) priced for buildings with no energy/material yield. (4) Research plan reordered (Quantum Computing, Uranium Alloys, Ultracapacitors, Zero Reluctance Engineering, Magnetic Saturation Elimination earlier); the v0.4 default migrates.
+
+Check with file:line evidence:
+1. Is "damage per firing energy" the right objective? Is the AI actually firing-energy-limited (AIResources firing deduction, WarUpkeepShare cap, weapon sink)? Does the native targeting fire all weapons each turn regardless of upgrades? Are upgrade stat effects applied the way I model them (UpgradesData fields -> BuildingStatHolder / WeaponGameplayData: projectile_amount_addition, fragment_amount_addition, firing_cost_energy_multiplier)? Mutually exclusive upgrades or upgrade chains (Radius1/2/3) that GetAvailableBuildingUpgrades does not filter?
+2. Upkeep accounting after an upgrade (d.Upkeep, AIResources.BeginTurn next turn); can buying upgrades starve weapon building or the economy; ordering vs step 5 weapons.
+3. Science weight: the remaining-plan computation (GetTechnologyCompletionById, GetTechnologyProgressById, science_cost), units vs ScienceProductionPerTurn, effect on project/upgrade choice in EconomyDirector.Best (cost units), risk of starving energy/material growth.
+4. Science upgrades: do Telescope Array / Data Security Hub science additions require power (HasPotentialPower check), and is turn_yield_science_addition scaled by the global science modifier the way I assume?
+5. Research plan: prerequisites satisfied in order (tech_requirement chains), anything dropped vs the v0.4 plan, migration correctness.
+6. Fairness: nothing reads hidden information.
+7. Tests: what they prove, what's missing.
+
+Output: verdict (ship / fix first), findings ranked High/Medium/Low with file:line and a concrete fix, then "checked and fine". Under 1,100 words.
