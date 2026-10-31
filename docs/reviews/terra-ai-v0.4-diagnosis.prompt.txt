@@ -1,0 +1,25 @@
+READ-ONLY review. Do not edit, create or delete any file.
+
+You are reviewing a DIAGNOSIS, not code. Context: AI/ is a BepInEx plugin making the Interplanetary Enhanced Edition single-player AI stronger without hidden information (AI/README.md; you reviewed v0.1-v0.3, see docs/reviews/). Pavol (human, in-game name "jogi") just beat four v0.3.1 AIs at turn 43. Before writing v0.4 I want you to check, independently and from the raw data, what limited the AIs.
+
+Data (do not trust my summaries; recompute):
+- docs/playtests/data/v031-ai-decisions.jsonl - one JSON per AI decision. Records: "economy" (turn start: stock, per-turn yields, planetMaterial, buildings, maxEnemyEconomy), "director" (per turn: queued items, slots, unspent energy, placement failures), "target" (per turn: each enemy's score terms: economy, cityPop, cities, grudge, leader, finish, and weapons assigned), "fire", "research", "build".
+- docs/playtests/data/v031-human-telemetry.jsonl - the human's per-turn state (resources incl. intel and counterintelMultiplier, buildings, research).
+- docs/playtests/data/v020-ai-decisions.jsonl - the previous match (v0.2.0), for contrast.
+- My write-up: docs/playtests/2026-10-31-v0.3.1.md. Mechanics spec: docs/original-mechanics.md (sections 7.3 planet material, 7.4 population, 7.8 intel/stealth). Strategy notes: docs/strategy/optimal-play.md. Decompiled source: decompiled/ (Interplanetary.AI/AIIntel.cs, Interplanetary.PlayerDataManagement/PlayerIntelHandler.cs, PlayerResourceHandler.cs, PlayerDefenseHandler.cs). Mod code: AI/DirectorPatches.cs, AI/EconomyPatches.cs, AI/Patches.cs (targeting, BuildEnemyView), AI/Brain/TargetPlanner.cs.
+
+My current hypotheses (try to refute each; say CONFIRMED / REFUTED / PARTLY with numbers and file:line):
+H1. The AIs were blind. "target" records show economy=0, cityPop=0, cities=0 for every enemy all game; "economy" records show maxEnemyEconomy=0 throughout (v0.2 had non-zero values from turn 21). Cause: native AIIntel.IntelNeed = share of weapons with second-phase targeting; Railgun-only AIs have IntelNeed 0, so the director (DirectorPatches IntelState) never built a Telescope Array; Advanced Signal Processing (telescope unlock) was only queued at turns 21-22.
+H2. Because they were blind, targeting ran on grudge alone (damage received), which produced AI-vs-AI vendettas: only ~6% of AI weapon-turns went at the human. The human dealt them little damage early, so his score stayed at the 0.1 base.
+H3. Planet material ran out at turns 26-28 for three AIs (yield upgrades on mines also multiply the planet drain), after which they could buy nothing.
+H4. Science was too low (AI 450-680/turn vs human 600-1,300) so Thermonuclear Warheads never finished; no superweapon.
+H5. Railgun-only arsenal vs the human's Kinetic Defenses.
+H6. The placement loop (Railgun searches giving up and being requeued) wasted turns for Core and Shiver.
+
+Also answer:
+Q1. What visibility rule decides what an AI can see (intel vs stealth x counterintel)? How much intel would an AI have needed to see the human's cities and economy at turns 15, 25, 35, given the human's counterintel in the telemetry?
+Q2. Which information is legitimately public to every player without intel (e.g. alive/dead, city count, population totals, score screens)? I must not use hidden information.
+Q3. Ranked: which 3 changes would most raise the AIs' chance to beat this human next match? Consider that they must not cheat and should play human-like.
+Q4. Which game rules does each of your proposed changes depend on? List them so the code review can test them.
+
+Output: per-hypothesis verdicts with evidence, answers to Q1-Q4, anything important I missed. Under 1,500 words.

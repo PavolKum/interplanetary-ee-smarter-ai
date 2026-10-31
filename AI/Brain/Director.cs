@@ -48,6 +48,7 @@ namespace InterplanetaryAI.Brain
         public int EnergyBudget;      // usable energy left this turn
         public int MaterialBudget;    // usable material left this turn
         public bool EnergyPush;       // e.g. superweapon material saved, energy short
+        public float ScienceWeight = 1f; // science per turn valued against energy/material per turn
     }
 
     public sealed class WeaponStats
@@ -84,9 +85,9 @@ namespace InterplanetaryAI.Brain
             return b.MaterialBudget >= 1.3f * b.EnergyBudget ? 1f : 0.3f;
         }
 
-        public static float Score(EconOption o, float energyWeight, float materialWeight, float energyCostFactor)
+        public static float Score(EconOption o, float energyWeight, float materialWeight, float energyCostFactor, float scienceWeight = 1f)
         {
-            float value = energyWeight * o.EnergyGain + materialWeight * o.MaterialGain + 0.5f * o.ScienceGain;
+            float value = energyWeight * o.EnergyGain + materialWeight * o.MaterialGain + scienceWeight * o.ScienceGain;
             float cost = o.Material + energyCostFactor * o.Energy;
             return value / Math.Max(1f, cost);
         }
@@ -103,7 +104,7 @@ namespace InterplanetaryAI.Brain
             {
                 if (o.Energy > b.EnergyBudget || o.Material > b.MaterialBudget) continue;
                 if (o.NeedsSlot && slotsLeft <= 0) continue;
-                float score = Score(o, wE, wM, eFactor);
+                float score = Score(o, wE, wM, eFactor, b.ScienceWeight);
                 if (score > bestScore)
                 {
                     best = o;
@@ -178,6 +179,28 @@ namespace InterplanetaryAI.Brain
                 if (scores[i] > 0f) return weapons[i];
             }
             return null;
+        }
+
+        // Energy kept unspent for defense rolls (each roll costs the defender 100-200 energy from what is
+        // left that turn; at 0 the defense fails). Expected incoming shots: our share of the visible enemy
+        // weapons plus the hits behind recent damage. Capped as a share of income.
+        public static int DefenseReserve(int ownDefenses, int visibleEnemyWeapons, int enemiesAlive, float recentDamage,
+            float energyPerRoll, float damagePerHit, float capShare, float energyIncome)
+        {
+            if (ownDefenses <= 0) return 0;
+            float shots = visibleEnemyWeapons / (float)Math.Max(1, enemiesAlive) + (damagePerHit > 0f ? recentDamage / damagePerHit : 0f);
+            float reserve = Math.Min(shots * energyPerRoll, capShare * energyIncome);
+            return (int)Math.Max(0f, reserve);
+        }
+
+        // Material to keep banked when the planet will run dry soon: enough for the superweapons we plan.
+        // The 31 Oct v0.3.1 AIs held 53-120k material when their planets ran out at turns 25-28, spent it on
+        // Railguns and plants, and had 72 left when the Nuclear Missile unlocked at turn 32.
+        public static int EndgameBank(int planetMaterial, float planetDrainPerTurn, int turnsWarning, int bankTarget, int stock)
+        {
+            if (bankTarget <= 0) return 0;
+            bool soon = planetMaterial <= 0 || (planetDrainPerTurn > 0f && planetMaterial / planetDrainPerTurn <= turnsWarning);
+            return soon ? Math.Min(stock, bankTarget) : 0;
         }
 
         // Value of material income when the planet is running out: mines stop yielding at zero planet material.

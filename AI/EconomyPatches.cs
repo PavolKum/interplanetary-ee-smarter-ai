@@ -28,6 +28,7 @@ namespace InterplanetaryAI
             public bool NeedSlotForGoal;  // goal affordable but no free power slot: build one generator, buy next turn
             public bool SlotAttempted;
             public bool EnergyPush;       // superweapon material saved but usable energy short: build power
+            public int Bank;              // v0.4: material banked for the superweapon line before the planet runs dry
             public float[] Weights;
             public bool Growth;
             public readonly int[] Picks = new int[5];
@@ -156,6 +157,17 @@ namespace InterplanetaryAI
                             state.EnergyPush = true;
                         }
                     }
+                }
+                // v0.4 endgame bank: before a superweapon is available, keep material back once the planet is
+                // about to run dry (after that only the bank is left to buy it with).
+                state.Bank = 0;
+                if (Plugin.DirectorEnabled.Value && Plugin.SuperweaponSavings.Value && state.Goal == null && GameSessionManager.CurrentGameSettings.PlanetMaterial != -1)
+                {
+                    PlayerResourceHandler res = me.ResourceHandler;
+                    float drain = Math.Max(res.PlanetMaterialCost, res.MaterialProductionPerTurn);
+                    state.Bank = EconomyDirector.EndgameBank(res.PlanetMaterial, drain, Plugin.BankWarningTurns.Value, Plugin.EndgameBankMaterial.Value, Math.Max(0, core.Resources.Material));
+                    core.Resources.Material -= state.Bank;
+                    core.Construction.ConstructionQueue.AllottedMaterial -= state.Bank;
                 }
                 state.ReservedEnergy = reserveEnergy;
                 state.ReservedMaterial = reserveMaterial;
@@ -486,7 +498,7 @@ namespace InterplanetaryAI
                 .Num("ownEconomy", ownEconomy).Num("maxEnemyEconomy", maxEnemyEconomy).Num("recentDamage", recentDamage)
                 .Bool("growth", state.Growth).Raw("weights", FloatArray(state.Weights))
                 .Str("goal", state.Goal != null ? state.Goal.Building.id.Value : "")
-                .Int("reservedEnergy", state.ReservedEnergy).Int("reservedMaterial", state.ReservedMaterial).Bool("buyPending", state.BuyPending)
+                .Int("bank", state.Bank).Int("reservedEnergy", state.ReservedEnergy).Int("reservedMaterial", state.ReservedMaterial).Bool("buyPending", state.BuyPending)
                 .Str("researchHead", queue.Count > 0 ? queue[0] : "")
                 .Map("buildings", buildings).ToString());
         }

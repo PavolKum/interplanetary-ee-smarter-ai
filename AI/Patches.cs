@@ -7,6 +7,7 @@ using HarmonyLib;
 using Interplanetary.AI;
 using Interplanetary.AI.Trajectories;
 using Interplanetary.GameEngine;
+using Interplanetary.GameSession;
 using Interplanetary.PlayerDataManagement;
 using Interplanetary.Prefabs;
 using Interplanetary.Weapons;
@@ -132,17 +133,29 @@ namespace InterplanetaryAI
                 Name = enemy.UserNickName,
                 IsHuman = !enemy.AIPlayer,
             };
-            foreach (BaseBuilding building in enemy.BuildingHandler.Buildings)
+            // Exactly what this seat's intel overlay shows (IntelOverlayIntelThermometerComponent.cs:313-373): the
+            // enemy's round-start totals, each shown when our round-start intel >= its stealth x their counterintel,
+            // all shown when the Intelligence setting is off. v0.3 summed live stats of visible buildings instead,
+            // which needs far more intel (city stealth 30-45 x counterintel) and reads per-building values.
+            FrozenIntelState theirs = enemy.IntelHandler.FrozenIntelState;
+            FrozenIntelState ours = me.IntelHandler.FrozenIntelState;
+            if (theirs != null && ours != null)
             {
-                if (!IsVisibleIntact(me, building)) continue;
-                BuildingStatHolder stats = building.Stats;
-                if (stats == null) continue;
-                view.Economy += Math.Max(0, stats.EnergyGeneration) + Math.Max(0, stats.MaterialGeneration) + Math.Max(0, stats.ScienceGeneration);
-                if (building.IsCity)
+                bool intelOff = GameSessionManager.CurrentGameSettings.Intelligence != 1;
+                int intel = ours.Intel;
+                if (intelOff || (intel >= theirs.EnergyStealth && intel >= theirs.MaterialStealth))
                 {
-                    // Cities have no HP stat (GetStat returns null); population is their durability.
-                    view.CityPopulation += Math.Max(0, stats.CurrentPopulation);
-                    view.VisibleCities++;
+                    view.EconomyKnown = true;
+                    view.Economy = Math.Max(0, theirs.EnergyProduction) + Math.Max(0, theirs.MaterialProduction);
+                }
+                if (intelOff || intel >= theirs.PopulationStealth)
+                {
+                    // Population is a city's durability; the overlay shows the total and the city count together.
+                    view.CityPopulation = Math.Max(0, theirs.TotalPopulation);
+                    foreach (BaseBuilding city in enemy.BuildingHandler.GetBuildingsByType(BaseBuilding.BuildingFunctionalityType.City))
+                    {
+                        if (city != null && city.CurrentState != BaseBuilding.BuildingState.Ruins && city.CurrentState != BaseBuilding.BuildingState.Destroyed) view.VisibleCities++;
+                    }
                 }
             }
             view.Grudge = Plugin.Grudges.Get(me.PlayerID, enemy.PlayerID, turn);
@@ -386,7 +399,7 @@ namespace InterplanetaryAI
                     .Append(" (").Append(e.Score.ToString("0.00", CultureInfo.InvariantCulture)).Append(')');
                 if (i > 0) enemyArray.Append(',');
                 enemyArray.Append(new Json().Str("name", e.Name).Int("id", e.PlayerId).Bool("human", e.IsHuman).Int("assigned", countByEnemy[i])
-                    .Num("score", e.Score).Num("economy", e.Economy).Num("cityPop", e.CityPopulation).Int("cities", e.VisibleCities)
+                    .Num("score", e.Score).Bool("known", e.EconomyKnown).Num("economy", e.Economy).Num("cityPop", e.CityPopulation).Int("cities", e.VisibleCities)
                     .Num("grudge", e.Grudge).Num("leader", e.LeaderTerm).Num("grudgeTerm", e.GrudgeTerm).Num("finish", e.FinishTerm).ToString());
             }
             enemyArray.Append(']');

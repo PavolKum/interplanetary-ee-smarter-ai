@@ -6,3 +6,4 @@ obj/
 docs/reviews/*.err
 docs/reviews/*.tmp
 __pycache__/
+docs/playtests/data/

@@ -3,15 +3,17 @@ using System.Collections.Generic;
 
 namespace InterplanetaryAI.Brain
 {
-    // What one AI can see of one enemy this turn. Built by the game adapter from intel-visible
-    // buildings only, so the brain never uses information a human in the same seat would lack.
+    // What one AI can see of one enemy this turn. Built by the game adapter only from what the same
+    // seat's intel screen shows (aggregate numbers gated by intel vs the enemy's counterintel), so the
+    // brain never uses information a human in the same seat would lack.
     public sealed class EnemyView
     {
         public int PlayerId;
         public string Name;
         public bool IsHuman;
-        public float Economy;        // visible energy + material + science generation per turn
-        public float CityPopulation; // visible cities' population; a city's durability (ruined at 0)
+        public float Economy;        // energy + material (+ science) production per turn, when our intel shows it
+        public bool EconomyKnown;    // false = our intel cannot see this enemy's production numbers
+        public float CityPopulation; // total city population when our intel shows it; a city's durability (ruined at 0)
         public int VisibleCities;    // 0 = nothing known, so no finish-off bonus
         public float Grudge;         // decayed damage this enemy dealt to us
 
@@ -36,6 +38,10 @@ namespace InterplanetaryAI.Brain
         public float LeaderWeight = 1.0f; // squared economy share, so a runaway leader dominates
         public float GrudgeWeight = 0.6f;
         public float FinishWeight = 0.5f; // prefers enemies with little visible city population left
+        // Economy share assumed for an enemy our intel cannot read. Unknown is not weak: a blind AI
+        // spreads its fire instead of locking onto whoever hit it (31 Oct v0.3.1: all four AIs were blind
+        // and grudges alone turned them on each other).
+        public float UnknownEconomyShare = 0.8f;
         public float HumanBias = 1.0f;    // multiplier on human enemies; 1 = no favouritism
     }
 
@@ -48,14 +54,15 @@ namespace InterplanetaryAI.Brain
             float maxCityPopulation = 0f;
             foreach (EnemyView enemy in enemies)
             {
-                maxEconomy = Math.Max(maxEconomy, enemy.Economy);
+                if (enemy.EconomyKnown) maxEconomy = Math.Max(maxEconomy, enemy.Economy);
                 maxGrudge = Math.Max(maxGrudge, enemy.Grudge);
                 maxCityPopulation = Math.Max(maxCityPopulation, enemy.CityPopulation);
             }
 
             foreach (EnemyView enemy in enemies)
             {
-                float economyShare = maxEconomy > 0f ? enemy.Economy / maxEconomy : 0f;
+                float economyShare = !enemy.EconomyKnown ? settings.UnknownEconomyShare
+                    : maxEconomy > 0f ? enemy.Economy / maxEconomy : 0f;
                 float grudgeShare = maxGrudge > 0f ? enemy.Grudge / maxGrudge : 0f;
                 // An enemy with no visible city is unknown, not weak: no finish-off bonus.
                 float populationShare = enemy.VisibleCities > 0 && maxCityPopulation > 0f ? enemy.CityPopulation / maxCityPopulation : 1f;

@@ -6,6 +6,7 @@ using Interplanetary.AI;
 using Interplanetary.AI.Construction;
 using Interplanetary.GameDataFiles;
 using Interplanetary.GameEngine;
+using Interplanetary.GameSession;
 using Interplanetary.PlayerDataManagement;
 using Interplanetary.Prefabs;
 using InterplanetaryAI.Brain;
@@ -35,7 +36,6 @@ namespace InterplanetaryAI
             public int SlotsLeft;
             public int Unpowered;
             public int PlantsForUnpowered;
-            public int IntelAttempts;
             public int PreferredIntelAttempts;
             public int DefensesThisTurn;
             public int WeaponsThisTurn;
@@ -63,6 +63,12 @@ namespace InterplanetaryAI
             public int CounterintelThisTurn;
             public int NonCityBuildings;
             public readonly Dictionary<BaseBuilding, float[]> PlannedMultipliers = new Dictionary<BaseBuilding, float[]>();
+            public int EnemiesAlive;
+            public int VisibleEnemyWeapons;
+            public int BlindEnemies;       // enemies whose production or population our intel cannot read
+            public int IntelBuildings;
+            public int IntelThisTurn;
+            public int DefenseReserve;
             // across turns
             public int WaterCooldownUntil;
         }
@@ -116,10 +122,13 @@ namespace InterplanetaryAI
                 if (building == null || building.IsCity || building.BuildingData == null || building.CurrentState != BaseBuilding.BuildingState.Normal) continue;
                 d.NonCityBuildings++;
                 if (Value(building.BuildingData.turn_yield_counterintel) > 0) d.OwnCounterintel++;
+                if (Value(building.BuildingData.turn_yield_intel) > 0) d.IntelBuildings++;
             }
             d.War = EconomyDirector.WarPhase(turn, Plugin.WarFromTurn.Value, recentDamage, Plugin.WarDamageTrigger.Value);
             int visibleEnemyWeapons = 0;
             foreach (int n in economy.EnemyWeapons.Values) visibleEnemyWeapons += n;
+            d.VisibleEnemyWeapons = visibleEnemyWeapons;
+            d.EnemiesAlive = core.EnemyPlanets.Count;
             foreach (int n in economy.OwnDefenses.Values) d.OwnDefenses += n;
             d.DesiredDefenses = EconomyDirector.DesiredDefenses(visibleEnemyWeapons, recentDamage, Plugin.DefensePerEnemyWeapon.Value, Plugin.DamagePerDefense.Value, Plugin.MaxDefenses.Value);
 
@@ -129,6 +138,7 @@ namespace InterplanetaryAI
             foreach (CelestialBody planet in core.EnemyPlanets)
             {
                 EnemyView view = AiPatches.BuildEnemyView(me, planet.Player, turn);
+                if (!view.EconomyKnown || view.VisibleCities == 0) d.BlindEnemies++;
                 if (view.Economy > bestEconomy)
                 {
                     bestEconomy = view.Economy;
@@ -206,6 +216,18 @@ namespace InterplanetaryAI
             d.EnergyIncome = res.EnergyProductionPerTurn;
             d.MaterialIncome = res.PlanetMaterial > 0 ? res.MaterialProductionPerTurn : 0;
             d.Upkeep = core.Resources.EnergyUpkeep;
+            // v0.4: at war, keep energy back for our defense rolls (each costs the defender 100-200 energy from
+            // what is left that turn; PlayerDefenseHandler.IsHitIntercepted). v0.3 spent it all.
+            if (d.War)
+            {
+                int reserve = EconomyDirector.DefenseReserve(d.OwnDefenses, d.VisibleEnemyWeapons, d.EnemiesAlive, d.RecentDamage,
+                    150f, 125f, Plugin.DefenseReserveShare.Value, d.EnergyIncome);
+                reserve = Math.Max(0, Math.Min(reserve, core.Resources.Energy));
+                core.Resources.Energy -= reserve;
+                core.Construction.ConstructionQueue.AllottedEnergy -= reserve;
+                d.DefenseReserve = reserve;
+                d.TurnStartEnergy = core.Resources.Energy;
+            }
         }
 
         // Free power slots on buildings that distribute power, after this turn's power-line connections.
@@ -232,7 +254,7 @@ namespace InterplanetaryAI
             }
 
             // 2. Power for unpowered buildings (one plant each, at most 2 a turn) or for the superweapon's slot.
-            bool needPlant = (d.Unpowered > 0 && d.PlantsForUnpowered < Math.Min(d.Unpowered, 2))
+            bool needPlant = (d.Unpowered > 0 && d.PlantsForUnpowered < Math.Min(d.Unpowered, Plugin.UnpoweredPlantsPerTurn.Value))
                 || (economy.NeedSlotForGoal && d.PlantsForUnpowered == 0);
             if (needPlant && !d.FailedThisTurn.Contains("unpowered-plant"))
             {
@@ -245,12 +267,15 @@ namespace InterplanetaryAI
                 d.FailedThisTurn.Add("unpowered-plant");
             }
 
-            // 3. Minimum intel: weapons need to see targets.
+            // 3. Intel until we can read every enemy's production and population (v0.4). Native intel need
+            // counts only guided weapons, so a Railgun army stayed blind all game (31 Oct v0.3.1).
             IntelEvaluationState intel = IntelState(core);
-            if (intel == IntelEvaluationState.BelowMinimum && d.IntelAttempts < 1 && d.SlotsLeft > 0)
+            bool wantIntel = intel == IntelEvaluationState.BelowMinimum
+                || (d.BlindEnemies > 0 && d.IntelBuildings + d.IntelThisTurn < Plugin.MaxIntelBuildings.Value);
+            if (wantIntel && d.IntelThisTurn < Plugin.IntelPerTurn.Value && d.SlotsLeft > 0 && !d.FailedThisTurn.Contains("intel"))
             {
-                d.IntelAttempts++;
                 if (TryIntelBuilding(construction, core, d)) return true;
+                d.FailedThisTurn.Add("intel");
             }
 
             // 4. Defenses against visible threats.
@@ -361,6 +386,7 @@ namespace InterplanetaryAI
                 if (yield <= 0 || !available.IsBuildingAvailable(data) || !Affordable(core, data) || d.FailedThisTurn.Contains(id)) continue;
                 if (!QueueBuilding(construction, core, d, data, kind)) continue;
                 if (kind == "counterintel") d.CounterintelThisTurn++;
+                if (kind == "intel") d.IntelThisTurn++;
                 return true;
             }
             return false;
@@ -424,7 +450,7 @@ namespace InterplanetaryAI
                 BuildingData data = buildings.GetBuilding(id);
                 if (data == null || !data.weapon_functionality.IsValueSet) continue;
                 if (data.max_amount_at_once.IsValueSet && data.max_amount_at_once.Value > 0) continue; // superweapons: savings logic
-                if (!available.IsBuildingAvailable(data) || !Affordable(core, data)) continue;
+                if (!available.IsBuildingAvailable(data) || !Affordable(core, data) || d.FailedThisTurn.Contains(id)) continue;
                 WeaponData weapon = weapons.GetWeapon(data.weapon_functionality.Value);
                 if (weapon == null) continue;
                 string type = weapon.type.IsValueSet ? weapon.type.Value : "";
@@ -475,6 +501,7 @@ namespace InterplanetaryAI
                 EnergyBudget = core.Resources.Energy,
                 MaterialBudget = core.Resources.Material,
                 EnergyPush = economy.EnergyPush,
+                ScienceWeight = Plugin.ScienceWeight.Value,
             };
             for (int attempt = 0; attempt < 6; attempt++)
             {
@@ -539,6 +566,25 @@ namespace InterplanetaryAI
                     energyMultiplier *= plannedMultipliers[0];
                     materialMultiplier *= plannedMultipliers[1];
                 }
+                // v0.4: on a limited planet a mine takes Yield1 + Multi-Stage Refinery (planet drain x0.7), not Yield2:
+                // both yield upgrades also multiply the drain, so the planet ran dry at turns 25-28 (31 Oct v0.3.1).
+                bool drainsPlanet = Value(data.turn_cost_planet_material) > 0;
+                bool limitedPlanet = drainsPlanet && Plugin.PlanetEfficiency.Value && GameSessionManager.CurrentGameSettings.PlanetMaterial != -1;
+                UpgradeData efficiency = null;
+                bool hasEfficiency = false;
+                if (limitedPlanet)
+                {
+                    foreach (UpgradeData candidate in upgrades.GetAvailableBuildingUpgrades(data.id.Value))
+                    {
+                        if (candidate == null || !available.IsUpgradeAvailable(candidate)) continue;
+                        if (FloatValue(candidate.turn_cost_planet_material_multiplier, 1f) < 1f && FloatValue(candidate.turn_yield_material_multiplier, 1f) <= 1f)
+                        {
+                            efficiency = candidate;
+                            hasEfficiency = building.Upgrades.HasUpgrade(candidate) || d.PlannedUpgradeKeys.Contains(building.ObjectId + ":" + candidate.id.Value);
+                            break;
+                        }
+                    }
+                }
                 string installed = "";
                 foreach (UpgradeData current in building.Upgrades.CurrentUpgrades)
                 {
@@ -555,6 +601,15 @@ namespace InterplanetaryAI
                     if (d.PlannedUpgradeKeys.Contains(key) || d.FailedThisTurn.Contains("upg:" + key)) continue;
                     float energyGain = baseEnergy * globalEnergy * energyMultiplier * (FloatValue(upgrade.turn_yield_energy_multiplier, 1f) - 1f);
                     float materialGain = baseMaterial * globalMaterial * materialMultiplier * (FloatValue(upgrade.turn_yield_material_multiplier, 1f) - 1f) * planetFactor;
+                    if (efficiency != null && upgrade == efficiency)
+                    {
+                        // Valued as the extra material the planet will give over the game: drain x0.7 = +43% per unit drained.
+                        materialGain = baseMaterial * globalMaterial * materialMultiplier * (1f / FloatValue(upgrade.turn_cost_planet_material_multiplier, 1f) - 1f);
+                    }
+                    else if (efficiency != null && !hasEfficiency && materialMultiplier > 1f && materialGain > 0f)
+                    {
+                        continue; // keep the second slot for the refinery
+                    }
                     if (energyGain <= 0f && materialGain <= 0f) continue;
                     if (!seen.Add(data.id.Value + "|" + installed + "|" + upgrade.id.Value + "|" + planned)) continue;
                     options.Add(new EconOption
@@ -677,7 +732,8 @@ namespace InterplanetaryAI
 
         private static bool QueueBuilding(AIConstruction construction, AICore core, DirectorState d, BuildingData data, string role)
         {
-            if (data == null || !Affordable(core, data)) return false;
+            // A type whose placement gave up this turn is not queued again (v0.3.1: 241 Railgun searches requeued).
+            if (data == null || d.FailedThisTurn.Contains(data.id.Value) || !Affordable(core, data)) return false;
             bool needsSlot = !(data.distribute_power.IsValueSet && data.distribute_power.Value);
             if (needsSlot && d.SlotsLeft <= 0) return false;
             construction.ConstructionQueue.AddBuildingToQueue(data); // charges core.Resources
@@ -888,6 +944,7 @@ namespace InterplanetaryAI
                 .Int("energyLeft", core.Resources.Energy).Int("materialLeft", core.Resources.Material)
                 .Num("upkeep", d.Upkeep).Int("ownDefenses", d.OwnDefenses).Int("desiredDefenses", d.DesiredDefenses)
                 .Int("upgradesInstalled", upgradesInstalled).Str("weaponTarget", d.TargetName).Map("targetDefenses", d.TargetDefenses)
+                .Int("intelBuildings", d.IntelBuildings + d.IntelThisTurn).Int("blindEnemies", d.BlindEnemies).Int("defenseReserve", d.DefenseReserve)
                 .Int("refunds", d.Refunds).Map("placementFailures", d.PlacementFailures).Int("steps", d.Steps)
                 .Map("queued", d.Actions).ToString());
         }

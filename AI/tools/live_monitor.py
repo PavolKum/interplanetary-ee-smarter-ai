@@ -103,6 +103,7 @@ def main():
                 fails = r.get("placementFailures") or {}
                 print(f"T{r['t']} {r['ai']}: E/t {e.get('energyPerTurn', '?')} M/t {e.get('materialPerTurn', '?')} sci {e.get('sciencePerTurn', '?')} "
                       f"bld {sum(buildings.values())} [{top}] upg {r['upgradesInstalled']} slots {r['slotsAtStart']}"
+                      f" intel {r.get('intelBuildings', '?')} blind {r.get('blindEnemies', '?')} reserveE {r.get('defenseReserve', '?')}"
                       f"{' WAR' if r['war'] else ''} | {describe_queued(r.get('queued') or {})} | unspent E{r['energyLeft']}"
                       + (f" | placement gave up {fails}" if fails else ""), flush=True)
             elif kind == "superweapon":

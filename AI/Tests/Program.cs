@@ -37,6 +37,10 @@ namespace InterplanetaryAI.Tests
             DirectorWarAndDefenseRules();
             WeaponChoiceAvoidsTargetDefenses();
             PlanetMaterialRunsOut();
+            BlindAiSpreadsFire();
+            UnknownEnemyIsNotIgnored();
+            DefenseReserveRules();
+            EndgameBankRules();
 
             Console.WriteLine(s_checks + " checks, " + s_failures + " failed");
             return s_failures == 0 ? 0 : 1;
@@ -211,6 +215,52 @@ namespace InterplanetaryAI.Tests
             Check(EconomyDirector.PlanetMaterialFactor(0, 1000f, 10) == 0f, "depleted planet: mines are worthless");
         }
 
+        // 31 Oct v0.3.1: every enemy unknown, one AI hit us. v0.3 scored it 0.7 and everyone else 0.1 (7x).
+        private static void BlindAiSpreadsFire()
+        {
+            List<EnemyView> enemies = new List<EnemyView>
+            {
+                new EnemyView { PlayerId = 0, IsHuman = true },
+                new EnemyView { PlayerId = 2, Grudge = 5000 },
+                new EnemyView { PlayerId = 3 },
+            };
+            TargetPlanner.Score(enemies, new PlannerSettings { GrudgeWeight = 0.35f });
+            float ratio = enemies[1].Score / enemies[0].Score;
+            Check(ratio > 1f && ratio < 1.6f, "blind: the attacker scores higher but not overwhelmingly (" + ratio.ToString("0.00") + "x)");
+            Check(Math.Abs(enemies[0].Score - enemies[2].Score) < 1e-5f, "blind: enemies we know nothing about score alike");
+        }
+
+        private static void UnknownEnemyIsNotIgnored()
+        {
+            List<EnemyView> enemies = new List<EnemyView>
+            {
+                new EnemyView { EconomyKnown = true, PlayerId = 1, Economy = 5000 },
+                new EnemyView { EconomyKnown = true, PlayerId = 2, Economy = 1000 },
+                new EnemyView { PlayerId = 0, IsHuman = true },
+            };
+            TargetPlanner.Score(enemies, new PlannerSettings());
+            Check(enemies[2].Score > enemies[1].Score, "an enemy we cannot read outranks a known weak one");
+            Check(enemies[2].Score < enemies[0].Score, "and ranks below the known leader");
+            enemies[2].Economy = 99999f; // stale value on an enemy we can no longer read
+            TargetPlanner.Score(enemies, new PlannerSettings());
+            Check(Math.Abs(enemies[0].LeaderTerm - 1f) < 1e-5f, "an unreadable enemy's number never sets the leader scale");
+        }
+
+        private static void DefenseReserveRules()
+        {
+            Check(EconomyDirector.DefenseReserve(0, 50, 2, 5000f, 150f, 125f, 0.3f, 20000f) == 0, "no defenses: nothing to fund");
+            Check(EconomyDirector.DefenseReserve(10, 40, 4, 1250f, 150f, 125f, 0.3f, 20000f) == 3000, "40 weapons over 4 enemies + 10 hits = 20 shots x 150");
+            Check(EconomyDirector.DefenseReserve(10, 400, 1, 0f, 150f, 125f, 0.3f, 20000f) == 6000, "capped at 30% of income");
+        }
+
+        private static void EndgameBankRules()
+        {
+            Check(EconomyDirector.EndgameBank(300000, 10000f, 8, 6000, 50000) == 0, "30 turns of planet left: no bank yet");
+            Check(EconomyDirector.EndgameBank(60000, 10000f, 8, 6000, 50000) == 6000, "6 turns left: bank the target");
+            Check(EconomyDirector.EndgameBank(0, 10000f, 8, 6000, 2500) == 2500, "depleted: bank what is left");
+            Check(EconomyDirector.EndgameBank(60000, 10000f, 8, 0, 50000) == 0, "no target, no bank");
+        }
+
         private static void Check(bool condition, string what)
         {
             s_checks++;
@@ -225,9 +275,9 @@ namespace InterplanetaryAI.Tests
         {
             return new List<EnemyView>
             {
-                new EnemyView { PlayerId = 0, Name = "You", IsHuman = true, Economy = 13000, CityPopulation = 9000, VisibleCities = 5 },
-                new EnemyView { PlayerId = 2, Name = "AI 02", Economy = 1100, CityPopulation = 1500, VisibleCities = 2 },
-                new EnemyView { PlayerId = 3, Name = "AI 03", Economy = 3100, CityPopulation = 8000, VisibleCities = 4 },
+                new EnemyView { EconomyKnown = true, PlayerId = 0, Name = "You", IsHuman = true, Economy = 13000, CityPopulation = 9000, VisibleCities = 5 },
+                new EnemyView { EconomyKnown = true, PlayerId = 2, Name = "AI 02", Economy = 1100, CityPopulation = 1500, VisibleCities = 2 },
+                new EnemyView { EconomyKnown = true, PlayerId = 3, Name = "AI 03", Economy = 3100, CityPopulation = 8000, VisibleCities = 4 },
             };
         }
 
@@ -253,9 +303,9 @@ namespace InterplanetaryAI.Tests
         {
             List<EnemyView> enemies = new List<EnemyView>
             {
-                new EnemyView { PlayerId = 1, Economy = 1000, CityPopulation = 5000, VisibleCities = 3 },
-                new EnemyView { PlayerId = 2, Economy = 1000, CityPopulation = 5000, VisibleCities = 3, Grudge = 800 },
-                new EnemyView { PlayerId = 3, Economy = 1000, CityPopulation = 500, VisibleCities = 1 },
+                new EnemyView { EconomyKnown = true, PlayerId = 1, Economy = 1000, CityPopulation = 5000, VisibleCities = 3 },
+                new EnemyView { EconomyKnown = true, PlayerId = 2, Economy = 1000, CityPopulation = 5000, VisibleCities = 3, Grudge = 800 },
+                new EnemyView { EconomyKnown = true, PlayerId = 3, Economy = 1000, CityPopulation = 500, VisibleCities = 1 },
             };
             TargetPlanner.Score(enemies, new PlannerSettings());
             Check(enemies[1].Score > enemies[0].Score, "the enemy that hurt us should outscore an equal one that did not");
@@ -315,8 +365,8 @@ namespace InterplanetaryAI.Tests
         {
             List<EnemyView> enemies = new List<EnemyView>
             {
-                new EnemyView { PlayerId = 1, Economy = 1000, CityPopulation = 5000, VisibleCities = 3 },
-                new EnemyView { PlayerId = 2, Economy = 1000, CityPopulation = 0, VisibleCities = 0 },
+                new EnemyView { EconomyKnown = true, PlayerId = 1, Economy = 1000, CityPopulation = 5000, VisibleCities = 3 },
+                new EnemyView { EconomyKnown = true, PlayerId = 2, Economy = 1000, CityPopulation = 0, VisibleCities = 0 },
             };
             TargetPlanner.Score(enemies, new PlannerSettings());
             Check(enemies[1].FinishTerm == 0f, "an enemy with no visible city is unknown, not weak; finish term was " + enemies[1].FinishTerm);

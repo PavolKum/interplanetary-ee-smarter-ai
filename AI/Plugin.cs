@@ -22,7 +22,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.3.1";
+        public const string VERSION = "0.4.0";
 
         internal static ManualLogSource Log;
 
@@ -70,15 +70,35 @@ namespace InterplanetaryAI
         internal static ConfigEntry<float> SuperweaponUpkeepShare;
         internal static ConfigEntry<int> CounterintelPerBuildings;
         internal static ConfigEntry<int> CounterintelFromTurn;
+        internal static ConfigEntry<float> UnknownEconomyShare;
+        internal static ConfigEntry<int> IntelPerTurn;
+        internal static ConfigEntry<int> MaxIntelBuildings;
+        internal static ConfigEntry<float> DefenseReserveShare;
+        internal static ConfigEntry<int> EndgameBankMaterial;
+        internal static ConfigEntry<int> BankWarningTurns;
+        internal static ConfigEntry<bool> PlanetEfficiency;
+        internal static ConfigEntry<int> UnpoweredPlantsPerTurn;
+        internal static ConfigEntry<float> ScienceWeight;
 
         internal static readonly BuildWeights Build = new BuildWeights();
         internal static List<string> SuperweaponIds = new List<string>();
         internal static List<string> ResearchPlanIds = new List<string>();
 
-        // v0.3: the human's tech order from the 31 Oct 2026 win (economy first: material project and mine
-        // yield, Offshore Mine, Floating Plant, yield upgrades, energy projects), then the Nuclear Missile line,
-        // then the rest of the old plan.
+        // v0.4: economy opening, then the one chain that gives telescopes (Advanced Signal Processing),
+        // missiles (Orbital Assembly) and the Nuclear Missile (EmDrives -> Thermonuclear Warheads), with the
+        // science project (Quantum Computing), Kinetic and Ion defense on the way.
         private const string DefaultResearchPlan =
+            "tec_MassBiochemicalProcessing,tec_MolecularRecycling,tec_SmartGrids,tec_SuperTensileMaterials,tec_SelfAdjustingOptics,"
+            + "tec_AdvancedSignalProcessing,tec_QuantumComputing,tec_Nanostructuring,tec_MicrowaveEnergyTranmission,tec_2ndGenComposites,"
+            + "tec_MaglevServos,tec_OrbitalAssembly,tec_PlasmaChannelInduction,tec_MagneticRadiationShielding,tec_EmDrives,"
+            + "tec_ThermonuclearWarheads,tec_ExperimentalMatterControl,tec_RoboticMining,tec_InductionCoils,tec_EarlyWarningAI,"
+            + "tec_Metamaterials,tec_DesignerNanomaterials,tec_VerticalFarming,tec_QuantumCommunications,tec_AtmosphericInterferenceMitigation,"
+            + "tec_4thGenNuclearReactors,tec_LosslessEnergyTransfer,tec_Ultracapacitors,tec_CompositeHeatCells,tec_Octaazacubane,"
+            + "tec_UraniumAlloys,tec_AdvancedGenetics,tec_SelfHealingMaterials,tec_AITargetTracking,tec_MultiChainedStages,"
+            + "tec_GammaRayLasers,tec_ZeroReluctanceEngineering,tec_MassDrivers";
+
+        // v0.3 default, replaced on load if the config still holds it unchanged.
+        private const string V03ResearchPlan =
             "tec_MassBiochemicalProcessing,tec_MolecularRecycling,tec_SuperTensileMaterials,tec_QuantumComputing,tec_SmartGrids,"
             + "tec_ExperimentalMatterControl,tec_2ndGenComposites,tec_MaglevServos,tec_EarlyWarningAI,tec_Nanostructuring,"
             + "tec_MicrowaveEnergyTranmission,tec_RoboticMining,tec_SelfAdjustingOptics,tec_AdvancedSignalProcessing,tec_MagneticRadiationShielding,"
@@ -123,7 +143,7 @@ namespace InterplanetaryAI
                 "Share of an AI's weapons sent at its top-scored enemy each turn (0-1). The rest are drawn weighted by score.");
             LeaderWeight = Config.Bind("Targeting", "LeaderWeight", 1.0f,
                 "Weight of an enemy's visible economy (squared share of the strongest), so a runaway leader draws fire.");
-            GrudgeWeight = Config.Bind("Targeting", "GrudgeWeight", 0.6f,
+            GrudgeWeight = Config.Bind("Targeting", "GrudgeWeight", 0.35f,
                 "Weight of recent damage an enemy dealt to this AI (retaliation).");
             FinishWeight = Config.Bind("Targeting", "FinishWeight", 0.5f,
                 "Weight of how little visible city population an enemy has left (a city is ruined at 0; finish off the weak).");
@@ -170,11 +190,30 @@ namespace InterplanetaryAI
                 "Research the Plan list in order (prerequisites are queued automatically) instead of the native random focus. Native research resumes when the plan is done.");
             ResearchPlan = Config.Bind("Research", "Plan", DefaultResearchPlan,
                 "Tech IDs in order. Default (v0.3): the human's order from the 31 Oct 2026 win, economy first (material and energy projects, yield upgrades, Offshore Mine, Floating Plant), then the Nuclear Missile line, then the rest.");
-            if (ResearchPlan.Value == V02ResearchPlan)
+            if (ResearchPlan.Value == V02ResearchPlan || ResearchPlan.Value == V03ResearchPlan)
             {
                 ResearchPlan.Value = DefaultResearchPlan;
-                Log.LogInfo("Research plan: replaced the unchanged v0.2 default with the v0.3 default.");
+                Log.LogInfo("Research plan: replaced an unchanged older default with the v0.4 default.");
             }
+            if (Math.Abs(GrudgeWeight.Value - 0.6f) < 1e-4f)
+            {
+                GrudgeWeight.Value = 0.35f; // v0.3 default; grudge alone drove blind AIs into vendettas
+                Log.LogInfo("GrudgeWeight: replaced the unchanged v0.3 default 0.6 with 0.35.");
+            }
+
+            UnknownEconomyShare = Config.Bind("Targeting", "UnknownEconomyShare", 0.8f,
+                "Economy share (of the strongest known) assumed for an enemy whose production our intel cannot read. Unknown is not weak.");
+            IntelPerTurn = Config.Bind("Director", "IntelPerTurn", 2, "Most intel buildings (Telescope Array) queued per turn while some enemy's numbers are unreadable.");
+            MaxIntelBuildings = Config.Bind("Director", "MaxIntelBuildings", 30, "Cap on intel buildings.");
+            DefenseReserveShare = Config.Bind("Director", "DefenseReserveShare", 0.3f,
+                "At war, energy kept unspent for defense rolls, at most this share of energy income (each roll costs the defender 100-200 energy; 0 left = the defense fails).");
+            EndgameBankMaterial = Config.Bind("Director", "EndgameBankMaterial", 6000,
+                "Material kept banked before a superweapon is available, once the planet is about to run dry. 0 = off.");
+            BankWarningTurns = Config.Bind("Director", "BankWarningTurns", 8, "Start the endgame bank this many turns before the planet runs dry (at the current drain).");
+            PlanetEfficiency = Config.Bind("Director", "PlanetEfficiency", true,
+                "On a limited planet, mines take Yield1 + Multi-Stage Refinery (drain x0.7) instead of two yield upgrades (which also multiply the drain).");
+            UnpoweredPlantsPerTurn = Config.Bind("Director", "UnpoweredPlantsPerTurn", 5, "Most power plants built per turn to connect unpowered buildings.");
+            ScienceWeight = Config.Bind("Director", "ScienceWeight", 1.5f, "Science per turn valued against energy/material per turn when choosing projects.");
 
             DirectorEnabled = Config.Bind("Director", "Enabled", true,
                 "v0.3 economy director: replaces the native construction choice. Buys yield upgrades and city projects first, keeps energy income near EnergyToMaterialTarget x material income, places water buildings properly, holds weapons until WarFromTurn, and counters visible enemy weapons with defenses. Off = the v0.2 build planner.");
@@ -270,6 +309,7 @@ namespace InterplanetaryAI
             Planner.GrudgeWeight = GrudgeWeight.Value;
             Planner.FinishWeight = FinishWeight.Value;
             Planner.HumanBias = HumanBias.Value;
+            Planner.UnknownEconomyShare = UnknownEconomyShare.Value;
 
             Build.Growth = BuildPlanner.Parse(GrowthWeights.Value, Build.Growth);
             Build.Pressure = BuildPlanner.Parse(PressureWeights.Value, Build.Pressure);
