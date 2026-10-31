@@ -22,7 +22,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.5.0";
+        public const string VERSION = "0.6.0";
 
         internal static ManualLogSource Log;
 
@@ -125,6 +125,10 @@ namespace InterplanetaryAI
         internal static readonly PlannerSettings Planner = new PlannerSettings();
         internal static float[] Accuracy = new float[] { 0.6f, 0.95f, 1f, 1f };
         internal static GrudgeLedger Grudges;
+        internal static DefenseLedger Ledger = new DefenseLedger(3);
+        internal static ConfigEntry<float> DefenseObservedMargin;
+        internal static ConfigEntry<float> DefenseHardCapShare;
+        internal static ConfigEntry<int> ObservedMinImpacts;
         internal static ReachabilityMemory Reach;
         internal static readonly Dictionary<int, float> AccuracyCarry = new Dictionary<int, float>();
         internal static readonly System.Random Rng = new System.Random();
@@ -254,6 +258,12 @@ namespace InterplanetaryAI
                 "At war, defenses wanted are at least this share of our own non-city buildings, seen threat or not. 0 = off (v0.4 behaviour).");
             DefenseCatchUpTurns = Config.Bind("Director", "DefenseCatchUpTurns", 3,
                 "When behind on defenses, queue enough per turn to close the gap in this many turns.");
+            DefenseObservedMargin = Config.Bind("Director", "DefenseObservedMargin", 1.25f,
+                "The defense reserve is at least what the defenses used last action phase (energy spent plus rolls that found no energy) times this margin.");
+            DefenseHardCapShare = Config.Bind("Director", "DefenseHardCapShare", 0.8f,
+                "Most of the energy income the observed defense need may reserve. 0 = ignore observed spending (v0.5 behaviour).");
+            ObservedMinImpacts = Config.Bind("Director", "ObservedMinImpacts", 12,
+                "Weapon choice trusts the interception rate seen over the last 3 turns once at least this many shots of that weapon reached the target. 0 = never (v0.5 behaviour).");
             WeaponMemoryDecay = Config.Bind("Director", "WeaponMemoryDecay", 0.95f,
                 "Enemy weapons once seen are remembered while hidden by counterintel, shrinking by this factor per turn. 0 = forget at once (v0.4 behaviour).");
             DefensesForFullCover = Config.Bind("Director", "DefensesForFullCover", 10f,
@@ -293,8 +303,9 @@ namespace InterplanetaryAI
             patched += TryPatch(typeof(AIDefenseConstruction), "TryConstructDefense", "TryConstructDefensePrefix", null, typeof(EconomyPatches));
             patched += TryPatch(typeof(AIBuildingPlacementSearch), "step", "SearchStepPrefix", null, typeof(DirectorPatches));
             patched += TryPatch(typeof(AIBuildingPlacementFinder), "Update", "FinderUpdatePrefix", null, typeof(DirectorPatches));
+            patched += TryPatch(typeof(PlayerDefenseHandler), "IsHitIntercepted", "BeforeIntercept", "AfterIntercept", typeof(LedgerPatches));
             int laserPatches = EnableLasers.Value ? LaserPatches.Install(new Harmony(GUID + ".lasers")) : 0;
-            Log.LogInfo(NAME + " " + VERSION + " loaded; " + patched + " of 13 hooks patched. Director " + (DirectorEnabled.Value ? "on" : "off")
+            Log.LogInfo(NAME + " " + VERSION + " loaded; " + patched + " of 14 hooks patched. Director " + (DirectorEnabled.Value ? "on" : "off")
                 + ", war from turn " + WarFromTurn.Value + ". Accuracy by level: " + AccuracyByLevel.Value
                 + "; research plan " + ResearchPlanIds.Count + " techs; superweapons " + Superweapons.Value
                 + "; lasers " + (EnableLasers.Value ? laserPatches + " of 5 patches" : "off"));
@@ -378,6 +389,7 @@ namespace InterplanetaryAI
         internal static void ResetMatchMemory()
         {
             Grudges.Clear();
+            Ledger.Clear();
             Reach.Clear();
             AccuracyCarry.Clear();
             LastTurnSeen = 0;

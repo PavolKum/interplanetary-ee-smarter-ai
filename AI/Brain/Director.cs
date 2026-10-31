@@ -144,8 +144,13 @@ namespace InterplanetaryAI.Brain
 
         // Chance a weapon gets through the target's defenses. coverageFull = defenses of one type that cover
         // the whole planet. stop = interception chance by defense id for this weapon.
-        public static float PassChance(string weaponId, Dictionary<string, int> targetDefenses, Dictionary<string, Dictionary<string, float>> counters, float coverageFull)
+        public static float PassChance(string weaponId, Dictionary<string, int> targetDefenses, Dictionary<string, Dictionary<string, float>> counters, float coverageFull,
+            Dictionary<string, float> observedPass = null)
         {
+            // v0.6: what our own shots of this weapon actually met over the last turns beats the estimate from
+            // the defenses we think the target has (the 31 Oct 1v1 AI kept firing Railguns into a Kinetic wall).
+            float seen;
+            if (observedPass != null && observedPass.TryGetValue(weaponId, out seen)) return Math.Max(0.05f, Math.Min(1f, seen));
             float pass = 1f;
             foreach (KeyValuePair<string, int> pair in targetDefenses)
             {
@@ -158,23 +163,24 @@ namespace InterplanetaryAI.Brain
             return pass;
         }
 
-        public static float WeaponScore(WeaponStats w, Dictionary<string, int> targetDefenses, Dictionary<string, Dictionary<string, float>> counters, float coverageFull, float firingCostTurns)
+        public static float WeaponScore(WeaponStats w, Dictionary<string, int> targetDefenses, Dictionary<string, Dictionary<string, float>> counters, float coverageFull, float firingCostTurns,
+            Dictionary<string, float> observedPass = null)
         {
-            float pass = PassChance(w.WeaponId, targetDefenses, counters, coverageFull);
+            float pass = PassChance(w.WeaponId, targetDefenses, counters, coverageFull, observedPass);
             float cost = w.BuildMaterial + 0.5f * w.BuildEnergy + firingCostTurns * w.FiringEnergy;
             return w.Damage * pass / Math.Max(1f, cost);
         }
 
         // Human-like variety: pick among the weapons scoring at least `band` of the best, weighted by score squared.
         public static WeaponStats PickWeapon(IList<WeaponStats> weapons, Dictionary<string, int> targetDefenses, Dictionary<string, Dictionary<string, float>> counters,
-            float coverageFull, float firingCostTurns, float band, Random rng)
+            float coverageFull, float firingCostTurns, float band, Random rng, Dictionary<string, float> observedPass = null)
         {
             if (weapons.Count == 0) return null;
             float[] scores = new float[weapons.Count];
             float best = 0f;
             for (int i = 0; i < weapons.Count; i++)
             {
-                scores[i] = WeaponScore(weapons[i], targetDefenses, counters, coverageFull, firingCostTurns);
+                scores[i] = WeaponScore(weapons[i], targetDefenses, counters, coverageFull, firingCostTurns, observedPass);
                 best = Math.Max(best, scores[i]);
             }
             if (best <= 0f) return null;
@@ -202,14 +208,25 @@ namespace InterplanetaryAI.Brain
         // weapons plus the hits behind recent damage. Capped as a share of income.
         // v0.5: never fewer than minRollsPerDefense rolls per own defense, so defenses built on the floor
         // (no known weapons, no damage yet) can still answer the first unseen volley.
+        // v0.6: also what the last action phase actually cost our defenses (energy spent plus rolls that could
+        // not be paid), with a margin, up to hardCapShare of income. 31 Oct 1v1: the human fired 49-96 shots a turn
+        // at planet; the capped estimate held 2.0-3.7k. The planned figure keeps its own (lower) cap.
         public static int DefenseReserve(int ownDefenses, int visibleEnemyWeapons, int enemiesAlive, float recentDamage,
-            float energyPerRoll, float damagePerHit, float capShare, float energyIncome, float minRollsPerDefense)
+            float energyPerRoll, float damagePerHit, float capShare, float energyIncome, float minRollsPerDefense,
+            float observedNeed = 0f, float hardCapShare = 0f)
         {
             if (ownDefenses <= 0) return 0;
             float shots = visibleEnemyWeapons / (float)Math.Max(1, enemiesAlive) + (damagePerHit > 0f ? recentDamage / damagePerHit : 0f);
             shots = Math.Max(shots, minRollsPerDefense * ownDefenses);
-            float reserve = Math.Min(shots * energyPerRoll, capShare * energyIncome);
-            return (int)Math.Max(0f, reserve);
+            float planned = Math.Min(shots * energyPerRoll, capShare * energyIncome);
+            float seen = Math.Min(Math.Max(0f, observedNeed), Math.Max(0f, hardCapShare) * energyIncome);
+            return (int)Math.Max(0f, Math.Max(planned, seen));
+        }
+
+        // Energy our defenses needed last action phase: spent on rolls plus rolls that found no energy.
+        public static float ObservedDefenseNeed(int energySpent, int rollsWithoutEnergy, float energyPerRoll, float margin)
+        {
+            return Math.Max(0f, (energySpent + rollsWithoutEnergy * energyPerRoll) * margin);
         }
 
         // Material to keep banked when the planet will run dry soon: enough for the superweapons we plan.

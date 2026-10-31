@@ -1,0 +1,601 @@
+diff --git a/AI/Brain/DefenseLedger.cs b/AI/Brain/DefenseLedger.cs
+new file mode 100644
+index 0000000..fee86a0
+--- /dev/null
++++ b/AI/Brain/DefenseLedger.cs
+@@ -0,0 +1,144 @@
++using System;
++using System.Collections.Generic;
++
++namespace InterplanetaryAI.Brain
++{
++    // What a player observes about shots reaching a planet: as the defender (its own defense rolls, energy spent,
++    // uncovered impacts) and as the shooter (how many of its shots at a planet were intercepted, per weapon).
++    // Both are events the game shows the player involved. v0.5 could not tell if its 21 Kinetic Defenses were
++    // stopping anything; the 31 Oct 1v1 logs recorded the human's shots but no interception outcomes.
++    //
++    // Counting is per action phase: Roll(player) is called at that player's turn start and turns the shots since
++    // its previous turn start (the action phase in between) into "last turn" figures.
++    public sealed class DefenderStats
++    {
++        public int Impacts;       // shots reaching this planet
++        public int Uncovered;     // no defense in range: nothing could be rolled
++        public int Intercepted;
++        public int ProbabilityFails;
++        public int NoEnergy;      // a defense in range could not roll: not enough energy
++        public int Disconnected;  // a defense in range had no power
++        public int EnergySpent;
++    }
++
++    public sealed class DefenseLedger
++    {
++        private readonly Dictionary<int, DefenderStats> m_pendingDefender = new Dictionary<int, DefenderStats>();
++        private readonly Dictionary<int, DefenderStats> m_lastDefender = new Dictionary<int, DefenderStats>();
++        // shooter -> weapon -> [impacts, intercepted]
++        private readonly Dictionary<int, Dictionary<string, int[]>> m_pendingShooter = new Dictionary<int, Dictionary<string, int[]>>();
++        private readonly Dictionary<int, List<Dictionary<string, int[]>>> m_shooterHistory = new Dictionary<int, List<Dictionary<string, int[]>>>();
++        private readonly int m_historyTurns;
++
++        public DefenseLedger(int historyTurns)
++        {
++            m_historyTurns = Math.Max(1, historyTurns);
++        }
++
++        public void Clear()
++        {
++            m_pendingDefender.Clear();
++            m_lastDefender.Clear();
++            m_pendingShooter.Clear();
++            m_shooterHistory.Clear();
++        }
++
++        public void Record(int defenderId, int shooterId, string weaponId, bool intercepted, int probabilityFails, int noEnergy, int disconnected,
++            int energySpent, bool covered)
++        {
++            DefenderStats d;
++            if (!m_pendingDefender.TryGetValue(defenderId, out d))
++            {
++                d = new DefenderStats();
++                m_pendingDefender[defenderId] = d;
++            }
++            d.Impacts++;
++            if (!covered) d.Uncovered++;
++            if (intercepted) d.Intercepted++;
++            d.ProbabilityFails += probabilityFails;
++            d.NoEnergy += noEnergy;
++            d.Disconnected += disconnected;
++            d.EnergySpent += energySpent;
++
++            Dictionary<string, int[]> weapons;
++            if (!m_pendingShooter.TryGetValue(shooterId, out weapons))
++            {
++                weapons = new Dictionary<string, int[]>();
++                m_pendingShooter[shooterId] = weapons;
++            }
++            int[] counts;
++            if (!weapons.TryGetValue(weaponId ?? "?", out counts))
++            {
++                counts = new int[2];
++                weapons[weaponId ?? "?"] = counts;
++            }
++            counts[0]++;
++            if (intercepted) counts[1]++;
++        }
++
++        // Call at the start of this player's turn.
++        public void Roll(int playerId)
++        {
++            DefenderStats d;
++            if (m_pendingDefender.TryGetValue(playerId, out d)) m_lastDefender[playerId] = d;
++            else m_lastDefender[playerId] = new DefenderStats();
++            m_pendingDefender[playerId] = new DefenderStats();
++
++            Dictionary<string, int[]> weapons;
++            if (!m_pendingShooter.TryGetValue(playerId, out weapons)) weapons = new Dictionary<string, int[]>();
++            List<Dictionary<string, int[]>> history;
++            if (!m_shooterHistory.TryGetValue(playerId, out history))
++            {
++                history = new List<Dictionary<string, int[]>>();
++                m_shooterHistory[playerId] = history;
++            }
++            history.Add(weapons);
++            while (history.Count > m_historyTurns) history.RemoveAt(0);
++            m_pendingShooter[playerId] = new Dictionary<string, int[]>();
++        }
++
++        public DefenderStats LastDefender(int playerId)
++        {
++            DefenderStats d;
++            return m_lastDefender.TryGetValue(playerId, out d) ? d : new DefenderStats();
++        }
++
++        // Share of this shooter's recent shots of one weapon that got through (not intercepted) over the history
++        // window; false when fewer than minImpacts were seen (too little evidence).
++        public bool ObservedPass(int shooterId, string weaponId, int minImpacts, out float pass)
++        {
++            pass = 1f;
++            List<Dictionary<string, int[]>> history;
++            if (!m_shooterHistory.TryGetValue(shooterId, out history)) return false;
++            int impacts = 0, intercepted = 0;
++            foreach (Dictionary<string, int[]> turn in history)
++            {
++                int[] counts;
++                if (turn.TryGetValue(weaponId, out counts))
++                {
++                    impacts += counts[0];
++                    intercepted += counts[1];
++                }
++            }
++            if (impacts < minImpacts) return false;
++            pass = 1f - intercepted / (float)impacts;
++            return true;
++        }
++
++        // Observed pass for every weapon id with enough evidence.
++        public Dictionary<string, float> ObservedPassAll(int shooterId, int minImpacts)
++        {
++            Dictionary<string, float> result = new Dictionary<string, float>();
++            List<Dictionary<string, int[]>> history;
++            if (!m_shooterHistory.TryGetValue(shooterId, out history)) return result;
++            HashSet<string> ids = new HashSet<string>();
++            foreach (Dictionary<string, int[]> turn in history) foreach (string id in turn.Keys) ids.Add(id);
++            foreach (string id in ids)
++            {
++                float pass;
++                if (ObservedPass(shooterId, id, minImpacts, out pass)) result[id] = pass;
++            }
++            return result;
++        }
++    }
++}
+diff --git a/AI/Brain/Director.cs b/AI/Brain/Director.cs
+index 914ca49..8c17dc3 100644
+--- a/AI/Brain/Director.cs
++++ b/AI/Brain/Director.cs
+@@ -144,8 +144,13 @@ namespace InterplanetaryAI.Brain
+ 
+         // Chance a weapon gets through the target's defenses. coverageFull = defenses of one type that cover
+         // the whole planet. stop = interception chance by defense id for this weapon.
+-        public static float PassChance(string weaponId, Dictionary<string, int> targetDefenses, Dictionary<string, Dictionary<string, float>> counters, float coverageFull)
++        public static float PassChance(string weaponId, Dictionary<string, int> targetDefenses, Dictionary<string, Dictionary<string, float>> counters, float coverageFull,
++            Dictionary<string, float> observedPass = null)
+         {
++            // v0.6: what our own shots of this weapon actually met over the last turns beats the estimate from
++            // the defenses we think the target has (the 31 Oct 1v1 AI kept firing Railguns into a Kinetic wall).
++            float seen;
++            if (observedPass != null && observedPass.TryGetValue(weaponId, out seen)) return Math.Max(0.05f, Math.Min(1f, seen));
+             float pass = 1f;
+             foreach (KeyValuePair<string, int> pair in targetDefenses)
+             {
+@@ -158,23 +163,24 @@ namespace InterplanetaryAI.Brain
+             return pass;
+         }
+ 
+-        public static float WeaponScore(WeaponStats w, Dictionary<string, int> targetDefenses, Dictionary<string, Dictionary<string, float>> counters, float coverageFull, float firingCostTurns)
++        public static float WeaponScore(WeaponStats w, Dictionary<string, int> targetDefenses, Dictionary<string, Dictionary<string, float>> counters, float coverageFull, float firingCostTurns,
++            Dictionary<string, float> observedPass = null)
+         {
+-            float pass = PassChance(w.WeaponId, targetDefenses, counters, coverageFull);
++            float pass = PassChance(w.WeaponId, targetDefenses, counters, coverageFull, observedPass);
+             float cost = w.BuildMaterial + 0.5f * w.BuildEnergy + firingCostTurns * w.FiringEnergy;
+             return w.Damage * pass / Math.Max(1f, cost);
+         }
+ 
+         // Human-like variety: pick among the weapons scoring at least `band` of the best, weighted by score squared.
+         public static WeaponStats PickWeapon(IList<WeaponStats> weapons, Dictionary<string, int> targetDefenses, Dictionary<string, Dictionary<string, float>> counters,
+-            float coverageFull, float firingCostTurns, float band, Random rng)
++            float coverageFull, float firingCostTurns, float band, Random rng, Dictionary<string, float> observedPass = null)
+         {
+             if (weapons.Count == 0) return null;
+             float[] scores = new float[weapons.Count];
+             float best = 0f;
+             for (int i = 0; i < weapons.Count; i++)
+             {
+-                scores[i] = WeaponScore(weapons[i], targetDefenses, counters, coverageFull, firingCostTurns);
++                scores[i] = WeaponScore(weapons[i], targetDefenses, counters, coverageFull, firingCostTurns, observedPass);
+                 best = Math.Max(best, scores[i]);
+             }
+             if (best <= 0f) return null;
+@@ -202,14 +208,25 @@ namespace InterplanetaryAI.Brain
+         // weapons plus the hits behind recent damage. Capped as a share of income.
+         // v0.5: never fewer than minRollsPerDefense rolls per own defense, so defenses built on the floor
+         // (no known weapons, no damage yet) can still answer the first unseen volley.
++        // v0.6: also what the last action phase actually cost our defenses (energy spent plus rolls that could
++        // not be paid), with a margin, up to hardCapShare of income. 31 Oct 1v1: the human fired 49-96 shots a turn
++        // at planet; the capped estimate held 2.0-3.7k. The planned figure keeps its own (lower) cap.
+         public static int DefenseReserve(int ownDefenses, int visibleEnemyWeapons, int enemiesAlive, float recentDamage,
+-            float energyPerRoll, float damagePerHit, float capShare, float energyIncome, float minRollsPerDefense)
++            float energyPerRoll, float damagePerHit, float capShare, float energyIncome, float minRollsPerDefense,
++            float observedNeed = 0f, float hardCapShare = 0f)
+         {
+             if (ownDefenses <= 0) return 0;
+             float shots = visibleEnemyWeapons / (float)Math.Max(1, enemiesAlive) + (damagePerHit > 0f ? recentDamage / damagePerHit : 0f);
+             shots = Math.Max(shots, minRollsPerDefense * ownDefenses);
+-            float reserve = Math.Min(shots * energyPerRoll, capShare * energyIncome);
+-            return (int)Math.Max(0f, reserve);
++            float planned = Math.Min(shots * energyPerRoll, capShare * energyIncome);
++            float seen = Math.Min(Math.Max(0f, observedNeed), Math.Max(0f, hardCapShare) * energyIncome);
++            return (int)Math.Max(0f, Math.Max(planned, seen));
++        }
++
++        // Energy our defenses needed last action phase: spent on rolls plus rolls that found no energy.
++        public static float ObservedDefenseNeed(int energySpent, int rollsWithoutEnergy, float energyPerRoll, float margin)
++        {
++            return Math.Max(0f, (energySpent + rollsWithoutEnergy * energyPerRoll) * margin);
+         }
+ 
+         // Material to keep banked when the planet will run dry soon: enough for the superweapons we plan.
+diff --git a/AI/DirectorPatches.cs b/AI/DirectorPatches.cs
+index c9a5436..f7f6b3b 100644
+--- a/AI/DirectorPatches.cs
++++ b/AI/DirectorPatches.cs
+@@ -48,6 +48,9 @@ namespace InterplanetaryAI
+             public int OwnDefenses;
+             public int DesiredDefenses;
+             public int DefenseTurnCap;
++            public float ObservedDefenseNeed;   // v0.6: energy our defenses needed in the last action phase (x margin)
++            public int LastImpacts, LastIntercepted, LastUncovered, LastNoEnergy, LastEnergySpent;
++            public Dictionary<string, float> ObservedPass = new Dictionary<string, float>();
+             public string TargetName = "";
+             public readonly Dictionary<string, int> TargetDefenses = new Dictionary<string, int>();
+             public readonly Dictionary<BaseBuilding, int> PlannedUpgrades = new Dictionary<BaseBuilding, int>();
+@@ -169,6 +172,14 @@ namespace InterplanetaryAI
+             d.VisibleEnemyWeapons = visibleEnemyWeapons;
+             d.EnemiesAlive = core.EnemyPlanets.Count;
+             foreach (int n in economy.OwnDefenses.Values) d.OwnDefenses += n;
++            DefenderStats last = Plugin.Ledger.LastDefender(me.PlayerID);
++            d.LastImpacts = last.Impacts;
++            d.LastIntercepted = last.Intercepted;
++            d.LastUncovered = last.Uncovered;
++            d.LastNoEnergy = last.NoEnergy;
++            d.LastEnergySpent = last.EnergySpent;
++            d.ObservedDefenseNeed = EconomyDirector.ObservedDefenseNeed(last.EnergySpent, last.NoEnergy, 100f, Plugin.DefenseObservedMargin.Value);
++            d.ObservedPass = Plugin.ObservedMinImpacts.Value > 0 ? Plugin.Ledger.ObservedPassAll(me.PlayerID, Plugin.ObservedMinImpacts.Value) : new Dictionary<string, float>();
+             d.DesiredDefenses = EconomyDirector.DesiredDefenses(visibleEnemyWeapons, recentDamage, Plugin.DefensePerEnemyWeapon.Value, Plugin.DamagePerDefense.Value, Plugin.MaxDefenses.Value,
+                 d.War, d.NonCityBuildings, Plugin.DefenseFloorShare.Value);
+ 
+@@ -188,11 +199,11 @@ namespace InterplanetaryAI
+             if (target != null)
+             {
+                 d.TargetName = target.UserNickName;
+-                foreach (BaseBuilding building in target.BuildingHandler.Buildings)
++                // The defenses we saw (remembered while counterintel hides them), not only what is visible now.
++                Dictionary<string, int> known;
++                if (economy.KnownDefenses.TryGetValue(target.PlayerID, out known))
+                 {
+-                    if (!AiPatches.IsVisibleIntact(me, building) || building.IsCity) continue;
+-                    string id = building.BuildingData.id.Value;
+-                    if (DefensePlanner.Counters.ContainsKey(id)) Increment(d.TargetDefenses, id);
++                    foreach (KeyValuePair<string, int> pair in known) d.TargetDefenses[pair.Key] = pair.Value;
+                 }
+             }
+         }
+@@ -263,7 +274,7 @@ namespace InterplanetaryAI
+             if (d.War)
+             {
+                 int reserve = EconomyDirector.DefenseReserve(d.OwnDefenses, d.VisibleEnemyWeapons, d.EnemiesAlive, d.RecentDamage,
+-                    150f, 125f, Plugin.DefenseReserveShare.Value, d.EnergyIncome, 1f);
++                    150f, 125f, Plugin.DefenseReserveShare.Value, d.EnergyIncome, 1f, d.ObservedDefenseNeed, Plugin.DefenseHardCapShare.Value);
+                 reserve = Math.Max(0, Math.Min(reserve, core.Resources.Energy));
+                 if (economy.BuyPending && !economy.Bought) reserve = Math.Min(reserve, Math.Max(0, core.Resources.Energy - economy.GoalEnergyCost));
+                 core.Resources.Energy -= reserve;
+@@ -287,6 +298,13 @@ namespace InterplanetaryAI
+             return slots;
+         }
+ 
++        private static string ObservedPassText(Dictionary<string, float> pass)
++        {
++            List<string> parts = new List<string>();
++            foreach (KeyValuePair<string, float> pair in pass) parts.Add(pair.Key + "=" + pair.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
++            return string.Join(";", parts.ToArray());
++        }
++
+         private static bool Step(AIConstruction construction, AICore core, EconomyPatches.AiEconomyState economy, DirectorState d)
+         {
+             // 1. Superweapon purchase prepared by the savings logic.
+@@ -301,7 +319,7 @@ namespace InterplanetaryAI
+                 || (economy.NeedSlotForGoal && d.PlantsForUnpowered == 0);
+             if (needPlant && !d.FailedThisTurn.Contains("unpowered-plant"))
+             {
+-                BuildingData plant = PickLandPlant(core, d);
++                BuildingData plant = PickLandPlant(core, d) ?? PickWaterPlant(core, d);
+                 if (plant != null && QueueBuilding(construction, core, d, plant, "power"))
+                 {
+                     d.PlantsForUnpowered++;
+@@ -512,7 +530,7 @@ namespace InterplanetaryAI
+                     Damage = damage,
+                 });
+             }
+-            WeaponStats pick = EconomyDirector.PickWeapon(options, d.TargetDefenses, DefensePlanner.Counters, Plugin.DefensesForFullCover.Value, 4f, 0.6f, Plugin.Rng);
++            WeaponStats pick = EconomyDirector.PickWeapon(options, d.TargetDefenses, DefensePlanner.Counters, Plugin.DefensesForFullCover.Value, 4f, 0.6f, Plugin.Rng, d.ObservedPass);
+             if (pick == null) return false;
+             if (!QueueBuilding(construction, core, d, buildings.GetBuilding(pick.BuildingId), "weapon")) return false;
+             d.Upkeep += pick.FiringEnergy;
+@@ -781,6 +799,18 @@ namespace InterplanetaryAI
+             return null;
+         }
+ 
++        // v0.6: when land plants cannot be placed (14 abandoned Solar Plants while 7 -> 22 buildings sat unpowered, 31 Oct 1v1),
++        // power the grid from the water.
++        private static BuildingData PickWaterPlant(AICore core, DirectorState d)
++        {
++            if (GameManager.CurrentTurn < d.WaterCooldownUntil) return null;
++            BuildingsData buildings = GameDataFileManager.GetDataFile<BuildingsData>();
++            PlayerAvailableBuildings available = core.PlayerData.BuildingHandler.AvailableBuildings;
++            BuildingData data = buildings.HasBuilding("bui_FloatingPlant") ? buildings.GetBuilding("bui_FloatingPlant") : null;
++            if (data != null && available.IsBuildingAvailable(data) && Affordable(core, data) && !d.FailedThisTurn.Contains("bui_FloatingPlant")) return data;
++            return null;
++        }
++
+         // ---- queue primitives ----------------------------------------------------------------------
+ 
+         private static bool QueueBuilding(AIConstruction construction, AICore core, DirectorState d, BuildingData data, string role)
+@@ -1007,6 +1037,9 @@ namespace InterplanetaryAI
+                 .Int("energyStart", d.TurnStartEnergy).Int("materialStart", d.TurnStartMaterial)
+                 .Int("energyLeft", core.Resources.Energy).Int("materialLeft", core.Resources.Material)
+                 .Num("upkeep", d.Upkeep).Int("ownDefenses", d.OwnDefenses).Int("desiredDefenses", d.DesiredDefenses).Int("defenseTurnCap", d.DefenseTurnCap)
++                .Int("lastImpacts", d.LastImpacts).Int("lastIntercepted", d.LastIntercepted).Int("lastUncovered", d.LastUncovered)
++                .Int("lastNoEnergy", d.LastNoEnergy).Int("lastDefenseEnergy", d.LastEnergySpent).Int("observedNeed", (int)d.ObservedDefenseNeed)
++                .Str("observedPass", ObservedPassText(d.ObservedPass))
+                 .Int("upgradesInstalled", upgradesInstalled).Str("weaponTarget", d.TargetName).Map("targetDefenses", d.TargetDefenses)
+                 .Int("intelBuildings", d.IntelBuildings + d.IntelThisTurn).Int("blindEnemies", d.BlindEnemies).Int("defenseReserve", d.DefenseReserve)
+                 .Int("refunds", d.Refunds).Map("placementFailures", d.PlacementFailures).Int("steps", d.Steps)
+diff --git a/AI/EconomyPatches.cs b/AI/EconomyPatches.cs
+index f3dff45..6b671bd 100644
+--- a/AI/EconomyPatches.cs
++++ b/AI/EconomyPatches.cs
+@@ -38,6 +38,9 @@ namespace InterplanetaryAI
+             public readonly Dictionary<string, int> VisibleWeapons = new Dictionary<string, int>(); // visible this turn, all enemies
+             public readonly Dictionary<int, Dictionary<string, int>> VisibleByEnemy = new Dictionary<int, Dictionary<string, int>>();
+             public readonly Dictionary<string, float> WeaponMemory = new Dictionary<string, float>();
++            // v0.6: enemy defenses once seen, per enemy (a Kinetic wall seen at T24 is still there when counterintel hides it)
++            public readonly Dictionary<int, Dictionary<string, float>> DefenseMemory = new Dictionary<int, Dictionary<string, float>>();
++            public readonly Dictionary<int, Dictionary<string, int>> KnownDefenses = new Dictionary<int, Dictionary<string, int>>();
+             public readonly Dictionary<string, int> OwnDefenses = new Dictionary<string, int>();
+             public readonly Dictionary<string, int> DefensesQueued = new Dictionary<string, int>();
+         }
+@@ -85,6 +88,7 @@ namespace InterplanetaryAI
+                 PlayerData me = core.PlayerData;
+                 AiEconomyState state = StateOf(me);
+                 int turn = GameManager.CurrentTurn;
++                Plugin.Ledger.Roll(me.PlayerID); // the action phase since our last turn becomes "last turn" figures
+ 
+                 // Enemy picture for the construction mix (same visible-only data as targeting).
+                 float maxEnemyEconomy = 0f, recentDamage = 0f;
+@@ -98,13 +102,32 @@ namespace InterplanetaryAI
+                     recentDamage += view.Grudge;
+                     alive.Add(planet.Player.PlayerID);
+                     Dictionary<string, int> seen = new Dictionary<string, int>();
++                    Dictionary<string, int> seenDefenses = new Dictionary<string, int>();
+                     state.VisibleByEnemy[planet.Player.PlayerID] = seen;
+                     foreach (BaseBuilding building in planet.Player.BuildingHandler.Buildings)
+                     {
+-                        if (!AiPatches.IsVisibleIntact(me, building) || building.IsCity || !building.BuildingData.weapon_functionality.IsValueSet) continue;
++                        if (!AiPatches.IsVisibleIntact(me, building) || building.IsCity) continue;
++                        string buildingId = building.BuildingData.id.Value;
++                        if (DefensePlanner.Counters.ContainsKey(buildingId)) Increment(seenDefenses, buildingId);
++                        if (!building.BuildingData.weapon_functionality.IsValueSet) continue;
+                         Increment(seen, building.BuildingData.weapon_functionality.Value);
+                         Increment(state.VisibleWeapons, building.BuildingData.weapon_functionality.Value);
+                     }
++                    Dictionary<string, float> defenseMemory;
++                    if (!state.DefenseMemory.TryGetValue(planet.Player.PlayerID, out defenseMemory))
++                    {
++                        defenseMemory = new Dictionary<string, float>();
++                        state.DefenseMemory[planet.Player.PlayerID] = defenseMemory;
++                    }
++                    Dictionary<string, int> knownDefenses;
++                    if (!state.KnownDefenses.TryGetValue(planet.Player.PlayerID, out knownDefenses))
++                    {
++                        knownDefenses = new Dictionary<string, int>();
++                        state.KnownDefenses[planet.Player.PlayerID] = knownDefenses;
++                    }
++                    int enemyId = planet.Player.PlayerID;
++                    DefensePlanner.Remember(defenseMemory, new Dictionary<int, Dictionary<string, int>> { { enemyId, seenDefenses } }, new List<int> { enemyId },
++                        Math.Max(0f, Math.Min(1f, Plugin.WeaponMemoryDecay.Value)), knownDefenses);
+                 }
+                 // Known weapons = visible now or remembered from earlier sight, per living enemy (fair: our own
+                 // past observations; eliminations are public).
+diff --git a/AI/LedgerPatches.cs b/AI/LedgerPatches.cs
+new file mode 100644
+index 0000000..165c9e5
+--- /dev/null
++++ b/AI/LedgerPatches.cs
+@@ -0,0 +1,54 @@
++using System;
++using System.Collections.Generic;
++using System.Reflection;
++using HarmonyLib;
++using Interplanetary.GameEngine.Actionphase;
++using Interplanetary.GameDataFiles;
++using Interplanetary.PlayerDataManagement;
++
++namespace InterplanetaryAI
++{
++    // Records, for every shot that reaches a planet, what the defender's defenses did with it
++    // (PlayerDefenseHandler.IsHitIntercepted adds one ActionphaseDefenseActivationEvent per defense in range).
++    // Both players see these events in the action phase; the mod only reads them, for the AI as defender (how much
++    // energy its defenses really used) and as shooter (how many of its shots were intercepted, per weapon).
++    internal static class LedgerPatches
++    {
++        private static readonly FieldInfo s_defensePlayer = AccessTools.Field(typeof(PlayerDefenseHandler), "m_player");
++        private static readonly HashSet<string> s_reported = new HashSet<string>();
++
++        private static void BeforeIntercept(List<ActionphaseBaseEvent> events, out int __state)
++        {
++            __state = events != null ? events.Count : 0;
++        }
++
++        private static void AfterIntercept(PlayerDefenseHandler __instance, int shooterID, WeaponData weaponData, List<ActionphaseBaseEvent> events, bool __result, int __state)
++        {
++            if (!Plugin.Active || events == null || weaponData == null) return;
++            try
++            {
++                PlayerData defender = s_defensePlayer != null ? s_defensePlayer.GetValue(__instance) as PlayerData : null;
++                if (defender == null) return;
++                int probabilityFails = 0, noEnergy = 0, disconnected = 0, energySpent = 0;
++                for (int i = __state; i < events.Count; i++)
++                {
++                    ActionphaseDefenseActivationEvent e = events[i] as ActionphaseDefenseActivationEvent;
++                    if (e == null) continue;
++                    switch (e.Status)
++                    {
++                        case ActionphaseDefenseActivationEvent.DefenseStatus.FailedProbality: probabilityFails++; energySpent += e.Energy; break;
++                        case ActionphaseDefenseActivationEvent.DefenseStatus.Success: energySpent += e.Energy; break;
++                        case ActionphaseDefenseActivationEvent.DefenseStatus.FailedNoEnergy: noEnergy++; break;
++                        case ActionphaseDefenseActivationEvent.DefenseStatus.FailedDisconneted: disconnected++; break;
++                    }
++                }
++                bool covered = events.Count > __state;
++                Plugin.Ledger.Record(defender.PlayerID, shooterID, weaponData.id.Value, __result, probabilityFails, noEnergy, disconnected, energySpent, covered);
++            }
++            catch (Exception e)
++            {
++                if (s_reported.Add("ledger")) Plugin.Log.LogError("Defense ledger hook failed (reported once): " + e);
++            }
++        }
++    }
++}
+diff --git a/AI/Plugin.cs b/AI/Plugin.cs
+index 1f8c730..96133c3 100644
+--- a/AI/Plugin.cs
++++ b/AI/Plugin.cs
+@@ -22,7 +22,7 @@ namespace InterplanetaryAI
+     {
+         public const string GUID = "pavol.interplanetary.ai";
+         public const string NAME = "Interplanetary EE: Smarter AI";
+-        public const string VERSION = "0.5.0";
++        public const string VERSION = "0.6.0";
+ 
+         internal static ManualLogSource Log;
+ 
+@@ -125,6 +125,10 @@ namespace InterplanetaryAI
+         internal static readonly PlannerSettings Planner = new PlannerSettings();
+         internal static float[] Accuracy = new float[] { 0.6f, 0.95f, 1f, 1f };
+         internal static GrudgeLedger Grudges;
++        internal static DefenseLedger Ledger = new DefenseLedger(3);
++        internal static ConfigEntry<float> DefenseObservedMargin;
++        internal static ConfigEntry<float> DefenseHardCapShare;
++        internal static ConfigEntry<int> ObservedMinImpacts;
+         internal static ReachabilityMemory Reach;
+         internal static readonly Dictionary<int, float> AccuracyCarry = new Dictionary<int, float>();
+         internal static readonly System.Random Rng = new System.Random();
+@@ -254,6 +258,12 @@ namespace InterplanetaryAI
+                 "At war, defenses wanted are at least this share of our own non-city buildings, seen threat or not. 0 = off (v0.4 behaviour).");
+             DefenseCatchUpTurns = Config.Bind("Director", "DefenseCatchUpTurns", 3,
+                 "When behind on defenses, queue enough per turn to close the gap in this many turns.");
++            DefenseObservedMargin = Config.Bind("Director", "DefenseObservedMargin", 1.25f,
++                "The defense reserve is at least what the defenses used last action phase (energy spent plus rolls that found no energy) times this margin.");
++            DefenseHardCapShare = Config.Bind("Director", "DefenseHardCapShare", 0.8f,
++                "Most of the energy income the observed defense need may reserve. 0 = ignore observed spending (v0.5 behaviour).");
++            ObservedMinImpacts = Config.Bind("Director", "ObservedMinImpacts", 12,
++                "Weapon choice trusts the interception rate seen over the last 3 turns once at least this many shots of that weapon reached the target. 0 = never (v0.5 behaviour).");
+             WeaponMemoryDecay = Config.Bind("Director", "WeaponMemoryDecay", 0.95f,
+                 "Enemy weapons once seen are remembered while hidden by counterintel, shrinking by this factor per turn. 0 = forget at once (v0.4 behaviour).");
+             DefensesForFullCover = Config.Bind("Director", "DefensesForFullCover", 10f,
+@@ -293,8 +303,9 @@ namespace InterplanetaryAI
+             patched += TryPatch(typeof(AIDefenseConstruction), "TryConstructDefense", "TryConstructDefensePrefix", null, typeof(EconomyPatches));
+             patched += TryPatch(typeof(AIBuildingPlacementSearch), "step", "SearchStepPrefix", null, typeof(DirectorPatches));
+             patched += TryPatch(typeof(AIBuildingPlacementFinder), "Update", "FinderUpdatePrefix", null, typeof(DirectorPatches));
++            patched += TryPatch(typeof(PlayerDefenseHandler), "IsHitIntercepted", "BeforeIntercept", "AfterIntercept", typeof(LedgerPatches));
+             int laserPatches = EnableLasers.Value ? LaserPatches.Install(new Harmony(GUID + ".lasers")) : 0;
+-            Log.LogInfo(NAME + " " + VERSION + " loaded; " + patched + " of 13 hooks patched. Director " + (DirectorEnabled.Value ? "on" : "off")
++            Log.LogInfo(NAME + " " + VERSION + " loaded; " + patched + " of 14 hooks patched. Director " + (DirectorEnabled.Value ? "on" : "off")
+                 + ", war from turn " + WarFromTurn.Value + ". Accuracy by level: " + AccuracyByLevel.Value
+                 + "; research plan " + ResearchPlanIds.Count + " techs; superweapons " + Superweapons.Value
+                 + "; lasers " + (EnableLasers.Value ? laserPatches + " of 5 patches" : "off"));
+@@ -378,6 +389,7 @@ namespace InterplanetaryAI
+         internal static void ResetMatchMemory()
+         {
+             Grudges.Clear();
++            Ledger.Clear();
+             Reach.Clear();
+             AccuracyCarry.Clear();
+             LastTurnSeen = 0;
+diff --git a/AI/Tests/Program.cs b/AI/Tests/Program.cs
+index e7d39b1..0be4559 100644
+--- a/AI/Tests/Program.cs
++++ b/AI/Tests/Program.cs
+@@ -36,6 +36,7 @@ namespace InterplanetaryAI.Tests
+             DirectorRespectsBudgetAndSlots();
+             DirectorWarAndDefenseRules();
+             DefenseMemoryAndBlindChoice();
++            LedgerAndObservedRules();
+             WeaponChoiceAvoidsTargetDefenses();
+             PlanetMaterialRunsOut();
+             BlindAiSpreadsFire();
+@@ -200,6 +201,74 @@ namespace InterplanetaryAI.Tests
+             Check(EconomyDirector.DefensesPerTurnCap(60, 0, 3, 3, 2, false) == 3, "never below the base rate");
+         }
+ 
++        private static void LedgerAndObservedRules()
++        {
++            // The ledger turns one action phase into "last turn" figures at the player's next turn start.
++            var ledger = new DefenseLedger(2);
++            ledger.Record(1, 2, "wea_Railgun", true, 0, 0, 0, 100, true);
++            ledger.Record(1, 2, "wea_Railgun", false, 1, 1, 0, 100, true);
++            ledger.Record(1, 2, "wea_Railgun", false, 0, 0, 0, 0, false);
++            Check(ledger.LastDefender(1).Impacts == 0, "before the defender's next turn start: nothing reported yet");
++            ledger.Roll(1);
++            DefenderStats last = ledger.LastDefender(1);
++            Check(last.Impacts == 3 && last.Intercepted == 1 && last.Uncovered == 1 && last.NoEnergy == 1 && last.EnergySpent == 200,
++                "defender: 3 impacts, 1 intercepted, 1 uncovered, 1 unpaid roll, 200 energy");
++            ledger.Roll(1);
++            Check(ledger.LastDefender(1).Impacts == 0, "the next action phase starts empty");
++
++            float pass;
++            Check(!ledger.ObservedPass(2, "wea_Railgun", 3, out pass), "shooter history is empty until the shooter's own turn start");
++            ledger.Roll(2);
++            Check(ledger.ObservedPass(2, "wea_Railgun", 3, out pass) && Math.Abs(pass - 2f / 3f) < 1e-4f, "shooter: 1 of 3 shots intercepted -> pass 0.67");
++            Check(!ledger.ObservedPass(2, "wea_Railgun", 4, out pass), "too few samples: no verdict");
++            Check(!ledger.ObservedPass(2, "wea_Missile", 1, out pass), "weapon never fired: no verdict");
++            for (int i = 0; i < 10; i++) ledger.Record(1, 2, "wea_Railgun", true, 0, 0, 0, 100, true);
++            ledger.Roll(2);
++            Check(ledger.ObservedPass(2, "wea_Railgun", 3, out pass) && Math.Abs(pass - 2f / 13f) < 1e-4f, "two turns in the window: 11 of 13 intercepted -> 2 of 13 get through = pass 0.15");
++            ledger.Roll(2);
++            ledger.Roll(2);
++            Check(!ledger.ObservedPass(2, "wea_Railgun", 1, out pass), "old turns leave the window (history 2)");
++
++            // Reserve from observed spending (31 Oct 1v1 T28: 49 impacts, reserve 2,052 of 6,840 income).
++            Check(EconomyDirector.ObservedDefenseNeed(3000, 10, 100f, 1.25f) == 5000f, "observed need = (3,000 spent + 10 unpaid x 100) x 1.25");
++            Check(EconomyDirector.DefenseReserve(21, 0, 1, 0f, 150f, 125f, 0.3f, 6840f, 1f) == 2052, "no observation: the planned figure, capped at 30% income");
++            Check(EconomyDirector.DefenseReserve(21, 0, 1, 0f, 150f, 125f, 0.3f, 6840f, 1f, 6125f, 0.8f) == 5472, "observed 6,125 is capped at 80% of income = 5,472");
++            Check(EconomyDirector.DefenseReserve(21, 0, 1, 0f, 150f, 125f, 0.3f, 6840f, 1f, 6125f, 0f) == 2052, "hard cap share 0 = v0.5 behaviour");
++            Check(EconomyDirector.DefenseReserve(21, 0, 1, 0f, 150f, 125f, 0.3f, 20000f, 1f, 1000f, 0.8f) == 3150, "small observed need: the planned floor stays");
++            Check(EconomyDirector.DefenseReserve(0, 0, 1, 0f, 150f, 125f, 0.3f, 6840f, 1f, 6125f, 0.8f) == 0, "no defenses: still nothing to fund");
++
++            // Observed interception beats the estimate from remembered defenses.
++            var kinetic16 = new Dictionary<string, int> { { "bui_KineticDefense", 16 } };
++            var counters = DefensePlanner.EnhancedCounters();
++            Check(Math.Abs(EconomyDirector.PassChance("wea_Railgun", kinetic16, counters, 10f) - 0.2f) < 1e-4f, "16 Kinetic: estimated Railgun pass 0.2");
++            var observed = new Dictionary<string, float> { { "wea_Railgun", 0.9f } };
++            Check(Math.Abs(EconomyDirector.PassChance("wea_Railgun", kinetic16, counters, 10f, observed) - 0.9f) < 1e-4f, "observed pass 0.9 overrides the estimate");
++            Check(Math.Abs(EconomyDirector.PassChance("wea_Missile", kinetic16, counters, 10f, observed) - 1f) < 1e-4f, "no observation for Missile: the estimate (Kinetic does not stop it) = 1");
++            observed["wea_Railgun"] = 0f;
++            Check(Math.Abs(EconomyDirector.PassChance("wea_Railgun", new Dictionary<string, int>(), counters, 10f, observed) - 0.05f) < 1e-4f, "observed pass floors at 0.05");
++
++            // Railgun intercepted ~every time, Missile cheaper per damage unknown: the pick switches to the Missile.
++            var options = new List<WeaponStats>
++            {
++                new WeaponStats { BuildingId = "bui_Railgun", WeaponId = "wea_Railgun", BuildEnergy = 800, BuildMaterial = 1000, FiringEnergy = 100, Damage = 100f },
++                new WeaponStats { BuildingId = "bui_Missile", WeaponId = "wea_Missile", BuildEnergy = 800, BuildMaterial = 1000, FiringEnergy = 100, Damage = 80f },
++            };
++            var rng = new Random(7);
++            int railgunPicks = 0;
++            for (int i = 0; i < 200; i++)
++            {
++                if (EconomyDirector.PickWeapon(options, new Dictionary<string, int>(), counters, 10f, 4f, 0.6f, rng).WeaponId == "wea_Railgun") railgunPicks++;
++            }
++            Check(railgunPicks > 60, "no observation, empty target defenses: Railguns still picked often (" + railgunPicks + " of 200)");
++            var railgunStopped = new Dictionary<string, float> { { "wea_Railgun", 0.1f } };
++            int after = 0;
++            for (int i = 0; i < 200; i++)
++            {
++                if (EconomyDirector.PickWeapon(options, new Dictionary<string, int>(), counters, 10f, 4f, 0.6f, rng, railgunStopped).WeaponId == "wea_Railgun") after++;
++            }
++            Check(after == 0, "Railguns observed 90% intercepted: Missiles only (" + after + " Railgun picks of 200)");
++        }
++
+         private static Dictionary<int, Dictionary<string, int>> Seen(int enemy, string weapon, int count)
+         {
+             var seen = new Dictionary<string, int>();

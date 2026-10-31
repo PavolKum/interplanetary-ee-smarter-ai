@@ -36,6 +36,7 @@ namespace InterplanetaryAI.Tests
             DirectorRespectsBudgetAndSlots();
             DirectorWarAndDefenseRules();
             DefenseMemoryAndBlindChoice();
+            LedgerAndObservedRules();
             WeaponChoiceAvoidsTargetDefenses();
             PlanetMaterialRunsOut();
             BlindAiSpreadsFire();
@@ -198,6 +199,74 @@ namespace InterplanetaryAI.Tests
             Check(EconomyDirector.DefensesPerTurnCap(60, 0, 3, 3, 8, false) == 4, "60 behind, 8 free slots, no damage: half the slots = 4");
             Check(EconomyDirector.DefensesPerTurnCap(60, 0, 3, 3, 8, true) == 20, "under attack: full catch-up 20");
             Check(EconomyDirector.DefensesPerTurnCap(60, 0, 3, 3, 2, false) == 3, "never below the base rate");
+        }
+
+        private static void LedgerAndObservedRules()
+        {
+            // The ledger turns one action phase into "last turn" figures at the player's next turn start.
+            var ledger = new DefenseLedger(2);
+            ledger.Record(1, 2, "wea_Railgun", true, 0, 0, 0, 100, true);
+            ledger.Record(1, 2, "wea_Railgun", false, 1, 1, 0, 100, true);
+            ledger.Record(1, 2, "wea_Railgun", false, 0, 0, 0, 0, false);
+            Check(ledger.LastDefender(1).Impacts == 0, "before the defender's next turn start: nothing reported yet");
+            ledger.Roll(1);
+            DefenderStats last = ledger.LastDefender(1);
+            Check(last.Impacts == 3 && last.Intercepted == 1 && last.Uncovered == 1 && last.NoEnergy == 1 && last.EnergySpent == 200,
+                "defender: 3 impacts, 1 intercepted, 1 uncovered, 1 unpaid roll, 200 energy");
+            ledger.Roll(1);
+            Check(ledger.LastDefender(1).Impacts == 0, "the next action phase starts empty");
+
+            float pass;
+            Check(!ledger.ObservedPass(2, "wea_Railgun", 3, out pass), "shooter history is empty until the shooter's own turn start");
+            ledger.Roll(2);
+            Check(ledger.ObservedPass(2, "wea_Railgun", 3, out pass) && Math.Abs(pass - 2f / 3f) < 1e-4f, "shooter: 1 of 3 shots intercepted -> pass 0.67");
+            Check(!ledger.ObservedPass(2, "wea_Railgun", 4, out pass), "too few samples: no verdict");
+            Check(!ledger.ObservedPass(2, "wea_Missile", 1, out pass), "weapon never fired: no verdict");
+            for (int i = 0; i < 10; i++) ledger.Record(1, 2, "wea_Railgun", true, 0, 0, 0, 100, true);
+            ledger.Roll(2);
+            Check(ledger.ObservedPass(2, "wea_Railgun", 3, out pass) && Math.Abs(pass - 2f / 13f) < 1e-4f, "two turns in the window: 11 of 13 intercepted -> 2 of 13 get through = pass 0.15");
+            ledger.Roll(2);
+            ledger.Roll(2);
+            Check(!ledger.ObservedPass(2, "wea_Railgun", 1, out pass), "old turns leave the window (history 2)");
+
+            // Reserve from observed spending (31 Oct 1v1 T28: 49 impacts, reserve 2,052 of 6,840 income).
+            Check(EconomyDirector.ObservedDefenseNeed(3000, 10, 100f, 1.25f) == 5000f, "observed need = (3,000 spent + 10 unpaid x 100) x 1.25");
+            Check(EconomyDirector.DefenseReserve(21, 0, 1, 0f, 150f, 125f, 0.3f, 6840f, 1f) == 2052, "no observation: the planned figure, capped at 30% income");
+            Check(EconomyDirector.DefenseReserve(21, 0, 1, 0f, 150f, 125f, 0.3f, 6840f, 1f, 6125f, 0.8f) == 5472, "observed 6,125 is capped at 80% of income = 5,472");
+            Check(EconomyDirector.DefenseReserve(21, 0, 1, 0f, 150f, 125f, 0.3f, 6840f, 1f, 6125f, 0f) == 2052, "hard cap share 0 = v0.5 behaviour");
+            Check(EconomyDirector.DefenseReserve(21, 0, 1, 0f, 150f, 125f, 0.3f, 20000f, 1f, 1000f, 0.8f) == 3150, "small observed need: the planned floor stays");
+            Check(EconomyDirector.DefenseReserve(0, 0, 1, 0f, 150f, 125f, 0.3f, 6840f, 1f, 6125f, 0.8f) == 0, "no defenses: still nothing to fund");
+
+            // Observed interception beats the estimate from remembered defenses.
+            var kinetic16 = new Dictionary<string, int> { { "bui_KineticDefense", 16 } };
+            var counters = DefensePlanner.EnhancedCounters();
+            Check(Math.Abs(EconomyDirector.PassChance("wea_Railgun", kinetic16, counters, 10f) - 0.2f) < 1e-4f, "16 Kinetic: estimated Railgun pass 0.2");
+            var observed = new Dictionary<string, float> { { "wea_Railgun", 0.9f } };
+            Check(Math.Abs(EconomyDirector.PassChance("wea_Railgun", kinetic16, counters, 10f, observed) - 0.9f) < 1e-4f, "observed pass 0.9 overrides the estimate");
+            Check(Math.Abs(EconomyDirector.PassChance("wea_Missile", kinetic16, counters, 10f, observed) - 1f) < 1e-4f, "no observation for Missile: the estimate (Kinetic does not stop it) = 1");
+            observed["wea_Railgun"] = 0f;
+            Check(Math.Abs(EconomyDirector.PassChance("wea_Railgun", new Dictionary<string, int>(), counters, 10f, observed) - 0.05f) < 1e-4f, "observed pass floors at 0.05");
+
+            // Railgun intercepted ~every time, Missile cheaper per damage unknown: the pick switches to the Missile.
+            var options = new List<WeaponStats>
+            {
+                new WeaponStats { BuildingId = "bui_Railgun", WeaponId = "wea_Railgun", BuildEnergy = 800, BuildMaterial = 1000, FiringEnergy = 100, Damage = 100f },
+                new WeaponStats { BuildingId = "bui_Missile", WeaponId = "wea_Missile", BuildEnergy = 800, BuildMaterial = 1000, FiringEnergy = 100, Damage = 80f },
+            };
+            var rng = new Random(7);
+            int railgunPicks = 0;
+            for (int i = 0; i < 200; i++)
+            {
+                if (EconomyDirector.PickWeapon(options, new Dictionary<string, int>(), counters, 10f, 4f, 0.6f, rng).WeaponId == "wea_Railgun") railgunPicks++;
+            }
+            Check(railgunPicks > 60, "no observation, empty target defenses: Railguns still picked often (" + railgunPicks + " of 200)");
+            var railgunStopped = new Dictionary<string, float> { { "wea_Railgun", 0.1f } };
+            int after = 0;
+            for (int i = 0; i < 200; i++)
+            {
+                if (EconomyDirector.PickWeapon(options, new Dictionary<string, int>(), counters, 10f, 4f, 0.6f, rng, railgunStopped).WeaponId == "wea_Railgun") after++;
+            }
+            Check(after == 0, "Railguns observed 90% intercepted: Missiles only (" + after + " Railgun picks of 200)");
         }
 
         private static Dictionary<int, Dictionary<string, int>> Seen(int enemy, string weapon, int count)

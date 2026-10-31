@@ -1,0 +1,16 @@
+READ-ONLY review. Do not edit, create or delete any file. Stay inside this repository: any path outside it is auto-rejected and ends your run. Finish with the complete written report.
+
+Code review of AI v0.6.0 (uncommitted diff = commits after c125332; diff in docs/reviews/terra-ai-v0.6.diff). Context: your diagnosis of the v0.5.0 match is docs/reviews/terra-ai-v0.6-diagnosis.md; my disposition and change list are in docs/reviews/terra-ai-v0.6-diagnosis-disposition.md.
+
+New: AI/Brain/DefenseLedger.cs (pure ledger), AI/LedgerPatches.cs (Harmony prefix/postfix on PlayerDefenseHandler.IsHitIntercepted counting the defense events per shot for defender and shooter), Director.cs (DefenseReserve with observed need, ObservedDefenseNeed, PassChance observed override), EconomyPatches.cs (Ledger.Roll at AI turn start, per-enemy defense memory), DirectorPatches.cs (observed reserve and pass, remembered target defenses, PickWaterPlant fallback), Plugin.cs (hook 14, config).
+
+Check, with file:line evidence from AI/ and decompiled/:
+1. Does the hook see what I think: events.Count before/after IsHitIntercepted; ActionphaseDefenseActivationEvent statuses and Energy; covered == events added; shooterID semantics; is IsHitIntercepted called once per fragment/impact or per projectile; are there other call sites or interception paths (city barriers, other defense kinds) that bypass it. Is the Harmony prefix with `out int __state` and the parameter names (events, shooterID, weaponData, __result) correct for HarmonyX here.
+2. Timing: Roll(playerId) runs in CoreBeginTurnPostfix. Is "the action phase since the AI's last turn start" really what the pending counters hold (turn order, multiple AIs, the human planning vs action phases, save/load, partial rounds)? Could an AI roll twice a turn or miss one?
+3. The reserve: ObservedDefenseNeed uses 100 per unpaid roll; energy spent includes failed rolls; hard cap 80% of income. Can the reserve starve construction/weapons and the superweapon purchase (see StartConstruction and economy.BuyPending)? What happens when income is small after a collapse?
+4. Observed pass: is "intercepted / impacts reaching the planet" a fair, correct estimate of pass for weapon choice (uncovered impacts, fragments, MIRV, nuclear), is the 12-impact minimum and 3-turn window sensible, does it have a failure mode (a weapon never tried is never re-tested; a Railgun flagged 0.05 permanently)? Is any of it hidden information (shooter-side events: what does the shooter legitimately see)?
+5. Memory of defenses: per enemy, decay 0.95, eliminated enemies; BeginTurn uses economy.KnownDefenses[target]. Interaction with PassChance coverageFull. Dead enemy ids, enemies not in EnemyPlanets.
+6. PickWaterPlant: Floating Plant ids/availability in both rulesets, WaterCooldownUntil use, slot needs, could it loop or crowd out other construction.
+7. Tests (AI/Tests/Program.cs LedgerAndObservedRules etc.): behaviour vs arithmetic; what is missing.
+
+Output: verdict (ship / fix first), findings ranked High/Medium/Low with file:line and a concrete fix, then "checked and fine". Under 1,200 words.

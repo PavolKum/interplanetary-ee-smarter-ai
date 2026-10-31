@@ -48,6 +48,9 @@ namespace InterplanetaryAI
             public int OwnDefenses;
             public int DesiredDefenses;
             public int DefenseTurnCap;
+            public float ObservedDefenseNeed;   // v0.6: energy our defenses needed in the last action phase (x margin)
+            public int LastImpacts, LastIntercepted, LastUncovered, LastNoEnergy, LastEnergySpent;
+            public Dictionary<string, float> ObservedPass = new Dictionary<string, float>();
             public string TargetName = "";
             public readonly Dictionary<string, int> TargetDefenses = new Dictionary<string, int>();
             public readonly Dictionary<BaseBuilding, int> PlannedUpgrades = new Dictionary<BaseBuilding, int>();
@@ -169,6 +172,14 @@ namespace InterplanetaryAI
             d.VisibleEnemyWeapons = visibleEnemyWeapons;
             d.EnemiesAlive = core.EnemyPlanets.Count;
             foreach (int n in economy.OwnDefenses.Values) d.OwnDefenses += n;
+            DefenderStats last = Plugin.Ledger.LastDefender(me.PlayerID);
+            d.LastImpacts = last.Impacts;
+            d.LastIntercepted = last.Intercepted;
+            d.LastUncovered = last.Uncovered;
+            d.LastNoEnergy = last.NoEnergy;
+            d.LastEnergySpent = last.EnergySpent;
+            d.ObservedDefenseNeed = EconomyDirector.ObservedDefenseNeed(last.EnergySpent, last.NoEnergy, 100f, Plugin.DefenseObservedMargin.Value);
+            d.ObservedPass = Plugin.ObservedMinImpacts.Value > 0 ? Plugin.Ledger.ObservedPassAll(me.PlayerID, Plugin.ObservedMinImpacts.Value) : new Dictionary<string, float>();
             d.DesiredDefenses = EconomyDirector.DesiredDefenses(visibleEnemyWeapons, recentDamage, Plugin.DefensePerEnemyWeapon.Value, Plugin.DamagePerDefense.Value, Plugin.MaxDefenses.Value,
                 d.War, d.NonCityBuildings, Plugin.DefenseFloorShare.Value);
 
@@ -188,11 +199,11 @@ namespace InterplanetaryAI
             if (target != null)
             {
                 d.TargetName = target.UserNickName;
-                foreach (BaseBuilding building in target.BuildingHandler.Buildings)
+                // The defenses we saw (remembered while counterintel hides them), not only what is visible now.
+                Dictionary<string, int> known;
+                if (economy.KnownDefenses.TryGetValue(target.PlayerID, out known))
                 {
-                    if (!AiPatches.IsVisibleIntact(me, building) || building.IsCity) continue;
-                    string id = building.BuildingData.id.Value;
-                    if (DefensePlanner.Counters.ContainsKey(id)) Increment(d.TargetDefenses, id);
+                    foreach (KeyValuePair<string, int> pair in known) d.TargetDefenses[pair.Key] = pair.Value;
                 }
             }
         }
@@ -263,7 +274,7 @@ namespace InterplanetaryAI
             if (d.War)
             {
                 int reserve = EconomyDirector.DefenseReserve(d.OwnDefenses, d.VisibleEnemyWeapons, d.EnemiesAlive, d.RecentDamage,
-                    150f, 125f, Plugin.DefenseReserveShare.Value, d.EnergyIncome, 1f);
+                    150f, 125f, Plugin.DefenseReserveShare.Value, d.EnergyIncome, 1f, d.ObservedDefenseNeed, Plugin.DefenseHardCapShare.Value);
                 reserve = Math.Max(0, Math.Min(reserve, core.Resources.Energy));
                 if (economy.BuyPending && !economy.Bought) reserve = Math.Min(reserve, Math.Max(0, core.Resources.Energy - economy.GoalEnergyCost));
                 core.Resources.Energy -= reserve;
@@ -287,6 +298,13 @@ namespace InterplanetaryAI
             return slots;
         }
 
+        private static string ObservedPassText(Dictionary<string, float> pass)
+        {
+            List<string> parts = new List<string>();
+            foreach (KeyValuePair<string, float> pair in pass) parts.Add(pair.Key + "=" + pair.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
+            return string.Join(";", parts.ToArray());
+        }
+
         private static bool Step(AIConstruction construction, AICore core, EconomyPatches.AiEconomyState economy, DirectorState d)
         {
             // 1. Superweapon purchase prepared by the savings logic.
@@ -301,7 +319,7 @@ namespace InterplanetaryAI
                 || (economy.NeedSlotForGoal && d.PlantsForUnpowered == 0);
             if (needPlant && !d.FailedThisTurn.Contains("unpowered-plant"))
             {
-                BuildingData plant = PickLandPlant(core, d);
+                BuildingData plant = PickLandPlant(core, d) ?? PickWaterPlant(core, d);
                 if (plant != null && QueueBuilding(construction, core, d, plant, "power"))
                 {
                     d.PlantsForUnpowered++;
@@ -512,7 +530,7 @@ namespace InterplanetaryAI
                     Damage = damage,
                 });
             }
-            WeaponStats pick = EconomyDirector.PickWeapon(options, d.TargetDefenses, DefensePlanner.Counters, Plugin.DefensesForFullCover.Value, 4f, 0.6f, Plugin.Rng);
+            WeaponStats pick = EconomyDirector.PickWeapon(options, d.TargetDefenses, DefensePlanner.Counters, Plugin.DefensesForFullCover.Value, 4f, 0.6f, Plugin.Rng, d.ObservedPass);
             if (pick == null) return false;
             if (!QueueBuilding(construction, core, d, buildings.GetBuilding(pick.BuildingId), "weapon")) return false;
             d.Upkeep += pick.FiringEnergy;
@@ -781,6 +799,18 @@ namespace InterplanetaryAI
             return null;
         }
 
+        // v0.6: when land plants cannot be placed (14 abandoned Solar Plants while 7 -> 22 buildings sat unpowered, 31 Oct 1v1),
+        // power the grid from the water.
+        private static BuildingData PickWaterPlant(AICore core, DirectorState d)
+        {
+            if (GameManager.CurrentTurn < d.WaterCooldownUntil) return null;
+            BuildingsData buildings = GameDataFileManager.GetDataFile<BuildingsData>();
+            PlayerAvailableBuildings available = core.PlayerData.BuildingHandler.AvailableBuildings;
+            BuildingData data = buildings.HasBuilding("bui_FloatingPlant") ? buildings.GetBuilding("bui_FloatingPlant") : null;
+            if (data != null && available.IsBuildingAvailable(data) && Affordable(core, data) && !d.FailedThisTurn.Contains("bui_FloatingPlant")) return data;
+            return null;
+        }
+
         // ---- queue primitives ----------------------------------------------------------------------
 
         private static bool QueueBuilding(AIConstruction construction, AICore core, DirectorState d, BuildingData data, string role)
@@ -1007,6 +1037,9 @@ namespace InterplanetaryAI
                 .Int("energyStart", d.TurnStartEnergy).Int("materialStart", d.TurnStartMaterial)
                 .Int("energyLeft", core.Resources.Energy).Int("materialLeft", core.Resources.Material)
                 .Num("upkeep", d.Upkeep).Int("ownDefenses", d.OwnDefenses).Int("desiredDefenses", d.DesiredDefenses).Int("defenseTurnCap", d.DefenseTurnCap)
+                .Int("lastImpacts", d.LastImpacts).Int("lastIntercepted", d.LastIntercepted).Int("lastUncovered", d.LastUncovered)
+                .Int("lastNoEnergy", d.LastNoEnergy).Int("lastDefenseEnergy", d.LastEnergySpent).Int("observedNeed", (int)d.ObservedDefenseNeed)
+                .Str("observedPass", ObservedPassText(d.ObservedPass))
                 .Int("upgradesInstalled", upgradesInstalled).Str("weaponTarget", d.TargetName).Map("targetDefenses", d.TargetDefenses)
                 .Int("intelBuildings", d.IntelBuildings + d.IntelThisTurn).Int("blindEnemies", d.BlindEnemies).Int("defenseReserve", d.DefenseReserve)
                 .Int("refunds", d.Refunds).Map("placementFailures", d.PlacementFailures).Int("steps", d.Steps)
