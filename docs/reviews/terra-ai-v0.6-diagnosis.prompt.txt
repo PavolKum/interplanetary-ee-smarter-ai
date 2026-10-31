@@ -1,0 +1,24 @@
+READ-ONLY review. Do not edit, create or delete any file.
+
+You are reviewing a DIAGNOSIS, not code. Context: AI/ is a BepInEx plugin making the Interplanetary Enhanced Edition single-player AI stronger without hidden information (AI/README.md; you reviewed v0.1-v0.5, see docs/reviews/). Pavol (human, "jogi") beat one v0.5.0 AI ("Oort", level 1) in a 1v1 at turn 36. v0.5.0 added a defense floor, weapon memory, a reserve, faster catch-up; it built 15 Kinetic Defenses by T21 and 21 by T25 yet still collapsed from T27 (163 buildings at T26 -> 22 at T31). Check, independently and from the raw data, why.
+
+Data (recompute; do not trust my summary):
+- docs/playtests/data/v050-ai-decisions.jsonl: "director" records per turn (ownDefenses, desiredDefenses, defenseTurnCap, defenseReserve, upkeep, energyStart/Left, queued items), "economy", "target", "fire", "build".
+- docs/playtests/data/v050-human-telemetry.jsonl: human turn_end states (resources incl. energy left, energyPerTurn, counterintelMultiplier, intel; buildings by id), and "shot" (weaponType, hitOtherPlayerPlanet) and "damage" (building_hp, population_millions) events per turn.
+- My write-up: docs/playtests/2026-10-31-v0.5.0.md. Previous match for contrast: docs/playtests/2026-10-31-v0.4.1.md and docs/playtests/data/v041-*.jsonl. Mechanics: docs/original-mechanics.md. Decompiled source: decompiled/ (Interplanetary.PlayerDataManagement/PlayerDefenseHandler.cs, PlayerWeaponHandler.cs). Mod: AI/DirectorPatches.cs, AI/EconomyPatches.cs, AI/Brain/Director.cs (DefenseReserve, DesiredDefenses), AI/Brain/DefensePlan.cs.
+
+Hypotheses (CONFIRMED / REFUTED / PARTLY with numbers and file:line):
+H1. The defense reserve is far too small: the human fired 70-96 Railgun shots per turn (T28-T35); each defense roll costs the defender 100 energy even when it fails; the AI's reserve was 2.8-3.7k (30% income cap; ~150 energy per known weapon) so interceptions ran out of energy and most shots landed despite 19-21 Kinetic Defenses (each 80% vs Railguns).
+H2. Coverage: 21 Kinetic Defenses (defense_radius 5.9 in Enhanced) did not cover a ~160-building planet, so many buildings were outside any defense.
+H3. The AI's economy ceiling was lower than v0.4.1's (163 vs 280 buildings; 12k vs 25k E/t at T26) because weapon upkeep plus the reserve took roughly two thirds of income (energyStart 3.0-4.4k of 10-12k E/t at T21-T27), i.e. defense and weapon spending cost more growth than it saved.
+H4. The human had Kinetic Defenses only (15-26, no Ion). Oort fired Railguns almost exclusively and never switched to Missiles; a Missile-heavy mix would have bypassed Kinetic entirely. Oort was mostly blind to the human (counterintel 3.25 -> 8.3), so it could not see his defense mix; what could it have inferred fairly?
+H5. Nuclear Missile: queued 5 times (T26, 27, 29, 33, 34), placed once, no evidence it fired. Why? (land full, placement give-ups, power, collapse timing.)
+H6. The human's own energy left at turn end (15k at T27) is what powered his defenses against Oort's fire (Oort had 271 planned hits). Was the AI's offense effectively stopped by that, and what would have beaten it (volleys exhausting defender energy, Missiles, lasers, superweapon timing)?
+
+Also answer:
+Q1. From PlayerDefenseHandler.cs: exactly how is a defense roll resolved (order of defenses, per-shot or per-defense energy, coverage test, what happens at 0 energy)? What reserve would the AI have needed for the shot volumes in the logs?
+Q2. Which fair, observable signals could the AI use to size its reserve and defenses (its own damage taken per turn and by weapon type, remembered enemy weapon counts, turn number)?
+Q3. Ranked: the 3 changes most likely to make the AI beat this human next match, fair and human-like.
+Q4. Which game rules does each depend on (so the code review can test them)?
+
+Output: per-hypothesis verdicts with evidence, Q1-Q4, anything important I missed. Under 1,500 words.
