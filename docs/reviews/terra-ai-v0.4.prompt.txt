@@ -1,0 +1,22 @@
+READ-ONLY review. Do not edit, create or delete any file.
+
+Code review of AI v0.4.0. You already reviewed the diagnosis it is built on (docs/reviews/terra-ai-v0.4-diagnosis.md). Diff vs v0.3.1: docs/reviews/terra-ai-v0.4-diff.diff (also includes v0.3.1 monitor/tooling changes). Changed: AI/Patches.cs (BuildEnemyView), AI/Brain/TargetPlanner.cs, AI/Brain/Director.cs, AI/DirectorPatches.cs, AI/EconomyPatches.cs, AI/Plugin.cs, AI/Tests/Program.cs. Decompiled game source: decompiled/. Ruleset: docs/ruleset/.
+
+Game rules the design depends on (test each against the decompiled source; say where one is false):
+R1. An enemy's round-start totals (FrozenIntelState: EnergyProduction, MaterialProduction, TotalPopulation) are what this seat's intel overlay shows, and only when our FrozenIntelState.Intel >= their EnergyStealth / MaterialStealth / PopulationStealth, or when GameSettings.Intelligence != 1 (IntelOverlayIntelThermometerComponent.cs:313-373, FrozenIntelState.cs). Is it fair (no hidden information) to read them this way, including from an AI seat whose own FrozenIntelState is updated at the same round start?
+R2. A Telescope Array (+8 intel, bui_TelescopeArray, unlocked by Advanced Signal Processing) raises ResourceHandler.Intel, and that feeds FrozenIntelState.Intel at the next round start.
+R3. Defense rolls cost the defender's leftover energy; reducing core.Resources.Energy and ConstructionQueue.AllottedEnergy at construction start leaves that energy unspent at the action phase (nothing else in the AI spends it).
+R4. Material banked by lowering core.Resources.Material / AllottedMaterial at AICore.BeginTurn stays in the player's stock and is spendable on a later turn.
+R5. PlayerResourceHandler.PlanetMaterialCost and MaterialProductionPerTurn give the per-turn planet drain (max of the two), and GameSettings.PlanetMaterial == -1 means unlimited.
+R6. The Multi-Stage Refinery (upg_MineEfficiency1 / upg_OffshoreEfficiency1, turn_cost_planet_material_multiplier 0.7) is the only mine upgrade with a planet multiplier < 1 and no material yield multiplier; buildings have 2 upgrade slots.
+R7. Research plan ids in Plugin.DefaultResearchPlan all exist and AddTechnologyToQueueById queues prerequisites.
+
+Prioritise: anything that can stall or loop an AI turn, crash, corrupt resources, break fairness, or make the AI weaker than v0.3.1. Also check:
+A. BuildEnemyView: null handling, Intelligence setting semantics (1 = on?), VisibleCities semantics vs TargetPlanner's finish term, and any consumer of EnemyView.Economy that now behaves differently (EconomyPatches growth situation, DirectorPatches weapon target, targeting log).
+B. Intel step: can it loop or overbuild (IntelPerTurn, MaxIntelBuildings, BlindEnemies computed once per turn)? Telescope upkeep (-20 energy each) vs 30 telescopes.
+C. Defense reserve: interaction with WarSpendShare (TurnStartEnergy recomputed), weapon-sink step, superweapon purchase energy check, and the native weapon targeting's own energy checks.
+D. Endgame bank: interaction with the superweapon savings (Goal null vs set), BuyPending, the director's budget; can banked material ever be released? Does it starve the AI when the planet is already empty at turn 1 settings (tiny reserve)?
+E. Efficiency rule: does skipping Yield2 behave when the refinery is not yet researched, when both slots are already used, and for Offshore Mines?
+F. Tests: do the new tests check the right things; what is untested?
+
+Output: verdict (ship / fix first), numbered findings (severity, evidence with file:line in mod and decompiled source, scenario, fix), rule verdicts R1-R7 (TRUE / FALSE / UNVERIFIED), and a short list of what you checked and found fine. Under 1,500 words.

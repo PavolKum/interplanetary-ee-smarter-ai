@@ -152,10 +152,7 @@ namespace InterplanetaryAI
                 {
                     // Population is a city's durability; the overlay shows the total and the city count together.
                     view.CityPopulation = Math.Max(0, theirs.TotalPopulation);
-                    foreach (BaseBuilding city in enemy.BuildingHandler.GetBuildingsByType(BaseBuilding.BuildingFunctionalityType.City))
-                    {
-                        if (city != null && city.CurrentState != BaseBuilding.BuildingState.Ruins && city.CurrentState != BaseBuilding.BuildingState.Destroyed) view.VisibleCities++;
-                    }
+                    view.VisibleCities = enemy.BuildingHandler.GetRemainingCities().Count; // as the overlay counts
                 }
             }
             view.Grudge = Plugin.Grudges.Get(me.PlayerID, enemy.PlayerID, turn);

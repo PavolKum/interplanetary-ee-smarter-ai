@@ -88,8 +88,28 @@ v0.2.2 also fixed a v0.2 bug: the superweapon reserve saved energy, which resets
 | Research default: the human's 31 Oct order (an unchanged v0.2 default in the config is migrated) | - | `[Research] Plan` |
 | `director` record per AI turn: power slots, unspent energy, queued items, upgrades installed, refunds, placement failures | `AICore.EndTurn` postfix | - |
 
+## v0.4 - see, bank, defend
+
+The v0.3.1 match (`docs/playtests/2026-10-31-v0.3.1.md`): the AIs out-produced the human up to 5x but lost. The
+diagnosis was checked by Terra from the raw logs before any code (`docs/reviews/terra-ai-v0.4-diagnosis*.md`):
+all four AIs were blind (native intel need counts only guided weapons, so a Railgun army built no telescopes),
+targeting ran on grudges alone and they fought each other; they spent 53-120k banked material before the Nuclear
+Missile unlocked; half their weapon-turns were unpowered; Railgun placements were requeued hundreds of times.
+
+| Change | Config |
+|---|---|
+| Enemy view = exactly what the intel overlay shows: the enemy's round-start production and population, each gated by our intel vs its stealth x their counterintel (fair by construction). An enemy we cannot read gets an assumed economy share instead of zero | `[Targeting] UnknownEconomyShare` |
+| Focus fire only when the top enemy clearly leads (none below 1.5x the second score, full from 2.5x); grudge weight 0.6 -> 0.35 (migrated) | `GrudgeWeight` |
+| Telescope Arrays until every enemy's production and population are readable, under one cap | `[Director] IntelPerTurn`, `MaxIntelBuildings` |
+| At war, energy kept unspent for defense rolls (each costs the defender 100-200 energy; at 0 the defense fails) | `DefenseReserveShare` |
+| Endgame bank: while superweapon research is queued and the planet is about to run dry, keep up to 6,000 material (at most half the stock) | `EndgameBankMaterial`, `BankWarningTurns` |
+| Limited planet: one yield upgrade per mine plus the Multi-Stage Refinery when it actually lowers the drain | `PlanetEfficiency` |
+| Up to 5 plants a turn to connect unpowered buildings; science valued 1.5x in project choice; failed placement types not requeued | `UnpoweredPlantsPerTurn`, `ScienceWeight` |
+| Research: economy core, then the chain that gives telescopes, missiles and the Nuclear Missile | `[Research] Plan` (older defaults migrated) |
+
 ## Next
 
+- Read the first v0.4 match: did the AIs see the human (`target` records `known`), where did their fire go, did the bank buy a superweapon, how many weapons were unpowered.
 - Read the first v0.3 match log (`summarize_decisions.py` prints a director section): did the AIs build Floating Plants and upgrades, how much energy went unspent, how often did placement give up.
 - Calibrate accuracy from the AIs' realized hit rate against the human's 58-67%.
 - Lasers: one throwaway match with `EnableLasers = true` (the human won with 35 lasers).

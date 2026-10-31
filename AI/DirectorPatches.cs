@@ -166,7 +166,7 @@ namespace InterplanetaryAI
             {
                 DirectorState d = StateOf(core.PlayerData);
                 if (d.Turn != GameManager.CurrentTurn) BeginTurn(core, economy, 0f, GameManager.CurrentTurn);
-                if (!d.Started) StartConstruction(core, d);
+                if (!d.Started) StartConstruction(core, d, economy);
                 if (d.Waiting)
                 {
                     // Construction stays open while queued placements resolve, so the cost of an abandoned
@@ -204,7 +204,7 @@ namespace InterplanetaryAI
             }
         }
 
-        private static void StartConstruction(AICore core, DirectorState d)
+        private static void StartConstruction(AICore core, DirectorState d, EconomyPatches.AiEconomyState economy)
         {
             d.Started = true;
             d.SlotsAtStart = CountFreeSlots(core);
@@ -223,6 +223,7 @@ namespace InterplanetaryAI
                 int reserve = EconomyDirector.DefenseReserve(d.OwnDefenses, d.VisibleEnemyWeapons, d.EnemiesAlive, d.RecentDamage,
                     150f, 125f, Plugin.DefenseReserveShare.Value, d.EnergyIncome);
                 reserve = Math.Max(0, Math.Min(reserve, core.Resources.Energy));
+                if (economy.BuyPending && !economy.Bought) reserve = Math.Min(reserve, Math.Max(0, core.Resources.Energy - economy.GoalEnergyCost));
                 core.Resources.Energy -= reserve;
                 core.Construction.ConstructionQueue.AllottedEnergy -= reserve;
                 d.DefenseReserve = reserve;
@@ -270,9 +271,9 @@ namespace InterplanetaryAI
             // 3. Intel until we can read every enemy's production and population (v0.4). Native intel need
             // counts only guided weapons, so a Railgun army stayed blind all game (31 Oct v0.3.1).
             IntelEvaluationState intel = IntelState(core);
-            bool wantIntel = intel == IntelEvaluationState.BelowMinimum
-                || (d.BlindEnemies > 0 && d.IntelBuildings + d.IntelThisTurn < Plugin.MaxIntelBuildings.Value);
-            if (wantIntel && d.IntelThisTurn < Plugin.IntelPerTurn.Value && d.SlotsLeft > 0 && !d.FailedThisTurn.Contains("intel"))
+            bool intelRoom = d.IntelBuildings + d.IntelThisTurn < Plugin.MaxIntelBuildings.Value && d.IntelThisTurn < Plugin.IntelPerTurn.Value;
+            bool wantIntel = intel == IntelEvaluationState.BelowMinimum || d.BlindEnemies > 0;
+            if (wantIntel && intelRoom && d.SlotsLeft > 0 && !d.FailedThisTurn.Contains("intel"))
             {
                 if (TryIntelBuilding(construction, core, d)) return true;
                 d.FailedThisTurn.Add("intel");
@@ -307,7 +308,8 @@ namespace InterplanetaryAI
             if (TryEconomy(construction, core, economy, d)) return true;
 
             // 7. Preferred intel once at war.
-            if (d.War && intel == IntelEvaluationState.BelowPreferred && d.PreferredIntelAttempts < 1 && d.SlotsLeft > 0)
+            if (d.War && intel == IntelEvaluationState.BelowPreferred && d.PreferredIntelAttempts < 1 && d.SlotsLeft > 0
+                && d.IntelBuildings + d.IntelThisTurn < Plugin.MaxIntelBuildings.Value && d.IntelThisTurn < Plugin.IntelPerTurn.Value)
             {
                 d.PreferredIntelAttempts++;
                 if (TryIntelBuilding(construction, core, d)) return true;
@@ -327,7 +329,15 @@ namespace InterplanetaryAI
         private static bool TryBuySuperweapon(AIConstruction construction, AICore core, EconomyPatches.AiEconomyState economy, DirectorState d)
         {
             if (!construction.IsEntityAvailable(economy.Goal)) return false;
-            if (core.Resources.Energy < economy.GoalEnergyCost || core.Resources.Material < economy.GoalMaterialCost) return false;
+            if (core.Resources.Material < economy.GoalMaterialCost) return false;
+            if (core.Resources.Energy < economy.GoalEnergyCost)
+            {
+                // Material is there, energy is not: hold the material for next turn and ask for power.
+                economy.EnergyPush = true;
+                core.Resources.Material -= economy.GoalMaterialCost;
+                core.Construction.ConstructionQueue.AllottedMaterial -= economy.GoalMaterialCost;
+                return false;
+            }
             bool needsSlot = !(economy.Goal.Building.distribute_power.IsValueSet && economy.Goal.Building.distribute_power.Value);
             if (needsSlot && d.SlotsLeft <= 0)
             {
@@ -509,8 +519,11 @@ namespace InterplanetaryAI
                 if (best == null) return false;
                 if (Execute(construction, core, d, best))
                 {
-                    d.EnergyIncome += best.EnergyGain;
-                    d.MaterialIncome += best.MaterialGain;
+                    if (!best.SavesReserve)
+                    {
+                        d.EnergyIncome += best.EnergyGain;
+                        d.MaterialIncome += best.MaterialGain;
+                    }
                     return true;
                 }
                 options.Remove(best);
@@ -571,7 +584,6 @@ namespace InterplanetaryAI
                 bool drainsPlanet = Value(data.turn_cost_planet_material) > 0;
                 bool limitedPlanet = drainsPlanet && Plugin.PlanetEfficiency.Value && GameSessionManager.CurrentGameSettings.PlanetMaterial != -1;
                 UpgradeData efficiency = null;
-                bool hasEfficiency = false;
                 if (limitedPlanet)
                 {
                     foreach (UpgradeData candidate in upgrades.GetAvailableBuildingUpgrades(data.id.Value))
@@ -580,17 +592,18 @@ namespace InterplanetaryAI
                         if (FloatValue(candidate.turn_cost_planet_material_multiplier, 1f) < 1f && FloatValue(candidate.turn_yield_material_multiplier, 1f) <= 1f)
                         {
                             efficiency = candidate;
-                            hasEfficiency = building.Upgrades.HasUpgrade(candidate) || d.PlannedUpgradeKeys.Contains(building.ObjectId + ":" + candidate.id.Value);
                             break;
                         }
                     }
                 }
                 string installed = "";
+                float planetDrainMultiplier = 1f;
                 foreach (UpgradeData current in building.Upgrades.CurrentUpgrades)
                 {
                     if (current == null) continue;
                     energyMultiplier *= FloatValue(current.turn_yield_energy_multiplier, 1f);
                     materialMultiplier *= FloatValue(current.turn_yield_material_multiplier, 1f);
+                    planetDrainMultiplier *= FloatValue(current.turn_cost_planet_material_multiplier, 1f);
                     installed += current.id.Value + ";";
                 }
                 foreach (UpgradeData upgrade in upgrades.GetAvailableBuildingUpgrades(data.id.Value))
@@ -601,14 +614,24 @@ namespace InterplanetaryAI
                     if (d.PlannedUpgradeKeys.Contains(key) || d.FailedThisTurn.Contains("upg:" + key)) continue;
                     float energyGain = baseEnergy * globalEnergy * energyMultiplier * (FloatValue(upgrade.turn_yield_energy_multiplier, 1f) - 1f);
                     float materialGain = baseMaterial * globalMaterial * materialMultiplier * (FloatValue(upgrade.turn_yield_material_multiplier, 1f) - 1f) * planetFactor;
+                    bool savesReserve = false;
                     if (efficiency != null && upgrade == efficiency)
                     {
-                        // Valued as the extra material the planet will give over the game: drain x0.7 = +43% per unit drained.
-                        materialGain = baseMaterial * globalMaterial * materialMultiplier * (1f / FloatValue(upgrade.turn_cost_planet_material_multiplier, 1f) - 1f);
+                        // The refinery lowers the planet drain, not production. The reserve shrinks by
+                        // max(cost, production), so it saves only while cost > production, and nothing on an empty
+                        // planet. Value: drain saved x material per unit drained (production / cost).
+                        PlayerResourceHandler res = me.ResourceHandler;
+                        float cost = res.PlanetMaterialCost, production = res.MaterialProductionPerTurn;
+                        if (res.PlanetMaterial <= 0 || cost <= production || cost <= 0f) continue;
+                        float buildingDrain = Value(data.turn_cost_planet_material) * planetDrainMultiplier;
+                        float saved = Math.Min(buildingDrain * (1f - FloatValue(upgrade.turn_cost_planet_material_multiplier, 1f)), cost - production);
+                        energyGain = 0f;
+                        materialGain = saved * (production / cost);
+                        savesReserve = true;
                     }
-                    else if (efficiency != null && !hasEfficiency && materialMultiplier > 1f && materialGain > 0f)
+                    else if (limitedPlanet && materialMultiplier > 1f && FloatValue(upgrade.turn_yield_material_multiplier, 1f) > 1f)
                     {
-                        continue; // keep the second slot for the refinery
+                        continue; // one yield upgrade per mine on a limited planet: the other slot is for the refinery
                     }
                     if (energyGain <= 0f && materialGain <= 0f) continue;
                     if (!seen.Add(data.id.Value + "|" + installed + "|" + upgrade.id.Value + "|" + planned)) continue;
@@ -620,6 +643,7 @@ namespace InterplanetaryAI
                         Material = Value(upgrade.build_cost_material),
                         EnergyGain = energyGain,
                         MaterialGain = materialGain,
+                        SavesReserve = savesReserve,
                         Payload = upgrade,
                         Target = building,
                     });
@@ -924,6 +948,7 @@ namespace InterplanetaryAI
                 }
             }
             if (data.defense_functionality.IsValueSet) d.DefensesThisTurn = Math.Max(0, d.DefensesThisTurn - 1);
+            if (Value(data.turn_yield_intel) > 0) d.IntelThisTurn = Math.Max(0, d.IntelThisTurn - 1);
         }
 
         // ---- logging -------------------------------------------------------------------------------

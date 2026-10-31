@@ -4,6 +4,7 @@ using System.Reflection;
 using HarmonyLib;
 using Interplanetary.AI;
 using Interplanetary.AI.Evaluation;
+using Interplanetary.GameDataFiles;
 using Interplanetary.GameEngine;
 using Interplanetary.GameSession;
 using Interplanetary.PlayerDataManagement;
@@ -161,11 +162,13 @@ namespace InterplanetaryAI
                 // v0.4 endgame bank: before a superweapon is available, keep material back once the planet is
                 // about to run dry (after that only the bank is left to buy it with).
                 state.Bank = 0;
-                if (Plugin.DirectorEnabled.Value && Plugin.SuperweaponSavings.Value && state.Goal == null && GameSessionManager.CurrentGameSettings.PlanetMaterial != -1)
+                if (Plugin.DirectorEnabled.Value && Plugin.SuperweaponSavings.Value && state.Goal == null && GameSessionManager.CurrentGameSettings.PlanetMaterial != -1
+                    && SuperweaponResearchQueued(me))
                 {
                     PlayerResourceHandler res = me.ResourceHandler;
                     float drain = Math.Max(res.PlanetMaterialCost, res.MaterialProductionPerTurn);
-                    state.Bank = EconomyDirector.EndgameBank(res.PlanetMaterial, drain, Plugin.BankWarningTurns.Value, Plugin.EndgameBankMaterial.Value, Math.Max(0, core.Resources.Material));
+                    // Never more than half the stock: the AI keeps an operating budget while it waits.
+                    state.Bank = EconomyDirector.EndgameBank(res.PlanetMaterial, drain, Plugin.BankWarningTurns.Value, Plugin.EndgameBankMaterial.Value, Math.Max(0, core.Resources.Material) / 2);
                     core.Resources.Material -= state.Bank;
                     core.Construction.ConstructionQueue.AllottedMaterial -= state.Bank;
                 }
@@ -179,6 +182,26 @@ namespace InterplanetaryAI
             {
                 ReportOnce("economy-begin-turn", e);
             }
+        }
+
+        // True while research toward a not-yet-available superweapon is queued: the bank waits only for a
+        // weapon that is actually coming (a disabled, capped or unreachable one never releases it otherwise).
+        private static bool SuperweaponResearchQueued(PlayerData me)
+        {
+            BuildingsData buildings = GameDataFileManager.GetDataFile<BuildingsData>();
+            PlayerTechnologyHandler tech = me.TechnologyHandler;
+            foreach (string id in Plugin.SuperweaponIds)
+            {
+                BuildingData data = buildings.GetBuilding(id);
+                if (data == null || me.BuildingHandler.AvailableBuildings.IsBuildingAvailable(data)) continue;
+                List<GameData_TechData> unlocks = tech.GetBuildingUnlockRequirementList(id);
+                if (unlocks == null) continue;
+                foreach (GameData_TechData t in unlocks)
+                {
+                    if (t != null && tech.GetTechnologyIsInQueue(t.id.Value)) return true;
+                }
+            }
+            return false;
         }
 
         private static AIBuildingEntity FindSuperweaponGoal(AICore core)

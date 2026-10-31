@@ -228,6 +228,15 @@ namespace InterplanetaryAI.Tests
             float ratio = enemies[1].Score / enemies[0].Score;
             Check(ratio > 1f && ratio < 1.6f, "blind: the attacker scores higher but not overwhelmingly (" + ratio.ToString("0.00") + "x)");
             Check(Math.Abs(enemies[0].Score - enemies[2].Score) < 1e-5f, "blind: enemies we know nothing about score alike");
+
+            // What matters is where the weapons go (Terra v0.4 finding 3): not 70% at the one who hit us.
+            List<WeaponSlot> weapons = new List<WeaponSlot>();
+            for (int i = 0; i < 1000; i++) weapons.Add(new WeaponSlot { WeaponKey = "w" + i });
+            int[] assigned = TargetPlanner.Assign(enemies, weapons, new PlannerSettings { GrudgeWeight = 0.35f }, new Random(7));
+            int[] counts = new int[3];
+            foreach (int a in assigned) counts[a]++;
+            Check(counts[1] < 600, "blind: the attacker gets under 60% of the weapons (" + counts[1] + "/1000)");
+            Check(counts[0] >= 200 && counts[2] >= 200, "blind: every other enemy still draws fire (" + counts[0] + ", " + counts[2] + ")");
         }
 
         private static void UnknownEnemyIsNotIgnored()

@@ -30,6 +30,7 @@ namespace InterplanetaryAI.Brain
         public float MaterialGain;
         public float ScienceGain;
         public bool NeedsSlot;
+        public bool SavesReserve; // gain is planet material saved (refinery), not production: never counted as income
         public object Payload;  // adapter data (BuildingData, UpgradeData, AIProjectEntity)
         public object Target;   // adapter data (the building an upgrade goes on)
 

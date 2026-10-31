@@ -42,6 +42,11 @@ namespace InterplanetaryAI.Brain
         // spreads its fire instead of locking onto whoever hit it (31 Oct v0.3.1: all four AIs were blind
         // and grudges alone turned them on each other).
         public float UnknownEconomyShare = 0.8f;
+        // Focus fire scales with how clearly the top enemy leads: none below FocusRatioLow x the second score,
+        // full FocusShare from FocusRatioHigh x. A narrow lead (a grudge among enemies we cannot see) spreads fire
+        // instead of starting a vendetta; a runaway leader still draws the focus.
+        public float FocusRatioLow = 1.5f;
+        public float FocusRatioHigh = 2.5f;
         public float HumanBias = 1.0f;    // multiplier on human enemies; 1 = no favouritism
     }
 
@@ -97,7 +102,12 @@ namespace InterplanetaryAI.Brain
             byScore.Sort((a, b) => enemies[b].Score.CompareTo(enemies[a].Score));
             int top = byScore[0];
 
-            int focusCount = (int)Math.Round(settings.FocusShare * weapons.Count, MidpointRounding.AwayFromZero);
+            float topScore = enemies[top].Score;
+            float secondScore = byScore.Count > 1 ? enemies[byScore[1]].Score : 0f;
+            float ratio = secondScore > 0f ? topScore / secondScore : float.MaxValue;
+            float span = Math.Max(1e-3f, settings.FocusRatioHigh - settings.FocusRatioLow);
+            float focus = settings.FocusShare * Math.Max(0f, Math.Min(1f, (ratio - settings.FocusRatioLow) / span));
+            int focusCount = (int)Math.Round(focus * weapons.Count, MidpointRounding.AwayFromZero);
             for (int w = 0; w < weapons.Count; w++)
             {
                 int wanted = w < focusCount ? top : WeightedPick(enemies, rng);
