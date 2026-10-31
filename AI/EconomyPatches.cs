@@ -134,21 +134,24 @@ namespace InterplanetaryAI
                         // (AIConstruction.tryConstructPowerGeneratingBuilding). Keep the goal reserved, build one
                         // generator from what is left, and buy next turn when the slot exists.
                         state.NeedSlotForGoal = true;
-                        reserveEnergy = Math.Min(stockEnergy, state.GoalEnergyCost);
                         reserveMaterial = Math.Min(stockMaterial, state.GoalMaterialCost);
-                        core.Resources.Energy -= reserveEnergy;
                         core.Resources.Material -= reserveMaterial;
-                        core.Construction.ConstructionQueue.AllottedEnergy -= reserveEnergy;
                         core.Construction.ConstructionQueue.AllottedMaterial -= reserveMaterial;
                     }
                     else
                     {
-                        reserveEnergy = Savings.NextReserve(state.ReservedEnergy, stockEnergy, state.GoalEnergyCost, Plugin.SaveShare.Value);
+                        // Only material is saved. Energy does not carry over (PlayerResourceHandler.TurnStartInit sets
+                        // Energy = EnergyProductionPerTurn every turn), so an energy reserve only starves construction:
+                        // in the 31 Oct match it froze all four AIs' building from turn 25 to the end.
                         reserveMaterial = Savings.NextReserve(state.ReservedMaterial, stockMaterial, state.GoalMaterialCost, Plugin.SaveShare.Value);
-                        core.Resources.Energy -= reserveEnergy;
                         core.Resources.Material -= reserveMaterial;
-                        core.Construction.ConstructionQueue.AllottedEnergy -= reserveEnergy;
                         core.Construction.ConstructionQueue.AllottedMaterial -= reserveMaterial;
+                        // Material is ready but this turn's usable energy (income minus weapon firing upkeep) is short:
+                        // the fix is more energy income, so tilt construction toward power.
+                        if (reserveMaterial >= state.GoalMaterialCost && stockEnergy < state.GoalEnergyCost)
+                        {
+                            state.Weights[(int)BuildCategory.Energy] *= 3f;
+                        }
                     }
                 }
                 state.ReservedEnergy = reserveEnergy;
