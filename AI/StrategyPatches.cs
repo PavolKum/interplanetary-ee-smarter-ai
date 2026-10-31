@@ -36,6 +36,22 @@ namespace InterplanetaryAI
         private static readonly Dictionary<int, State> s_states = new Dictionary<int, State>();
         private static readonly HashSet<string> s_reportedErrors = new HashSet<string>();
         private static readonly FieldInfo s_coreTargeting = AccessTools.Field(typeof(AICore), "m_weaponTargeting");
+        // v0.12: AICore is ready once m_timeOut seconds have passed since its BeginTurn and the human has ended the turn (or
+        // every weapon found a trajectory). The trajectory search runs only until then: 20 s in the game.
+        private static readonly FieldInfo s_coreTimeOut = AccessTools.Field(typeof(AICore), "m_timeOut");
+        internal const float NativeAimWindow = 20f;
+
+        internal static void SetAimWindow(AICore core, float seconds)
+        {
+            try
+            {
+                if (s_coreTimeOut != null && core != null) s_coreTimeOut.SetValue(core, Math.Max(NativeAimWindow, Math.Min(120f, seconds)));
+            }
+            catch (Exception e)
+            {
+                ReportOnce("aim-window", e);
+            }
+        }
 
         internal static void Reset()
         {
@@ -208,6 +224,8 @@ namespace InterplanetaryAI
             int aimedBefore = state.LastCommitId;
             state.LastCommitId = decision.CommitTargetId;
             if (!decision.Fire) Release(core, state);
+            // v0.12: a strike turn gets the long aiming window; a hold turn keeps the game's 20 s (nothing will fire).
+            SetAimWindow(core, decision.Fire ? Plugin.AimingWindowSeconds.Value : NativeAimWindow);
             // Point the weapons. Native targeting already ran in AICore.BeginTurn; trajectory search starts in Update.
             AssignTargets(core, decision.CommitTargetId);
             Log(me, turn, decision, state, aimedBefore);
@@ -220,9 +238,9 @@ namespace InterplanetaryAI
         {
             State s;
             if (!s_states.TryGetValue(me.PlayerID, out s) || s.Decision == null || !s.Decision.Fire) return false;
-            if (s.Decision.Reason == "max-hold") return false; // the fallback fires whatever it has
-            float needed = Math.Max(Plugin.StrategyCfg.MinWeapons, Plugin.StrategyCfg.AbortBelowShare * s.Decision.Shots);
-            if (hitsOnCommit >= needed) return false;
+            // v0.12: fire what can aim; only a strike with almost nothing aimed is called off (Strategy.ShouldAbort).
+            if (!Strategy.ShouldAbort(hitsOnCommit, s.Decision.Shots, s.Decision.Reason, Plugin.StrategyCfg)) return false;
+            float needed = Strategy.AbortThreshold(s.Decision.Shots, Plugin.StrategyCfg);
             s.Aborted = true;
             Plugin.WriteDecision(new Json().Str("e", "abort").Int("t", s.Turn).Str("ai", me.UserNickName)
                 .Int("hitsOnCommit", hitsOnCommit).Num("needed", needed).Int("shots", s.Decision.Shots).ToString());

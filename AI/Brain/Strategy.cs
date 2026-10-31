@@ -46,7 +46,10 @@ namespace InterplanetaryAI.Brain
         // shots through and so struck the other AI six times running while the human was the softer target every time.
         public float LeaderInfluence = 0.5f;
         public float CommitStickiness = 1.25f; // keep last turn's target unless another is worth this much more
-        public float AbortBelowShare = 0.3f;   // at firing time, call a strike off below this share of weapons on target
+        // At firing time, call a strike off below max(AbortBelowWeapons, AbortBelowShare x weapons) on target. v0.12: share 0
+        // (v0.11.1 aborted 13 of 26 strikes at 30%, throwing away 6-15 aimed weapons while energy went unspent).
+        public float AbortBelowShare = 0f;
+        public int AbortBelowWeapons = 3;
         public float BigSalvoShots = 24f;     // this many expected through fires whatever the share (v0.10.1: 40 held at 44%)
         public float RollEnergyShare = 0.5f;   // share of its energy income a defender has left for rolls
         public float RollCost = 150f;          // energy per defense roll
@@ -144,6 +147,19 @@ namespace InterplanetaryAI.Brain
             target.Eligible = eligible;
             target.Passing = Math.Max(0f, arriving - intercepts * paid);
             target.Value = target.Passing; // Decide adds the leader term across targets
+        }
+
+        // v0.12: at firing time, call the strike off when fewer than this many weapons found a trajectory onto the committed
+        // target. The max-hold fallback fires whatever it has.
+        public static float AbortThreshold(int weapons, StrategySettings s)
+        {
+            return Math.Max(Math.Max(1, s.AbortBelowWeapons), s.AbortBelowShare * weapons);
+        }
+
+        public static bool ShouldAbort(int hitsOnCommit, int weapons, string reason, StrategySettings s)
+        {
+            if (reason == "max-hold") return false;
+            return hitsOnCommit < AbortThreshold(weapons, s);
         }
 
         // lastStrikeTurn: last turn we fired (-1000 never); holdTurns: consecutive war turns held with weapons;

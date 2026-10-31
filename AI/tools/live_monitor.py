@@ -105,8 +105,17 @@ def main():
                       f"bld {sum(buildings.values())} [{top}] upg {r['upgradesInstalled']} slots {r['slotsAtStart']}"
                       f" intel {r.get('intelBuildings', '?')} blind {r.get('blindEnemies', '?')} reserveE {r.get('defenseReserve', '?')}"
                       f"{' WAR' if r['war'] else ''}{' HOLD+' + str(r.get('releasedEnergy')) + 'E' if r.get('holdingFire') else ''}"
-                      f"{' GLUT' if r.get('materialGlut') else ''}{' EGLUT' if r.get('energyGlut') else ''} | {describe_queued(r.get('queued') or {})} | unspent E{r['energyLeft']}"
+                      f"{' GLUT' if r.get('materialGlut') else ''}{' EGLUT' if r.get('energyGlut') else ''}{' ESAT' if r.get('energySaturated') else ''}"
+                      f" planet {e.get('planetMaterial', '?')} stockM {r.get('materialStart', '?')}"
+                      f"{' keepM ' + str(r.get('materialReserve')) if r.get('materialReserve') else ''}"
+                      f"{' SOLD ' + str(r.get('soldMines')) + ' mines +' + str(r.get('soldMaterial')) + 'M' if r.get('soldMines') else ''}"
+                      f" aimedW {r.get('aimedWeapons', '?')}"
+                      f" | {describe_queued(r.get('queued') or {})} | unspent E{r['energyLeft']}"
                       + (f" | placement gave up {fails}" if fails else ""), flush=True)
+            elif kind == "fire":
+                if (r.get("firingHits", 0) or 0) + (r.get("firingMisses", 0) or 0) > 0 or (r.get("primaryFound", 0) or 0) > 0:
+                    print(f"T{r['t']} {r['ai']}: aimed {r.get('primaryFound')}/{r.get('powered')} live weapons {r.get('primaryByTarget')}"
+                          f" -> firing {r.get('firingHits')} hits + {r.get('firingMisses')} misses; unreachable marked {r.get('unreachableMarked', '?')}", flush=True)
             elif kind == "strategy":
                 passing = r.get("passingBy") or {}
                 defenses = r.get("defensesBy") or {}

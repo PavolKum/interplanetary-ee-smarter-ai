@@ -22,7 +22,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.11.1";
+        public const string VERSION = "0.12.0";
 
         internal static ManualLogSource Log;
 
@@ -98,6 +98,14 @@ namespace InterplanetaryAI
         internal static ConfigEntry<float> LeaderInfluence;
         internal static ConfigEntry<float> BigSalvoShots;
         internal static ConfigEntry<float> AbortBelowShare;
+        internal static ConfigEntry<int> AbortBelowWeapons;
+        internal static ConfigEntry<float> AimingWindowSeconds;
+        internal static ConfigEntry<float> ReachFailMinShare;
+        internal static ConfigEntry<int> MaxWeapons;
+        internal static ConfigEntry<int> MaterialHorizonTurn;
+        internal static ConfigEntry<int> MaterialReserve;
+        internal static ConfigEntry<float> EnergySaturation;
+        internal static ConfigEntry<int> SellDryMinesPerTurn;
         internal static ConfigEntry<bool> CounterResearch;
         internal static ConfigEntry<bool> StrategyEnabled;
         internal static ConfigEntry<int> StrikeEvery;
@@ -312,8 +320,17 @@ namespace InterplanetaryAI
                 "v0.10: material counts as in glut once the banked stock is this many times the turn's energy budget; energy gains then count fully, material gains and material cost at 0.25. 0 = off.");
             MaterialGlutMin = Config.Bind("Director", "MaterialGlutMin", 5000, "Smallest material stock that counts as glut.");
             EnergyGlutShare = Config.Bind("Director", "EnergyGlutShare", 0.3f,
-                "v0.11: energy counts as in glut when last turn ended with at least this share of its energy budget unspent; material gains then count fully, energy gains and energy cost at 0.25, and weapon upgrades are ranked by damage per building. 0 = off.");
+                "v0.11: energy counts as in glut when last turn ended with at least this share of its energy budget unspent; material gains then count fully, energy gains not at all (v0.12), energy cost at 0.25, and weapon upgrades are ranked by damage per building. 0 = off.");
             EnergyGlutMin = Config.Bind("Director", "EnergyGlutMin", 5000, "Smallest unspent energy that counts as glut.");
+            MaxWeapons = Config.Bind("Director", "MaxWeapons", 30,
+                "v0.12: most aimed weapons (all but lasers and superweapons) per AI. The game's trajectory search is time-bound: v0.11.1 aimed 2-15 of ~50 at the human. Surplus goes to weapon upgrades. 0 = no cap.");
+            MaterialHorizonTurn = Config.Bind("Director", "MaterialHorizonTurn", 45,
+                "v0.12: the planet's remaining material is budgeted to last until this turn. Energy income above EnergySaturation x what that material can use is not built. v0.11.1 AIs ran their planets dry at T26-27, the human at T38.");
+            EnergySaturation = Config.Bind("Director", "EnergySaturation", 1.5f, "v0.12: see MaterialHorizonTurn. 0 = off.");
+            MaterialReserve = Config.Bind("Director", "MaterialReserve", 15000,
+                "v0.12: once the planet will run dry within BankWarningTurns, the economy keeps this much material back for defenses, weapons and rebuilding. 0 = off.");
+            SellDryMinesPerTurn = Config.Bind("Director", "SellDryMinesPerTurn", 10,
+                "v0.12: once the planet is dry, sell this many mines a turn (they yield nothing; selling returns 80% of their material and upgrades). 0 = off.");
             CounterResearch = Config.Bind("Research", "CounterResearch", true,
                 "v0.11: when a known enemy weapon has no counter-defense we can build (Lasers -> Shield), research the tech that unlocks it next.");
 
@@ -329,8 +346,13 @@ namespace InterplanetaryAI
             LeaderInfluence = Config.Bind("Strategy", "LeaderInfluence", 0.5f,
                 "v0.11: commit value = expected shots through x (1 + this x target score / best score). v0.10.1 used score x shots through and struck the other AI while the human was the softer target.");
             BigSalvoShots = Config.Bind("Strategy", "BigSalvoShots", 24f, "Strike when this many shots are expected through, whatever share of the salvo that is.");
-            AbortBelowShare = Config.Bind("Strategy", "AbortBelowShare", 0.3f,
-                "At firing time, call a strike off when fewer than this share of the weapons found a trajectory onto the committed target (at least MinWeapons).");
+            AbortBelowShare = Config.Bind("Strategy", "AbortBelowShare", 0f,
+                "At firing time, call a strike off when fewer than max(AbortBelowWeapons, this share of the weapons) found a trajectory onto the committed target. v0.12: 0 (v0.11.1 aborted 13 of 26 strikes at 0.3).");
+            AbortBelowWeapons = Config.Bind("Strategy", "AbortBelowWeapons", 3, "v0.12: call a strike off when fewer than this many weapons found a trajectory onto the committed target.");
+            AimingWindowSeconds = Config.Bind("Strategy", "AimingWindowSeconds", 40f,
+                "v0.12: on a strike turn the AI keeps searching for trajectories until this many seconds after its turn began, or the human ends the turn if later (the game: 20). Hold turns keep 20. Longer = more weapons aimed, more waiting between turns. 20-120.");
+            ReachFailMinShare = Config.Bind("Strategy", "ReachFailMinShare", 0.5f,
+                "v0.12: a weapon that found no trajectory marks its target unreachable only when at least this share of the weapons aimed at that target found one (otherwise the search ran out of time).");
             RollEnergyShare = Config.Bind("Strategy", "RollEnergyShare", 0.5f, "Share of a target's energy income assumed left for its defense rolls (150 energy each).");
 
             DirectorEnabled = Config.Bind("Director", "Enabled", true,
@@ -379,6 +401,15 @@ namespace InterplanetaryAI
                     Log.LogInfo("ScienceMaxMultiplier: replaced the unchanged default 4 with 2.5 (once).");
                 }
                 migrated.Value = "0.10";
+            }
+            if (migrated.Value == "0.10")
+            {
+                if (Math.Abs(AbortBelowShare.Value - 0.3f) < 1e-4f)
+                {
+                    AbortBelowShare.Value = 0f; // v0.11.1: aborted 13 of 26 strikes, throwing away 6-15 aimed weapons each
+                    Log.LogInfo("AbortBelowShare: replaced the unchanged default 0.3 with 0 (once).");
+                }
+                migrated.Value = "0.12";
             }
             DefensesPerTurn = Config.Bind("Director", "DefensesPerTurn", 3,
                 "Defenses queued per turn when on target; more when behind (see DefenseCatchUpTurns).");
@@ -499,6 +530,7 @@ namespace InterplanetaryAI
             StrategyCfg.LeaderInfluence = Math.Max(0f, LeaderInfluence.Value);
             StrategyCfg.BigSalvoShots = Math.Max(StrategyCfg.MinPassingShots, BigSalvoShots.Value);
             StrategyCfg.AbortBelowShare = Clamp01(AbortBelowShare.Value);
+            StrategyCfg.AbortBelowWeapons = Math.Max(1, AbortBelowWeapons.Value);
 
             Build.Growth = BuildPlanner.Parse(GrowthWeights.Value, Build.Growth);
             Build.Pressure = BuildPlanner.Parse(PressureWeights.Value, Build.Pressure);

@@ -82,6 +82,38 @@ namespace InterplanetaryAI.Brain
             else failed[targetId] = turn;
         }
 
+        // v0.12: one turn's search results. A failure counts as "out of reach" only when enough weapons aimed at the same
+        // target did find a trajectory (minFoundShare): otherwise the search ran out of time (the native search runs only
+        // during the human's turn), not out of geometry. v0.11.1: 2-15 of ~50 weapons found one, the rest marked the target
+        // unreachable, and the committed target flipped every turn. Successes always count. Returns failures recorded.
+        public int ReportTurn(IList<string> weaponKeys, IList<int> targetIds, IList<bool> found, int turn, float minFoundShare)
+        {
+            Dictionary<int, int[]> byTarget = new Dictionary<int, int[]>(); // target -> [aimed, found]
+            for (int i = 0; i < targetIds.Count; i++)
+            {
+                int[] c;
+                if (!byTarget.TryGetValue(targetIds[i], out c)) { c = new int[2]; byTarget[targetIds[i]] = c; }
+                c[0]++;
+                if (found[i]) c[1]++;
+            }
+            int recorded = 0;
+            for (int i = 0; i < weaponKeys.Count; i++)
+            {
+                if (found[i])
+                {
+                    Report(weaponKeys[i], targetIds[i], turn, true);
+                    continue;
+                }
+                int[] c = byTarget[targetIds[i]];
+                if (c[1] >= minFoundShare * c[0])
+                {
+                    Report(weaponKeys[i], targetIds[i], turn, false);
+                    recorded++;
+                }
+            }
+            return recorded;
+        }
+
         public void FillUnreachable(string weaponKey, int turn, HashSet<int> into)
         {
             into.Clear();

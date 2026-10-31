@@ -53,7 +53,16 @@ namespace InterplanetaryAI.Brain
         public bool MaterialGlut;     // v0.10: more material banked than energy can turn into anything
         public float GlutMaterialWeight = 0.25f;
         public bool EnergyGlut;       // v0.11: last turn ended with much of its energy unspent (material or space bound)
-        public float GlutEnergyWeight = 0.25f;
+        public float GlutEnergyWeight = 0.25f; // energy cost factor in energy glut
+        // v0.12: energy gains are worth this much in energy glut or energy saturation (v0.11.1: ~180 Floating Plants per AI
+        // bought with the last of the planet's material while energy went unspent).
+        public float GlutEnergyGainWeight = 0f;
+        // v0.12: material per turn the planet can still supply to the horizon turn (planet material left / turns left);
+        // -1 = unlimited planet. Planet drain is max(production, planet cost) (PlayerResourceHandler), so yield multipliers
+        // only spend the fixed planet pool faster.
+        public float SustainableMaterialIncome = -1f;
+        public float EnergySaturation = 1.5f; // energy income above this multiple of the wanted energy is saturated
+        public int MaterialReserve;           // v0.12: material the economy may not spend (planet about to run dry)
     }
 
     public sealed class WeaponStats
@@ -71,20 +80,20 @@ namespace InterplanetaryAI.Brain
         // Which resource is short against the target ratio decides the weights.
         public static void Weights(EconomyBalance b, out float energyWeight, out float materialWeight)
         {
-            float wantedEnergy = b.TargetRatio * b.MaterialIncome + b.WeaponUpkeep;
-            if (b.MaterialGlut)
+            float wantedEnergy = WantedEnergy(b);
+            if (b.EnergyGlut || EnergySaturated(b))
+            {
+                // v0.12: more energy is worthless when it already goes unspent, or exceeds what the planet's remaining material
+                // can use. v0.11.1 ranked material glut first and turned the last material into Floating Plants.
+                energyWeight = b.GlutEnergyGainWeight;
+                materialWeight = b.MaterialGlut ? b.GlutMaterialWeight : 1f;
+            }
+            else if (b.MaterialGlut)
             {
                 // v0.10: v0.9.1 Guts banked 15-37k material from T19 while energy-bound, and still preferred material
                 // gains (energy income sat just above 0.6 x material income + upkeep).
                 energyWeight = 1f;
                 materialWeight = b.GlutMaterialWeight;
-            }
-            else if (b.EnergyGlut)
-            {
-                // v0.11: v0.10.1 AIs ended turns with 8-59k energy unspent from T22 (material, then planet space binding)
-                // while still preferring energy gains.
-                energyWeight = b.GlutEnergyWeight;
-                materialWeight = 1f;
             }
             else if (b.EnergyPush || b.EnergyIncome < wantedEnergy)
             {
@@ -96,6 +105,37 @@ namespace InterplanetaryAI.Brain
                 energyWeight = 0.5f;
                 materialWeight = 1f;
             }
+        }
+
+        // Energy income wanted: TargetRatio x material income (capped by what the planet can sustain) + weapon upkeep.
+        public static float WantedEnergy(EconomyBalance b)
+        {
+            float material = b.SustainableMaterialIncome >= 0f ? Math.Min(b.MaterialIncome, b.SustainableMaterialIncome) : b.MaterialIncome;
+            return b.TargetRatio * material + b.WeaponUpkeep;
+        }
+
+        // v0.12: energy is saturated when the planet, not the mines, limits material (the remaining pool cannot sustain the
+        // current extraction to the horizon) and energy income is above EnergySaturation x the wanted energy.
+        public static bool EnergySaturated(EconomyBalance b)
+        {
+            if (b.EnergySaturation <= 0f || b.SustainableMaterialIncome < 0f || b.SustainableMaterialIncome >= b.MaterialIncome) return false;
+            return b.EnergyIncome >= b.EnergySaturation * Math.Max(1f, WantedEnergy(b));
+        }
+
+        // v0.12: material per turn the planet can supply until horizonTurn (at least minTurns ahead). -1 = unlimited planet.
+        public static float SustainableMaterialIncome(int planetMaterial, bool limited, int turn, int horizonTurn, int minTurns)
+        {
+            if (!limited) return -1f;
+            return Math.Max(0, planetMaterial) / (float)Math.Max(Math.Max(1, minTurns), horizonTurn - turn);
+        }
+
+        // v0.12: material the economy keeps back once the planet runs dry within warningTurns (for defenses, weapons and
+        // rebuilding after it does). v0.11.1: ~30 material at construction from T28, nothing could be rebuilt.
+        public static int EconomyReserve(int planetMaterial, float drainPerTurn, bool limited, int warningTurns, int reserve)
+        {
+            if (!limited || reserve <= 0) return 0;
+            bool soon = planetMaterial <= 0 || (drainPerTurn > 0f && planetMaterial / drainPerTurn <= warningTurns);
+            return soon ? reserve : 0;
         }
 
         // Energy is only "expensive" when this turn's energy budget is the tighter one.
@@ -134,9 +174,10 @@ namespace InterplanetaryAI.Brain
             float mFactor = b.MaterialGlut ? b.GlutMaterialWeight : 1f;
             EconOption best = null;
             float bestScore = 0f;
+            int materialBudget = b.MaterialBudget - Math.Max(0, b.MaterialReserve);
             foreach (EconOption o in options)
             {
-                if (o.Energy > b.EnergyBudget || o.Material > b.MaterialBudget) continue;
+                if (o.Energy > b.EnergyBudget || o.Material > materialBudget) continue;
                 if (o.NeedsSlot && slotsLeft <= 0) continue;
                 float score = Score(o, wE, wM, eFactor, b.ScienceWeight, mFactor);
                 if (score > bestScore)

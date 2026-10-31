@@ -41,6 +41,8 @@ namespace InterplanetaryAI
             {
                 PlayerData me = __instance.PlayerData;
                 if (!me.AIPlayer) return;
+                // v0.12: the long aiming window by default; with the strategy on, hold turns go back to the game's 20 s.
+                if (Plugin.Active) StrategyPatches.SetAimWindow(__instance, Plugin.AimingWindowSeconds.Value);
                 Plugin.WriteDecision(new Json()
                     .Str("e", "init").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName).Int("id", me.PlayerID).Int("lvl", me.AILevel)
                     .Bool("active", Plugin.Active).Num("acc", AccuracyPlan.ForLevel(Plugin.Accuracy, me.AILevel))
@@ -341,10 +343,15 @@ namespace InterplanetaryAI
                 int powered = 0, primary = 0, secondary = 0;
                 Dictionary<string, int> primaryByTarget = new Dictionary<string, int>();
                 Dictionary<string, int> assignedByTarget = new Dictionary<string, int>();
+                List<string> reachKeys = new List<string>();
+                List<int> reachTargets = new List<int>();
+                List<bool> reachFound = new List<bool>();
                 foreach (AITrajectoryWeapon weapon in weapons)
                 {
                     WeaponGameplayData data = weapon.TargetableWeapon != null ? weapon.TargetableWeapon.Weapon : null;
-                    if (data == null || data.Building == null || !data.Building.Power.HasPower) continue;
+                    // v0.12: live weapons only (the targetable list keeps destroyed weapons: v0.11.1 logged 53-54 to the end).
+                    if (data == null || data.Building == null || data.Building.CurrentState != BaseBuilding.BuildingState.Normal
+                        || !data.Building.Power.HasPower) continue;
                     powered++;
                     string targetName = weapon.TargetEnemy != null && weapon.TargetEnemy.Player != null ? weapon.TargetEnemy.Player.UserNickName : "?";
                     Increment(assignedByTarget, targetName);
@@ -359,9 +366,13 @@ namespace InterplanetaryAI
                     }
                     if (weapon.TargetEnemy != null && weapon.TargetEnemy.Player != null)
                     {
-                        Plugin.Reach.Report(WeaponKey(data), weapon.TargetEnemy.Player.PlayerID, turn, weapon.HasFoundPrimaryTargetTrajectory);
+                        reachKeys.Add(WeaponKey(data));
+                        reachTargets.Add(weapon.TargetEnemy.Player.PlayerID);
+                        reachFound.Add(weapon.HasFoundPrimaryTargetTrajectory);
                     }
                 }
+                // v0.12: failures count as "out of reach" only where most weapons at that target found a trajectory.
+                int unreachableMarked = Plugin.Reach.ReportTurn(reachKeys, reachTargets, reachFound, turn, Plugin.ReachFailMinShare.Value);
                 // v0.10: strike history follows what was actually put up for firing (0 on a hold turn).
                 StrategyPatches.ReportFired(core.PlayerData.PlayerID, (hitting != null ? hitting.Count : 0) + (missing != null ? missing.Count : 0));
 
@@ -370,7 +381,7 @@ namespace InterplanetaryAI
                     .Int("weapons", weapons.Count).Int("powered", powered).Int("primaryFound", primary).Int("secondaryOnly", secondary)
                     .Int("plannedHits", __instance.Hits).Int("plannedMisses", __instance.Misses)
                     .Int("firingHits", hitting != null ? hitting.Count : -1).Int("firingMisses", missing != null ? missing.Count : -1)
-                    .Map("assigned", assignedByTarget).Map("primaryByTarget", primaryByTarget).ToString());
+                    .Map("assigned", assignedByTarget).Map("primaryByTarget", primaryByTarget).Int("unreachableMarked", unreachableMarked).ToString());
             }
             catch (Exception e)
             {

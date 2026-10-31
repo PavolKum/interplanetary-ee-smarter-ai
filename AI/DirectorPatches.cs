@@ -98,6 +98,12 @@ namespace InterplanetaryAI
             public int LastEnergyLeft, LastEnergyBudget;
             public readonly Dictionary<string, int> AbandonedLastTurn = new Dictionary<string, int>();
             public readonly Dictionary<string, int> QueuedById = new Dictionary<string, int>();
+            // v0.12 material budget and weapon cap
+            public float SustainableMaterial = -1f; // planet material per turn to MaterialHorizonTurn (-1 unlimited)
+            public int MaterialReserve;             // material the economy may not spend this turn
+            public bool EnergySaturated;
+            public int SoldMines, SoldMaterial;
+            public int AimedWeapons;                // own weapons needing a trajectory (not lasers, not superweapons), queued included
             // across turns
             public int WaterCooldownUntil;
         }
@@ -200,9 +206,26 @@ namespace InterplanetaryAI
 
             PlayerData me = core.PlayerData;
             d.RecentDamage = recentDamage;
+            // v0.12 material budget: the planet's pool is fixed (drain = max(production, planet cost)).
+            try
+            {
+                PlayerResourceHandler res = me.ResourceHandler;
+                bool limited = GameSessionManager.CurrentGameSettings.PlanetMaterial != -1;
+                float drain = Math.Max(res.PlanetMaterialCost, res.MaterialProductionPerTurn);
+                d.SustainableMaterial = EconomyDirector.SustainableMaterialIncome(res.PlanetMaterial, limited, turn, Plugin.MaterialHorizonTurn.Value, 3);
+                d.MaterialReserve = EconomyDirector.EconomyReserve(res.PlanetMaterial, drain, limited, Plugin.BankWarningTurns.Value, Plugin.MaterialReserve.Value);
+                if (limited && res.PlanetMaterial <= 0 && Plugin.SellDryMinesPerTurn.Value > 0) SellDryMines(core, d, Plugin.SellDryMinesPerTurn.Value);
+            }
+            catch (Exception e)
+            {
+                ReportOnce("material-budget", e);
+            }
             foreach (BaseBuilding building in me.BuildingHandler.Buildings)
             {
-                if (building == null || building.IsCity || building.BuildingData == null || building.CurrentState != BaseBuilding.BuildingState.Normal) continue;
+                if (building == null || building.IsCity || building.BuildingData == null) continue;
+                if (IsAimedWeapon(building.BuildingData) && (building.CurrentState == BaseBuilding.BuildingState.Normal
+                    || building.CurrentState == BaseBuilding.BuildingState.UnderConstruction)) d.AimedWeapons++;
+                if (building.CurrentState != BaseBuilding.BuildingState.Normal) continue;
                 d.NonCityBuildings++;
                 if (Value(building.BuildingData.turn_yield_counterintel) > 0) d.OwnCounterintel++;
                 if (Value(building.BuildingData.turn_yield_intel) > 0) d.IntelBuildings++;
@@ -698,9 +721,44 @@ namespace InterplanetaryAI
 
         // ---- weapons -------------------------------------------------------------------------------
 
+        // v0.12: a weapon that needs a trajectory search: not a laser (fired directly) and not a superweapon (savings logic).
+        private static bool IsAimedWeapon(BuildingData data)
+        {
+            if (data == null || !data.weapon_functionality.IsValueSet) return false;
+            if (data.max_amount_at_once.IsValueSet && data.max_amount_at_once.Value > 0) return false;
+            WeaponData weapon = GameDataFileManager.GetDataFile<WeaponsData>().GetWeapon(data.weapon_functionality.Value);
+            string type = weapon != null && weapon.type.IsValueSet ? weapon.type.Value : "";
+            return type != "type_Laser" && type != "type_EMPLaser" && type != "type_SolarLaser";
+        }
+
+        // v0.12: on a dry planet mines yield nothing; selling returns 80% of their material and upgrades
+        // (PlayerBuildingHandler.SellBuilding). Mines that relay power are kept. The material goes to this turn's budget.
+        private static void SellDryMines(AICore core, DirectorState d, int perTurn)
+        {
+            PlayerData me = core.PlayerData;
+            List<BaseBuilding> dry = new List<BaseBuilding>();
+            foreach (BaseBuilding b in me.BuildingHandler.Buildings)
+            {
+                if (dry.Count >= perTurn) break;
+                if (b == null || b.IsCity || b.BuildingData == null || b.CurrentState != BaseBuilding.BuildingState.Normal) continue;
+                if (Value(b.BuildingData.turn_yield_material) <= 0 || Value(b.BuildingData.turn_cost_planet_material) <= 0) continue;
+                if (b.Power != null && (b.Power.IsPotentiallyDistributingPower || b.Power.CanPotentiallyGeneratesPower)) continue;
+                dry.Add(b);
+            }
+            int before = me.ResourceHandler.Material;
+            foreach (BaseBuilding b in dry) me.BuildingHandler.SellBuilding(b, true);
+            int gained = Math.Max(0, me.ResourceHandler.Material - before);
+            core.Resources.Material += gained;
+            core.Construction.ConstructionQueue.AllottedMaterial += gained;
+            d.SoldMines = dry.Count;
+            d.SoldMaterial = gained;
+        }
+
         private static bool TryWeapon(AIConstruction construction, AICore core, DirectorState d, float upkeepCap)
         {
             if (d.SlotsLeft <= 0) return false;
+            // v0.12: the trajectory search aims only so many weapons a turn; more add upkeep, not damage.
+            bool atCap = Plugin.MaxWeapons.Value > 0 && d.AimedWeapons >= Plugin.MaxWeapons.Value;
             BuildingsData buildings = GameDataFileManager.GetDataFile<BuildingsData>();
             WeaponsData weapons = GameDataFileManager.GetDataFile<WeaponsData>();
             PlayerAvailableBuildings available = core.PlayerData.BuildingHandler.AvailableBuildings;
@@ -715,6 +773,7 @@ namespace InterplanetaryAI
                 if (weapon == null) continue;
                 string type = weapon.type.IsValueSet ? weapon.type.Value : "";
                 if (!Plugin.EnableLasers.Value && (type == "type_Laser" || type == "type_EMPLaser" || type == "type_SolarLaser")) continue;
+                if (atCap && IsAimedWeapon(data)) continue;
                 int firing = weapon.firing_cost_energy.IsValueSet ? weapon.firing_cost_energy.Value : 0;
                 if (d.Upkeep + firing > upkeepCap) continue;
                 // Damage proxy: per-hit damage x fragments x projectiles, scaled by blast area (a railgun's 6.0
@@ -739,6 +798,7 @@ namespace InterplanetaryAI
             d.Upkeep += pick.FiringEnergy;
             d.WeaponEnergySpent += pick.BuildEnergy;
             d.WeaponsThisTurn++;
+            if (IsAimedWeapon(buildings.GetBuilding(pick.BuildingId))) d.AimedWeapons++;
             return true;
         }
 
@@ -766,8 +826,12 @@ namespace InterplanetaryAI
                 MaterialGlut = Plugin.MaterialGlutRatio.Value > 0f
                     && EconomyDirector.IsMaterialGlut(d.TurnStartMaterial, d.TurnStartEnergy, Plugin.MaterialGlutRatio.Value, Plugin.MaterialGlutMin.Value),
                 EnergyGlut = d.EnergyGlut,
+                SustainableMaterialIncome = d.SustainableMaterial,
+                EnergySaturation = Plugin.EnergySaturation.Value,
+                MaterialReserve = d.MaterialReserve,
             };
             d.MaterialGlut = balance.MaterialGlut;
+            d.EnergySaturated = EconomyDirector.EnergySaturated(balance);
             for (int attempt = 0; attempt < 6; attempt++)
             {
                 EconOption best = EconomyDirector.Best(options, balance, d.SlotsLeft);
@@ -1709,6 +1773,8 @@ namespace InterplanetaryAI
                 .Int("upgradesInstalled", upgradesInstalled).Str("weaponTarget", d.TargetName).Map("targetDefenses", d.TargetDefenses)
                 .Int("intelBuildings", d.IntelBuildings + d.IntelThisTurn).Int("blindEnemies", d.BlindEnemies).Int("defenseReserve", d.DefenseReserve)
                 .Bool("holdingFire", d.HoldingFire).Int("releasedEnergy", d.ReleasedEnergy).Bool("materialGlut", d.MaterialGlut).Bool("energyGlut", d.EnergyGlut)
+                .Num("sustainableMaterial", d.SustainableMaterial).Bool("energySaturated", d.EnergySaturated).Int("materialReserve", d.MaterialReserve)
+                .Int("soldMines", d.SoldMines).Int("soldMaterial", d.SoldMaterial).Int("aimedWeapons", d.AimedWeapons)
                 .Int("refunds", d.Refunds).Map("placementFailures", d.PlacementFailures).Int("steps", d.Steps)
                 .Map("queued", d.Actions).ToString());
         }

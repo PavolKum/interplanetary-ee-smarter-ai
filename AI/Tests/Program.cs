@@ -51,6 +51,7 @@ namespace InterplanetaryAI.Tests
             CommittedAssignmentRules();
             MaterialGlutRules();
             V011Rules();
+            V012Rules();
 
             Console.WriteLine(s_checks + " checks, " + s_failures + " failed");
             return s_failures == 0 ? 0 : 1;
@@ -309,7 +310,8 @@ namespace InterplanetaryAI.Tests
             Check(EconomyDirector.Best(options, bal, 10) == material, "energy glut: material gains win");
             Check(Math.Abs(EconomyDirector.EnergyCostFactor(bal) - bal.GlutEnergyWeight) < 1e-6, "energy glut: energy cost at GlutEnergyWeight");
             bal.MaterialGlut = true;
-            Check(EconomyDirector.Best(options, bal, 10) == energy, "material glut wins over energy glut (both: spend the material)");
+            // v0.12 (was: energy wins): v0.11.1 turned the last planet material into ~180 Floating Plants with energy unspent.
+            Check(EconomyDirector.Best(options, bal, 10) == material, "both gluts: energy gains are worthless, material wins");
 
             // Counter research: Lasers known, no Shield buildable -> Shield tech first.
             var countersWithShield = new Dictionary<string, Dictionary<string, float>>(counters);
@@ -326,6 +328,93 @@ namespace InterplanetaryAI.Tests
             Check(urgent.Count == 1 && urgent[0] == "tec_MaglevServos", "a Shield (0.15 vs Railguns) does not count as a Railgun counter; got " + string.Join(",", urgent.ToArray()));
             urgent = ResearchPlan.CounterTechs(new Dictionary<string, int> { { "wea_Laser", 0 } }, countersWithShield, techs, id => false);
             Check(urgent.Count == 0, "a weapon no longer known (count 0) asks for nothing");
+        }
+
+        // ---- v0.12: material budget, energy saturation, fire what can aim, reachability ----------------
+        private static void V012Rules()
+        {
+            // Sustainable material: planet left / turns to the horizon (at least minTurns); -1 when unlimited.
+            Check(Math.Abs(EconomyDirector.SustainableMaterialIncome(124334, true, 24, 45, 3) - 124334f / 21f) < 1f, "Beam T24: 124k over 21 turns");
+            Check(Math.Abs(EconomyDirector.SustainableMaterialIncome(30000, true, 44, 45, 3) - 10000f) < 1f, "near the horizon: at least minTurns");
+            Check(EconomyDirector.SustainableMaterialIncome(0, true, 30, 45, 3) == 0f, "dry planet: 0");
+            Check(EconomyDirector.SustainableMaterialIncome(50000, false, 30, 45, 3) < 0f, "unlimited planet: -1");
+
+            // Energy saturation, v0.11.1 Beam numbers (Floating Plant wave T22-27).
+            EconomyBalance t18 = new EconomyBalance { EnergyIncome = 6792, MaterialIncome = 10884, TargetRatio = 0.6f,
+                SustainableMaterialIncome = EconomyDirector.SustainableMaterialIncome(276774, true, 18, 45, 3) };
+            Check(!EconomyDirector.EnergySaturated(t18), "T18 (6.8k energy, planet barely binding): not saturated");
+            EconomyBalance t22 = new EconomyBalance { EnergyIncome = 20118, MaterialIncome = 16193, TargetRatio = 0.6f, WeaponUpkeep = 6000,
+                SustainableMaterialIncome = EconomyDirector.SustainableMaterialIncome(190865, true, 22, 45, 3) };
+            Check(EconomyDirector.EnergySaturated(t22), "T22 (20k energy, 8.3k sustainable material): saturated");
+            t22.WeaponUpkeep = 12000;
+            Check(!EconomyDirector.EnergySaturated(t22), "upkeep counts toward wanted energy");
+            EconomyBalance roomy = new EconomyBalance { EnergyIncome = 50000, MaterialIncome = 5000, TargetRatio = 0.6f,
+                SustainableMaterialIncome = 8000f };
+            Check(!EconomyDirector.EnergySaturated(roomy), "planet not binding (sustainable above production): never saturated");
+            EconomyBalance unlimited = new EconomyBalance { EnergyIncome = 50000, MaterialIncome = 5000, TargetRatio = 0.6f };
+            Check(!EconomyDirector.EnergySaturated(unlimited), "unlimited planet: never saturated");
+            EconomyBalance dry = new EconomyBalance { EnergyIncome = 30000, MaterialIncome = 25000, TargetRatio = 0.6f, SustainableMaterialIncome = 0f };
+            Check(EconomyDirector.EnergySaturated(dry), "dry planet with income: saturated");
+            dry.EnergySaturation = 0f;
+            Check(!EconomyDirector.EnergySaturated(dry), "EnergySaturation 0 = off");
+
+            // Saturated: a Floating Plant loses to a material option even in material glut.
+            EconOption plant = new EconOption { Id = "fp", Kind = OptionKind.Plant, Energy = 250, Material = 300, EnergyGain = 100f };
+            EconOption mineUp = new EconOption { Id = "up", Kind = OptionKind.Upgrade, Energy = 50, Material = 250, MaterialGain = 40f };
+            EconomyBalance sat = new EconomyBalance { EnergyIncome = 20118, MaterialIncome = 16193, TargetRatio = 0.6f, WeaponUpkeep = 6000,
+                SustainableMaterialIncome = 8298f, EnergyBudget = 20000, MaterialBudget = 23000, MaterialGlut = true };
+            Check(EconomyDirector.Best(new List<EconOption> { plant, mineUp }, sat, 10) == mineUp, "saturated + material glut: no Floating Plant");
+            Check(EconomyDirector.Best(new List<EconOption> { plant }, sat, 10) == null, "saturated: a plant alone is not worth buying");
+            sat.SustainableMaterialIncome = -1f;
+            Check(EconomyDirector.Best(new List<EconOption> { plant }, sat, 10) == plant, "setup: unlimited planet, material glut buys the plant");
+
+            // Economy reserve: once the planet runs dry within the warning, the economy cannot spend the reserve.
+            Check(EconomyDirector.EconomyReserve(124334, 27504, true, 8, 15000) == 15000, "Beam T24 (4.5 turns left): reserve on");
+            Check(EconomyDirector.EconomyReserve(190865, 16193, true, 8, 15000) == 0, "Beam T22 (11.8 turns left): off");
+            Check(EconomyDirector.EconomyReserve(0, 0f, true, 8, 15000) == 15000, "dry planet: on");
+            Check(EconomyDirector.EconomyReserve(0, 0f, false, 8, 15000) == 0, "unlimited planet: off");
+            Check(EconomyDirector.EconomyReserve(0, 0f, true, 8, 0) == 0, "reserve 0 = off");
+            EconomyBalance reserved = new EconomyBalance { EnergyIncome = 1000, MaterialIncome = 1000, TargetRatio = 0.6f,
+                EnergyBudget = 20000, MaterialBudget = 15200, MaterialReserve = 15000 };
+            Check(EconomyDirector.Best(new List<EconOption> { mineUp }, reserved, 10) == null, "250 material over a 15k reserve of 15.2k: not affordable");
+            reserved.MaterialBudget = 15300;
+            Check(EconomyDirector.Best(new List<EconOption> { mineUp }, reserved, 10) == mineUp, "15.3k: affordable");
+
+            // Fire what can aim: abort only below AbortBelowWeapons (share 0 by default).
+            StrategySettings s = new StrategySettings();
+            Check(!Strategy.ShouldAbort(6, 53, "saturated", s), "v0.11.1 Brother T27: 6 of 53 aimed fires now");
+            Check(Strategy.ShouldAbort(2, 52, "saturated", s), "2 aimed: called off");
+            Check(!Strategy.ShouldAbort(3, 52, "saturated", s), "3 aimed (the minimum): fires");
+            Check(!Strategy.ShouldAbort(0, 52, "max-hold", s), "max-hold fires whatever it has");
+            s.AbortBelowShare = 0.3f;
+            Check(Strategy.ShouldAbort(15, 52, "saturated", s), "with the v0.11 share 0.3: 15 of 52 is called off");
+
+            // Reachability: failures count only where enough weapons at that target found a trajectory.
+            ReachabilityMemory reach = new ReachabilityMemory(3);
+            List<string> keys = new List<string>();
+            List<int> targets = new List<int>();
+            List<bool> found = new List<bool>();
+            for (int i = 0; i < 50; i++) { keys.Add("w" + i); targets.Add(7); found.Add(i < 10); }
+            int marked = reach.ReportTurn(keys, targets, found, 25, 0.5f);
+            HashSet<int> unreachable = new HashSet<int>();
+            reach.FillUnreachable("w20", 26, unreachable);
+            Check(marked == 0 && !unreachable.Contains(7), "10 of 50 found (search out of time): nobody marks the target unreachable");
+            keys.Clear(); targets.Clear(); found.Clear();
+            for (int i = 0; i < 10; i++) { keys.Add("w" + i); targets.Add(8); found.Add(i < 7); }
+            marked = reach.ReportTurn(keys, targets, found, 25, 0.5f);
+            reach.FillUnreachable("w8", 26, unreachable);
+            Check(marked == 3 && unreachable.Contains(8), "7 of 10 found: the 3 that failed mark it unreachable");
+            reach.FillUnreachable("w2", 26, unreachable);
+            Check(!unreachable.Contains(8), "a weapon that found one is not marked");
+            reach.ReportTurn(new List<string> { "w8" }, new List<int> { 8 }, new List<bool> { true }, 26, 0.5f);
+            reach.FillUnreachable("w8", 27, unreachable);
+            Check(!unreachable.Contains(8), "a later success clears the mark");
+            // Per target: a well-aimed target does not lend its share to a badly aimed one.
+            keys.Clear(); targets.Clear(); found.Clear();
+            for (int i = 0; i < 10; i++) { keys.Add("a" + i); targets.Add(1); found.Add(true); }
+            for (int i = 0; i < 10; i++) { keys.Add("b" + i); targets.Add(2); found.Add(i < 2); }
+            marked = reach.ReportTurn(keys, targets, found, 30, 0.5f);
+            Check(marked == 0, "target 2 at 2 of 10 is not marked even though target 1 was 10 of 10");
         }
 
         private static void MaterialGlutRules()
