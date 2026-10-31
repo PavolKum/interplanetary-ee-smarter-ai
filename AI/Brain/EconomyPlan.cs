@@ -108,6 +108,34 @@ namespace InterplanetaryAI.Brain
             return null;
         }
 
+        // v0.11: techs to research before the plan because a known enemy weapon has no counter-defense we can build.
+        // v0.10.1: 14 human Lasers from T32; the Shield tech (Ultrasonic Projection) was not in the plan at all.
+        // knownWeapons: enemy weapon id -> count; counters: defense id -> (weapon id -> stop chance);
+        // defenseTechs: defense id -> unlocking tech. A weapon counts as covered when a defense stopping it at >= minChance
+        // is buildable now.
+        public static List<string> CounterTechs(IDictionary<string, int> knownWeapons, Dictionary<string, Dictionary<string, float>> counters,
+            IDictionary<string, string> defenseTechs, Func<string, bool> isBuildable, float minChance = 0.5f)
+        {
+            List<string> techs = new List<string>();
+            foreach (KeyValuePair<string, int> weapon in knownWeapons)
+            {
+                if (weapon.Value <= 0) continue;
+                bool covered = false;
+                string bestTech = null;
+                float bestChance = 0f;
+                foreach (KeyValuePair<string, Dictionary<string, float>> defense in counters)
+                {
+                    float p;
+                    if (!defense.Value.TryGetValue(weapon.Key, out p) || p < minChance) continue;
+                    if (isBuildable(defense.Key)) { covered = true; break; }
+                    string tech;
+                    if (defenseTechs.TryGetValue(defense.Key, out tech) && p > bestChance) { bestTech = tech; bestChance = p; }
+                }
+                if (!covered && bestTech != null && !techs.Contains(bestTech)) techs.Add(bestTech);
+            }
+            return techs;
+        }
+
         public static List<string> Parse(string text)
         {
             List<string> plan = new List<string>();

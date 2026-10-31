@@ -50,6 +50,7 @@ namespace InterplanetaryAI.Tests
             StrategyCommitsToBestValue();
             CommittedAssignmentRules();
             MaterialGlutRules();
+            V011Rules();
 
             Console.WriteLine(s_checks + " checks, " + s_failures + " failed");
             return s_failures == 0 ? 0 : 1;
@@ -94,7 +95,7 @@ namespace InterplanetaryAI.Tests
 
         private static void SalvoEstimateRules()
         {
-            StrategySettings s = new StrategySettings(); // CoverHalf 12, OverlapDefenses 20, roll share 0.5 at 150
+            StrategySettings s = new StrategySettings { OverlapDefenses = 20f }; // CoverHalf 12, roll share 0.5 at 150
             var counters = EnhancedCounters();
 
             // v0.9.1 T22 shape: 35 Railguns at the human's 19 Kinetic, 6,000 energy -> 20 rolls, which bind.
@@ -157,14 +158,15 @@ namespace InterplanetaryAI.Tests
             Check(Math.Abs(few.Passing - model.Passing) < 1e-3, "fewer than ObservedMinImpacts shots do not move the estimate");
         }
 
-        private static StrategyDecision DecideRail(int turn, bool war, int railguns, List<SalvoTarget> targets, int lastStrike, int hold, StrategySettings s)
+        private static StrategyDecision DecideRail(int turn, bool war, int railguns, List<SalvoTarget> targets, int lastStrike, int hold, StrategySettings s,
+            int lastCommit = 0)
         {
-            return Strategy.Decide(turn, war, Railguns(railguns), 1f, targets, EnhancedCounters(), lastStrike, hold, railguns, s);
+            return Strategy.Decide(turn, war, Railguns(railguns), 1f, targets, EnhancedCounters(), lastStrike, hold, railguns, s, lastCommit);
         }
 
         private static void StrategyFireRules()
         {
-            StrategySettings s = new StrategySettings();
+            StrategySettings s = new StrategySettings { OverlapDefenses = 20f };
             Func<int, List<SalvoTarget>> human = kinetic => new List<SalvoTarget> { Target(0, 1f, kinetic, true, 6000f) };
 
             StrategyDecision none = DecideRail(25, true, 0, human(19), -1000, 0, s);
@@ -203,17 +205,17 @@ namespace InterplanetaryAI.Tests
             StrategySettings s = new StrategySettings();
             // The leader (score 1.0) behind 40 Kinetic vs a weaker rival (0.6) with 2: the open target is worth more.
             List<SalvoTarget> targets = new List<SalvoTarget> { Target(0, 1f, 40, false, 0f), Target(2, 0.6f, 2, false, 0f) };
-            StrategyDecision d = DecideRail(25, true, 30, targets, -1000, 0, s);
+            StrategyDecision d = DecideRail(25, true, 30, targets, -1000, 0, s, -1);
             Check(d.CommitTargetId == 2, "commit where score x expected shots through is highest; got " + d.CommitTargetId);
             // Same defenses: the higher score wins.
             targets = new List<SalvoTarget> { Target(0, 1f, 10, false, 0f), Target(2, 0.6f, 10, false, 0f) };
-            d = DecideRail(25, true, 30, targets, -1000, 0, s);
+            d = DecideRail(25, true, 30, targets, -1000, 0, s, -1);
             Check(d.CommitTargetId == 0, "equal defenses: the leader; got " + d.CommitTargetId);
             // The leader is out of reach for most weapons: the reachable salvo decides.
             SalvoTarget farLeader = Target(0, 1f, 10, false, 0f);
             farLeader.Shots = Railguns(3);
             targets = new List<SalvoTarget> { farLeader, Target(2, 0.6f, 10, false, 0f) };
-            d = DecideRail(25, true, 30, targets, -1000, 0, s);
+            d = DecideRail(25, true, 30, targets, -1000, 0, s, -1);
             Check(d.CommitTargetId == 2, "a leader only 3 weapons can reach is not the commit; got " + d.CommitTargetId);
         }
 
@@ -236,6 +238,84 @@ namespace InterplanetaryAI.Tests
             int atTop = 0;
             foreach (int t in plan) if (t == 0) atTop++;
             Check(atTop >= 7, "no commit keeps the v0.9 split plan");
+        }
+
+        // ---- v0.11 ---------------------------------------------------------------------------------
+
+        private static void V011Rules()
+        {
+            StrategySettings s = new StrategySettings();
+            var counters = EnhancedCounters();
+
+            // v0.10.1 T26 shape: the human softer (33 through) but scored lower (0.5) than the other AI (19 through, 1.0).
+            SalvoTarget human = new SalvoTarget { PlayerId = 0, Name = "human", Score = 0.5f, DefensesSeen = true, Shots = Railguns(33) };
+            SalvoTarget rival = new SalvoTarget { PlayerId = 2, Name = "rival", Score = 1f, DefensesSeen = true, Shots = Railguns(19) };
+            StrategyDecision d = Strategy.Decide(26, true, Railguns(40), 1f, new List<SalvoTarget> { human, rival }, counters, -1000, 0, 40, s, -1);
+            Check(d.CommitTargetId == 0, "commit by shots through: the softer human, not the higher-scored rival; got " + d.CommitTargetId);
+            StrategySettings v010 = new StrategySettings { LeaderInfluence = 1000f };
+            d = Strategy.Decide(26, true, Railguns(40), 1f, new List<SalvoTarget> { human, rival }, counters, -1000, 0, 40, v010, -1);
+            Check(d.CommitTargetId == 2, "a huge leader influence brings back the v0.10 pick (the check can fail)");
+
+            // Stickiness: last turn's target stays unless another is worth CommitStickiness x more.
+            SalvoTarget a = new SalvoTarget { PlayerId = 0, Score = 1f, DefensesSeen = true, Shots = Railguns(20) };
+            SalvoTarget b = new SalvoTarget { PlayerId = 2, Score = 1f, DefensesSeen = true, Shots = Railguns(23) };
+            d = Strategy.Decide(26, true, Railguns(40), 1f, new List<SalvoTarget> { a, b }, counters, -1000, 0, 40, s, 0);
+            Check(d.CommitTargetId == 0, "23 vs 20 through (< 1.25x): stay on last turn's target; got " + d.CommitTargetId);
+            b.Shots = Railguns(30);
+            d = Strategy.Decide(26, true, Railguns(40), 1f, new List<SalvoTarget> { a, b }, counters, -1000, 0, 40, s, 0);
+            Check(d.CommitTargetId == 2, "30 vs 20 through: switch; got " + d.CommitTargetId);
+
+            // Aim first: a saturating salvo at a target the weapons were not pointed at holds one turn.
+            SalvoTarget open = new SalvoTarget { PlayerId = 0, Score = 1f, DefensesSeen = true };
+            d = Strategy.Decide(26, true, Railguns(30), 1f, new List<SalvoTarget> { open }, counters, -1000, 0, 30, s, -1);
+            Check(!d.Fire && d.Reason == "aiming", "a new target is aimed at before the strike; got " + d.Reason);
+            d = Strategy.Decide(26, true, Railguns(30), 1f, new List<SalvoTarget> { open }, counters, -1000, 0, 30, s, 0);
+            Check(d.Fire && d.Reason == "saturated", "aimed last turn: strike; got " + d.Reason);
+            d = Strategy.Decide(26, true, Railguns(30), 1f, new List<SalvoTarget> { open }, counters, -1000, s.MaxHoldTurns, 30, s, -1);
+            Check(d.Fire && d.Reason == "max-hold", "max-hold fires even unaimed");
+
+            // Big salvo: 40 through at 44% fires (v0.10.1 Clowrus T29 held).
+            SalvoTarget wall = new SalvoTarget { PlayerId = 0, Score = 1f, DefensesSeen = true, Defenses = new Dictionary<string, int> { { "bui_KineticDefense", 120 } } };
+            d = Strategy.Decide(29, true, Railguns(100), 1f, new List<SalvoTarget> { wall }, counters, -1000, 0, 100, s, 0);
+            Check(d.PassShare < s.MinPassShare && d.Passing >= s.BigSalvoShots, "setup: big salvo under the share bar; got " + d.Passing + " at " + d.PassShare);
+            Check(d.Fire, "a big salvo fires under the share bar; got " + d.Reason);
+
+            // Overlap off by default: an eligible impact is stopped at the defense's chance (measured 0.72).
+            SalvoTarget t19 = Target(0, 1f, 19, false, 0f);
+            Strategy.EstimateSalvo(Railguns(35), t19, 1f, counters, s);
+            Check(Math.Abs(t19.Passing - ExpectedPassing(35, 19, 0.8f, 12, 1000, float.MaxValue)) < 1e-3 && t19.Passing > 35f - 35f * 19f / 31f * 0.81f,
+                "default overlap ~ one roll; got " + t19.Passing);
+
+            // Energy glut.
+            Check(EconomyDirector.IsEnergyGlut(11545, 19845, 0.3f, 5000), "v0.10.1 Clowrus T21 (11.5k of 19.8k unspent) is energy glut");
+            Check(!EconomyDirector.IsEnergyGlut(4000, 6000, 0.3f, 5000), "under the minimum is not");
+            Check(!EconomyDirector.IsEnergyGlut(6000, 30000, 0.3f, 5000), "20% unspent is not");
+            EconOption energy = new EconOption { Id = "e", Kind = OptionKind.Plant, Energy = 300, Material = 300, EnergyGain = 1000f };
+            EconOption material = new EconOption { Id = "m", Kind = OptionKind.Producer, Energy = 300, Material = 300, MaterialGain = 700f };
+            List<EconOption> options = new List<EconOption> { energy, material };
+            EconomyBalance bal = new EconomyBalance { EnergyIncome = 20000, MaterialIncome = 9000, TargetRatio = 0.6f, EnergyBudget = 19000, MaterialBudget = 14000, EnergyPush = true };
+            Check(EconomyDirector.Best(options, bal, 10) == energy, "setup: energy preferred without glut");
+            bal.EnergyGlut = true;
+            Check(EconomyDirector.Best(options, bal, 10) == material, "energy glut: material gains win");
+            Check(Math.Abs(EconomyDirector.EnergyCostFactor(bal) - bal.GlutEnergyWeight) < 1e-6, "energy glut: energy cost at GlutEnergyWeight");
+            bal.MaterialGlut = true;
+            Check(EconomyDirector.Best(options, bal, 10) == energy, "material glut wins over energy glut (both: spend the material)");
+
+            // Counter research: Lasers known, no Shield buildable -> Shield tech first.
+            var countersWithShield = new Dictionary<string, Dictionary<string, float>>(counters);
+            countersWithShield["bui_ShieldDefense"] = new Dictionary<string, float> { { "wea_Laser", 1f }, { "wea_Railgun", 0.15f } };
+            var techs = new Dictionary<string, string> { { "bui_KineticDefense", "tec_MaglevServos" }, { "bui_IonDefense", "tec_PlasmaChannelInduction" }, { "bui_ShieldDefense", "tec_UltrasonicProjection" } };
+            var lasers = new Dictionary<string, int> { { "wea_Laser", 14 }, { "wea_Railgun", 37 } };
+            List<string> urgent = ResearchPlan.CounterTechs(lasers, countersWithShield, techs, id => id == "bui_KineticDefense");
+            Check(urgent.Count == 1 && urgent[0] == "tec_UltrasonicProjection", "Lasers with no Shield: research Ultrasonic Projection; got " + string.Join(",", urgent.ToArray()));
+            urgent = ResearchPlan.CounterTechs(lasers, countersWithShield, techs, id => true);
+            Check(urgent.Count == 0, "everything buildable: nothing urgent");
+            urgent = ResearchPlan.CounterTechs(new Dictionary<string, int> { { "wea_Railgun", 5 } }, countersWithShield, techs, id => false);
+            Check(urgent.Count == 1 && urgent[0] == "tec_MaglevServos", "Railguns: Kinetic (0.8), not Shield (0.15); got " + string.Join(",", urgent.ToArray()));
+            urgent = ResearchPlan.CounterTechs(new Dictionary<string, int> { { "wea_Railgun", 5 } }, countersWithShield, techs, id => id == "bui_ShieldDefense");
+            Check(urgent.Count == 1 && urgent[0] == "tec_MaglevServos", "a Shield (0.15 vs Railguns) does not count as a Railgun counter; got " + string.Join(",", urgent.ToArray()));
+            urgent = ResearchPlan.CounterTechs(new Dictionary<string, int> { { "wea_Laser", 0 } }, countersWithShield, techs, id => false);
+            Check(urgent.Count == 0, "a weapon no longer known (count 0) asks for nothing");
         }
 
         private static void MaterialGlutRules()

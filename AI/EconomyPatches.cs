@@ -479,9 +479,27 @@ namespace InterplanetaryAI
                 if ((bool)s_moreIntelTechRequired.Invoke(core.ShortTermStrategy, null)) return;
 
                 List<string> before = tech.GetTechnologyQueueIdStringList();
+                List<string> plan = Plugin.ResearchPlanIds;
+                // v0.11: a known enemy weapon we cannot counter puts its counter-defense's tech first.
+                AiEconomyState economy;
+                if (Plugin.CounterResearch.Value && States.TryGetValue(core.PlayerData.PlayerID, out economy) && economy.EnemyWeapons.Count > 0)
+                {
+                    BuildingsData buildings = GameDataFileManager.GetDataFile<BuildingsData>();
+                    PlayerAvailableBuildings available = core.PlayerData.BuildingHandler.AvailableBuildings;
+                    List<string> urgent = ResearchPlan.CounterTechs(economy.EnemyWeapons, DefensePlanner.Counters, s_defenseTechs, id =>
+                    {
+                        BuildingData data = buildings != null ? buildings.GetBuilding(id) : null;
+                        return data != null && available.IsBuildingAvailable(data);
+                    });
+                    if (urgent.Count > 0)
+                    {
+                        plan = new List<string>(urgent);
+                        plan.AddRange(Plugin.ResearchPlanIds);
+                    }
+                }
                 for (int attempt = 0; attempt < 3; attempt++)
                 {
-                    string next = ResearchPlan.NextTarget(Plugin.ResearchPlanIds, id => SafeCompleted(tech, id), id => tech.GetTechnologyIsInQueue(id) || s_refused.Contains(id));
+                    string next = ResearchPlan.NextTarget(plan, id => SafeCompleted(tech, id), id => tech.GetTechnologyIsInQueue(id) || s_refused.Contains(id));
                     if (next == null) return;
                     bool queued = false;
                     try { queued = tech.AddTechnologyToQueueById(next, true); }
@@ -507,6 +525,14 @@ namespace InterplanetaryAI
         }
 
         private static readonly HashSet<string> s_refused = new HashSet<string>();
+
+        // Enhanced ruleset (tech_unlocks.py): the tech that unlocks each defense building.
+        private static readonly Dictionary<string, string> s_defenseTechs = new Dictionary<string, string>
+        {
+            { "bui_KineticDefense", "tec_MaglevServos" },
+            { "bui_IonDefense", "tec_PlasmaChannelInduction" },
+            { "bui_ShieldDefense", "tec_UltrasonicProjection" },
+        };
 
         private static bool SafeCompleted(PlayerTechnologyHandler tech, string id)
         {

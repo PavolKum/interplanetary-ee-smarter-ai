@@ -274,18 +274,47 @@ namespace InterplanetaryAI
             {
                 if (Plugin.RefreshFiringList.Value) __instance.DetermineShootingWeapons();
                 List<AITrajectoryWeapon> missing = (List<AITrajectoryWeapon>)s_goalMissing.GetValue(__instance);
-                if (missing == null) return;
-                if (!Plugin.FireMisses.Value)
+                if (missing != null && !Plugin.FireMisses.Value)
                 {
                     missing.Clear();
-                    return;
                 }
-                AICore core = (AICore)s_goalCore.GetValue(__instance);
-                missing.RemoveAll(weapon => !IsSafeNearMiss(weapon, core.Planet));
+                else if (missing != null)
+                {
+                    AICore core = (AICore)s_goalCore.GetValue(__instance);
+                    missing.RemoveAll(weapon => !IsSafeNearMiss(weapon, core.Planet));
+                }
             }
             catch (Exception e)
             {
                 ReportOnce("refresh-firing-list", e);
+            }
+            // v0.11: a strike whose weapons mostly found no trajectory onto the committed target is called off; its firing
+            // energy stays for defense rolls.
+            try
+            {
+                AICore striker = (AICore)s_goalCore.GetValue(__instance);
+                if (striker == null || !Plugin.StrategyEnabled.Value) return;
+                int commit = StrategyPatches.CommitTarget(striker.PlayerData.PlayerID);
+                if (commit < 0) return;
+                List<AITrajectoryWeapon> hitting = (List<AITrajectoryWeapon>)s_goalHitting.GetValue(__instance);
+                int onCommit = 0;
+                if (hitting != null)
+                {
+                    foreach (AITrajectoryWeapon w in hitting)
+                    {
+                        if (w.HasFoundPrimaryTargetTrajectory && w.TargetEnemy != null && w.TargetEnemy.Player != null && w.TargetEnemy.Player.PlayerID == commit) onCommit++;
+                    }
+                }
+                if (StrategyPatches.ShouldAbort(striker.PlayerData, onCommit))
+                {
+                    List<AITrajectoryWeapon> missing = (List<AITrajectoryWeapon>)s_goalMissing.GetValue(__instance);
+                    if (hitting != null) hitting.Clear();
+                    if (missing != null) missing.Clear();
+                }
+            }
+            catch (Exception e)
+            {
+                ReportOnce("strike-abort", e);
             }
         }
 

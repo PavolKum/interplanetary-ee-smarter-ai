@@ -92,6 +92,11 @@ namespace InterplanetaryAI
             public int ReleasedEnergy;    // v0.10: firing reservation given to construction on a hold-fire turn
             public bool HoldingFire;
             public bool MaterialGlut;
+            public bool EnergyGlut;
+            public int EndEnergyLeft;     // energy unspent when the turn's construction ended
+            public int LastEnergyLeft, LastEnergyBudget;
+            public readonly Dictionary<string, int> AbandonedLastTurn = new Dictionary<string, int>();
+            public readonly Dictionary<string, int> QueuedById = new Dictionary<string, int>();
             // across turns
             public int WaterCooldownUntil;
         }
@@ -174,7 +179,12 @@ namespace InterplanetaryAI
         {
             DirectorState d = StateOf(core.PlayerData);
             int waterCooldown = d.WaterCooldownUntil;
-            d = new DirectorState { WaterCooldownUntil = waterCooldown, Turn = turn };
+            // v0.11 carried from the turn just before: unspent energy (energy glut) and abandoned placements (a full planet).
+            bool consecutive = d.Turn == turn - 1;
+            int lastLeft = consecutive ? d.EndEnergyLeft : 0, lastBudget = consecutive ? d.TurnStartEnergy : 0;
+            Dictionary<string, int> lastAbandons = consecutive ? new Dictionary<string, int>(d.PlacementFailures) : new Dictionary<string, int>();
+            d = new DirectorState { WaterCooldownUntil = waterCooldown, Turn = turn, LastEnergyLeft = lastLeft, LastEnergyBudget = lastBudget };
+            foreach (KeyValuePair<string, int> pair in lastAbandons) d.AbandonedLastTurn[pair.Key] = pair.Value;
             s_states[core.PlayerData.PlayerID] = d;
 
             PlayerData me = core.PlayerData;
@@ -187,6 +197,8 @@ namespace InterplanetaryAI
                 if (Value(building.BuildingData.turn_yield_intel) > 0) d.IntelBuildings++;
             }
             d.War = EconomyDirector.WarPhase(turn, Plugin.WarFromTurn.Value, recentDamage, Plugin.WarDamageTrigger.Value);
+            d.EnergyGlut = Plugin.EnergyGlutShare.Value > 0f
+                && EconomyDirector.IsEnergyGlut(d.LastEnergyLeft, d.LastEnergyBudget, Plugin.EnergyGlutShare.Value, Plugin.EnergyGlutMin.Value);
             d.Defensive = d.War || EconomyDirector.WarPhase(turn, Plugin.DefenseFromTurn.Value, recentDamage, Plugin.WarDamageTrigger.Value);
             int visibleEnemyWeapons = 0;
             foreach (int n in economy.EnemyWeapons.Values) visibleEnemyWeapons += n;
@@ -708,6 +720,7 @@ namespace InterplanetaryAI
                 // Turn-start stock against turn-start energy: spending during the turn must not flip it.
                 MaterialGlut = Plugin.MaterialGlutRatio.Value > 0f
                     && EconomyDirector.IsMaterialGlut(d.TurnStartMaterial, d.TurnStartEnergy, Plugin.MaterialGlutRatio.Value, Plugin.MaterialGlutMin.Value),
+                EnergyGlut = d.EnergyGlut,
             };
             d.MaterialGlut = balance.MaterialGlut;
             for (int attempt = 0; attempt < 6; attempt++)
@@ -1024,6 +1037,12 @@ namespace InterplanetaryAI
         {
             // A type whose placement gave up this turn is not queued again (v0.3.1: 241 Railgun searches requeued).
             if (data == null || d.FailedThisTurn.Contains(data.id.Value) || !Affordable(core, data)) return false;
+            // v0.11: placements resolve after many are queued, so a full planet saw 22-55 of one type queued and abandoned
+            // every turn (v0.10.1 Maverick T24-T28). A type abandoned 3+ times last turn is queued at most twice this turn.
+            int abandoned, queuedNow;
+            d.AbandonedLastTurn.TryGetValue(data.id.Value, out abandoned);
+            d.QueuedById.TryGetValue(data.id.Value, out queuedNow);
+            if (abandoned >= 3 && queuedNow >= 2) return false;
             bool needsSlot = !(data.distribute_power.IsValueSet && data.distribute_power.Value);
             if (needsSlot && d.SlotsLeft <= 0) return false;
             construction.ConstructionQueue.AddBuildingToQueue(data); // charges core.Resources
@@ -1033,6 +1052,7 @@ namespace InterplanetaryAI
                 construction.PowerSlotNeed++; // keep the native bookkeeping consistent
             }
             Record(d, role + ":" + data.id.Value);
+            Increment(d.QueuedById, data.id.Value);
             return true;
         }
 
@@ -1144,7 +1164,16 @@ namespace InterplanetaryAI
                     UpgradeEffect effect = EffectOf(upgrade);
                     float firingDelta = profile.FiringEnergy * globalFiring * (effect.FiringMul - 1f);
                     if (firingDelta > 0f && d.Upkeep + firingDelta > upkeepCap) continue;
-                    if (!upkeepBound && WeaponUpgrades.ImmediateDamageRatio(profile, effect, popWeight) < 1f) continue;
+                    float immediate = WeaponUpgrades.ImmediateDamageRatio(profile, effect, popWeight);
+                    // v0.11: with energy in glut, firing energy is not what limits us; planet space is. Rank by damage per
+                    // building (the human's 37 Railguns fired 111 shots with Projectile Amount upgrades).
+                    if (d.EnergyGlut)
+                    {
+                        if (immediate - 1f < Plugin.WeaponUpgradeMinGain.Value) continue;
+                        ranked.Add(new KeyValuePair<float, object[]>(immediate - 1f, new object[] { building, upgrade, effect, firingDelta }));
+                        continue;
+                    }
+                    if (!upkeepBound && immediate < 1f) continue;
                     float gain = WeaponUpgrades.Gain(profile, effect, popWeight);
                     if (gain < Plugin.WeaponUpgradeMinGain.Value) continue;
                     ranked.Add(new KeyValuePair<float, object[]>(gain, new object[] { building, upgrade, effect, firingDelta }));
@@ -1609,6 +1638,7 @@ namespace InterplanetaryAI
         {
             DirectorState d;
             if (!s_states.TryGetValue(core.PlayerData.PlayerID, out d) || !d.Started) return;
+            d.EndEnergyLeft = core.Resources.Energy;
             int upgradesInstalled = 0;
             foreach (BaseBuilding building in core.PlayerData.BuildingHandler.Buildings)
             {
@@ -1626,7 +1656,7 @@ namespace InterplanetaryAI
                 .Str("observedPass", ObservedPassText(d.ObservedPass))
                 .Int("upgradesInstalled", upgradesInstalled).Str("weaponTarget", d.TargetName).Map("targetDefenses", d.TargetDefenses)
                 .Int("intelBuildings", d.IntelBuildings + d.IntelThisTurn).Int("blindEnemies", d.BlindEnemies).Int("defenseReserve", d.DefenseReserve)
-                .Bool("holdingFire", d.HoldingFire).Int("releasedEnergy", d.ReleasedEnergy).Bool("materialGlut", d.MaterialGlut)
+                .Bool("holdingFire", d.HoldingFire).Int("releasedEnergy", d.ReleasedEnergy).Bool("materialGlut", d.MaterialGlut).Bool("energyGlut", d.EnergyGlut)
                 .Int("refunds", d.Refunds).Map("placementFailures", d.PlacementFailures).Int("steps", d.Steps)
                 .Map("queued", d.Actions).ToString());
         }

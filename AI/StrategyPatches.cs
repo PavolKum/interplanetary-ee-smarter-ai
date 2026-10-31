@@ -27,6 +27,8 @@ namespace InterplanetaryAI
             public int HoldTurns;
             public int ReleasedEnergy;
             public bool Reported;               // this turn's firing has been counted
+            public int LastCommitId = -1;       // the enemy the weapons were pointed at last turn
+            public bool Aborted;                // this turn's strike was called off at firing time
             public StrategyDecision Decision;
             public readonly HashSet<int> PlanetsSeen = new HashSet<int>(); // enemies whose buildings our intel has seen
         }
@@ -112,11 +114,13 @@ namespace InterplanetaryAI
                 s_states[me.PlayerID] = state;
             }
             if (state.Turn == turn) return; // decided already (a turn start seen twice)
-            if (turn < state.Turn) { state.LastStrikeTurn = -1000; state.HoldTurns = 0; } // an earlier save
+            if (turn < state.Turn) { state.LastStrikeTurn = -1000; state.HoldTurns = 0; state.LastCommitId = -1; } // an earlier save
+            if (turn != state.Turn + 1) state.LastCommitId = -1; // aim memory only from the turn just before
             state.Turn = turn;
             state.Decision = null;
             state.ReleasedEnergy = 0;
             state.Reported = false;
+            state.Aborted = false;
 
             StrategyDecision decision;
             try
@@ -181,7 +185,7 @@ namespace InterplanetaryAI
                     });
                 }
                 decision = Strategy.Decide(turn, war, salvo, accuracy, targets, DefensePlanner.Counters, state.LastStrikeTurn, state.HoldTurns,
-                    weapons, Plugin.StrategyCfg);
+                    weapons, Plugin.StrategyCfg, state.LastCommitId);
                 if (!decision.Fire && !HoldAvailable)
                 {
                     decision.Fire = true; // cannot stop the shots: do not take their energy either
@@ -197,10 +201,34 @@ namespace InterplanetaryAI
                 return;
             }
 
+            int aimedBefore = state.LastCommitId;
+            state.LastCommitId = decision.CommitTargetId;
             if (!decision.Fire) Release(core, state);
             // Point the weapons. Native targeting already ran in AICore.BeginTurn; trajectory search starts in Update.
             AssignTargets(core, decision.CommitTargetId);
-            Log(me, turn, decision, state);
+            Log(me, turn, decision, state, aimedBefore);
+        }
+
+        // v0.11, at firing time (AiPatches.GoalTargetWeaponsPrefix, after the firing lists are rebuilt): call the strike off
+        // when too few weapons found a trajectory onto the committed target. The firing energy then stays for defense rolls,
+        // and the turn counts as held (no pulse used). v0.10.1 T30: 11 of 48 weapons reached a newly committed target.
+        internal static bool ShouldAbort(PlayerData me, int hitsOnCommit)
+        {
+            State s;
+            if (!s_states.TryGetValue(me.PlayerID, out s) || s.Decision == null || !s.Decision.Fire) return false;
+            if (s.Decision.Reason == "max-hold") return false; // the fallback fires whatever it has
+            float needed = Math.Max(Plugin.StrategyCfg.MinWeapons, Plugin.StrategyCfg.AbortBelowShare * s.Decision.Shots);
+            if (hitsOnCommit >= needed) return false;
+            s.Aborted = true;
+            Plugin.WriteDecision(new Json().Str("e", "abort").Int("t", s.Turn).Str("ai", me.UserNickName)
+                .Int("hitsOnCommit", hitsOnCommit).Num("needed", needed).Int("shots", s.Decision.Shots).ToString());
+            return true;
+        }
+
+        internal static int CommitTarget(int playerId)
+        {
+            StrategyDecision d = Latest(playerId);
+            return d != null ? d.CommitTargetId : -1;
         }
 
         // Nothing fires this turn, so the firing cost the game reserved is free for construction.
@@ -235,10 +263,13 @@ namespace InterplanetaryAI
             }
         }
 
-        private static void Log(PlayerData me, int turn, StrategyDecision d, State state)
+        private static void Log(PlayerData me, int turn, StrategyDecision d, State state, int aimedBefore)
         {
             try
             {
+                // Calibration: our own shots at each target over the ledger window, [impacts, intercepted] summed over weapons.
+                Dictionary<string, int> observedImpacts = new Dictionary<string, int>();
+                Dictionary<string, int> observedIntercepted = new Dictionary<string, int>();
                 Dictionary<string, int> passing = new Dictionary<string, int>();
                 Dictionary<string, int> arriving = new Dictionary<string, int>();
                 Dictionary<string, int> eligible = new Dictionary<string, int>();
@@ -258,6 +289,10 @@ namespace InterplanetaryAI
                     defenses[name] = t.DefensesSeen ? n : -1;
                     score[name] = (int)Math.Round(t.Score * 1000f);
                     if (t.PlayerId == d.CommitTargetId) commit = name;
+                    int imp = 0, inter = 0;
+                    if (t.Observed != null) foreach (int[] c in t.Observed.Values) { imp += c[0]; inter += c[1]; }
+                    observedImpacts[name] = imp;
+                    observedIntercepted[name] = inter;
                 }
                 Plugin.WriteDecision(new Json()
                     .Str("e", "strategy").Int("t", turn).Str("ai", me.UserNickName).Bool("war", d.War)
@@ -266,6 +301,7 @@ namespace InterplanetaryAI
                     .Int("releasedEnergy", state.ReleasedEnergy)
                     .Map("passingBy", passing).Map("arrivingBy", arriving).Map("eligibleBy", eligible).Map("rollsBy", rolls)
                     .Map("defensesBy", defenses).Map("scoreBy", score)
+                    .Int("aimedAt", aimedBefore).Map("observedImpactsBy", observedImpacts).Map("observedInterceptedBy", observedIntercepted)
                     .ToString());
             }
             catch (Exception e)

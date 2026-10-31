@@ -52,6 +52,8 @@ namespace InterplanetaryAI.Brain
         public float ScienceWeight = 1f; // science per turn valued against energy/material per turn
         public bool MaterialGlut;     // v0.10: more material banked than energy can turn into anything
         public float GlutMaterialWeight = 0.25f;
+        public bool EnergyGlut;       // v0.11: last turn ended with much of its energy unspent (material or space bound)
+        public float GlutEnergyWeight = 0.25f;
     }
 
     public sealed class WeaponStats
@@ -77,6 +79,13 @@ namespace InterplanetaryAI.Brain
                 energyWeight = 1f;
                 materialWeight = b.GlutMaterialWeight;
             }
+            else if (b.EnergyGlut)
+            {
+                // v0.11: v0.10.1 AIs ended turns with 8-59k energy unspent from T22 (material, then planet space binding)
+                // while still preferring energy gains.
+                energyWeight = b.GlutEnergyWeight;
+                materialWeight = 1f;
+            }
             else if (b.EnergyPush || b.EnergyIncome < wantedEnergy)
             {
                 energyWeight = 1f;
@@ -92,7 +101,14 @@ namespace InterplanetaryAI.Brain
         // Energy is only "expensive" when this turn's energy budget is the tighter one.
         public static float EnergyCostFactor(EconomyBalance b)
         {
+            if (b.EnergyGlut && !b.MaterialGlut) return b.GlutEnergyWeight;
             return b.MaterialBudget >= 1.3f * b.EnergyBudget ? 1f : 0.3f;
+        }
+
+        // v0.11: energy is in glut when last turn ended with at least this share of its budget, and minimum, unspent.
+        public static bool IsEnergyGlut(int lastEnergyLeft, int lastEnergyBudget, float share, int minimum)
+        {
+            return lastEnergyLeft >= minimum && lastEnergyLeft >= share * Math.Max(1, lastEnergyBudget);
         }
 
         public static float Score(EconOption o, float energyWeight, float materialWeight, float energyCostFactor, float scienceWeight = 1f,
