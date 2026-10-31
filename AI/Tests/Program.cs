@@ -38,6 +38,7 @@ namespace InterplanetaryAI.Tests
             DefenseMemoryAndBlindChoice();
             LedgerAndObservedRules();
             CoverageRules();
+            OffenseAndScienceRules();
             WeaponChoiceAvoidsTargetDefenses();
             PlanetMaterialRunsOut();
             BlindAiSpreadsFire();
@@ -430,6 +431,35 @@ namespace InterplanetaryAI.Tests
             ledger.Roll(3);
             int nukes;
             Check(ledger.LastDefender(3).ImpactsByWeapon.TryGetValue("wea_NuclearMissile", out nukes) && nukes == 2, "impacts by weapon: 2 Nuclear Missiles reached us");
+        }
+
+        private static void OffenseAndScienceRules()
+        {
+            // Railgun (Enhanced): 125/125, aoe 6, fires for 100.
+            var railgun = new WeaponProfile { BuildingDamage = 125f, PopulationDamage = 125f, Aoe = 6f, FiringEnergy = 100f, Fragments = 1, Projectiles = 1 };
+            var costDown = UpgradeEffect.None(); costDown.BuildingDamageMul = 0.8f; costDown.PopulationDamageMul = 0.8f; costDown.FiringMul = 0.5f;
+            var popDmg = UpgradeEffect.None(); popDmg.BuildingDamageMul = 0.8f; popDmg.PopulationDamageMul = 1.8f;
+            var projectile = UpgradeEffect.None(); projectile.FiringMul = 1.8f; projectile.ProjectileAdd = 1;
+            Check(Math.Abs(WeaponUpgrades.Gain(railgun, costDown, 1.5f) - 0.6f) < 1e-3f, "Railgun EnergyCostDown: 0.8 damage / 0.5 firing = +60% per energy");
+            Check(Math.Abs(WeaponUpgrades.Gain(railgun, popDmg, 1.5f) - 0.4f) < 1e-3f, "Railgun PopulationDamage (pop weight 1.5): (100 + 337.5) / 312.5 = +40%");
+            Check(Math.Abs(WeaponUpgrades.Gain(railgun, projectile, 1.5f) - (2f / 1.8f - 1f)) < 1e-3f, "Railgun ProjectileAmount1: 2 shots for 1.8x firing = +11%");
+            var both = WeaponUpgrades.Apply(railgun, costDown);
+            Check(Math.Abs(WeaponUpgrades.Gain(both, popDmg, 1.5f) - 0.4f) < 1e-3f, "gains stack: PopulationDamage still +40% after EnergyCostDown (2.24x together)");
+            Check(WeaponUpgrades.Gain(railgun, popDmg, 0f) < 0f, "population weight 0: PopulationDamage is a loss (building damage x0.8)");
+            // Coilcannon EnergyCostDown: fragments 3 -> 2, damage x0.75, firing x0.3 -> 0.75 x 2/3 / 0.3 = 1.67x
+            var coil = new WeaponProfile { BuildingDamage = 200f, PopulationDamage = 200f, Aoe = 3.6f, FiringEnergy = 200f, Fragments = 3, Projectiles = 1 };
+            var coilDown = UpgradeEffect.None(); coilDown.BuildingDamageMul = 0.75f; coilDown.PopulationDamageMul = 0.75f; coilDown.FiringMul = 0.3f; coilDown.FragmentAdd = -1;
+            Check(Math.Abs(WeaponUpgrades.Gain(coil, coilDown, 1.5f) - (0.75f * 2f / 3f / 0.3f - 1f)) < 1e-3f, "Coilcannon EnergyCostDown: +67% per energy");
+            var single = new WeaponProfile { BuildingDamage = 100f, PopulationDamage = 100f, Aoe = 0f, FiringEnergy = 100f, Fragments = 1, Projectiles = 1 };
+            var minus = UpgradeEffect.None(); minus.FragmentAdd = -1;
+            Check(WeaponUpgrades.Apply(single, minus).Fragments == 1, "fragments never fall below 1");
+
+            // Science weight: plan behind schedule raises it, capped; done plan leaves the base.
+            Check(Math.Abs(ScienceValue.Weight(1.5f, 0f, 400f, 20, 40, 4f) - 1.5f) < 1e-4f, "plan done: base weight");
+            Check(Math.Abs(ScienceValue.Weight(1.5f, 16000f, 400f, 20, 40, 4f) - 3f) < 1e-4f, "16,000 left over 20 turns = 800/turn vs 400: weight x2 = 3.0");
+            Check(Math.Abs(ScienceValue.Weight(1.5f, 100000f, 400f, 20, 40, 4f) - 6f) < 1e-4f, "far behind: capped at x4 = 6.0");
+            Check(Math.Abs(ScienceValue.Weight(1.5f, 2000f, 400f, 20, 40, 4f) - 1.5f) < 1e-4f, "ahead of pace: never below the base");
+            Check(Math.Abs(ScienceValue.Weight(1.5f, 4000f, 400f, 39, 40, 4f) - 3f) < 1e-4f, "near the target turn: at least 5 turns assumed (4,000/5 = 800 vs 400)");
         }
 
         private static Dictionary<int, Dictionary<string, int>> Seen(int enemy, string weapon, int count)

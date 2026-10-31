@@ -22,7 +22,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.8.3";
+        public const string VERSION = "0.9.0";
 
         internal static ManualLogSource Log;
 
@@ -82,6 +82,13 @@ namespace InterplanetaryAI
         internal static ConfigEntry<bool> PlanetEfficiency;
         internal static ConfigEntry<int> UnpoweredPlantsPerTurn;
         internal static ConfigEntry<float> ScienceWeight;
+        internal static ConfigEntry<int> ScienceTargetTurn;
+        internal static ConfigEntry<float> ScienceMaxMultiplier;
+        internal static ConfigEntry<bool> WeaponUpgradesEnabled;
+        internal static ConfigEntry<int> WeaponUpgradesPerTurn;
+        internal static ConfigEntry<float> WeaponUpgradeShare;
+        internal static ConfigEntry<float> WeaponUpgradeMinGain;
+        internal static ConfigEntry<float> PopulationDamageWeight;
 
         internal static readonly BuildWeights Build = new BuildWeights();
         internal static List<string> SuperweaponIds = new List<string>();
@@ -90,7 +97,20 @@ namespace InterplanetaryAI
         // v0.4: economy opening, then the one chain that gives telescopes (Advanced Signal Processing),
         // missiles (Orbital Assembly) and the Nuclear Missile (EmDrives -> Thermonuclear Warheads), with the
         // science project (Quantum Computing), Kinetic and Ion defense on the way.
+        // v0.9: science (Quantum Computing, Ultracapacitors) and weapon-upgrade techs (Uranium Alloys, Zero Reluctance
+        // Engineering, Magnetic Saturation Elimination) moved up; Railgun population damage was 31st of 38.
         private const string DefaultResearchPlan =
+            "tec_MassBiochemicalProcessing,tec_MolecularRecycling,tec_SmartGrids,tec_SuperTensileMaterials,tec_SelfAdjustingOptics,"
+            + "tec_AdvancedSignalProcessing,tec_QuantumComputing,tec_UraniumAlloys,tec_Nanostructuring,tec_MicrowaveEnergyTranmission,"
+            + "tec_2ndGenComposites,tec_MaglevServos,tec_OrbitalAssembly,tec_Ultracapacitors,tec_PlasmaChannelInduction,"
+            + "tec_MagneticRadiationShielding,tec_EmDrives,tec_ThermonuclearWarheads,tec_ExperimentalMatterControl,tec_InductionCoils,"
+            + "tec_ZeroReluctanceEngineering,tec_MagneticSaturationElimination,tec_RoboticMining,tec_EarlyWarningAI,tec_Metamaterials,"
+            + "tec_DesignerNanomaterials,tec_VerticalFarming,tec_QuantumCommunications,tec_AtmosphericInterferenceMitigation,"
+            + "tec_4thGenNuclearReactors,tec_LosslessEnergyTransfer,tec_CompositeHeatCells,tec_Octaazacubane,tec_AdvancedGenetics,"
+            + "tec_SelfHealingMaterials,tec_AITargetTracking,tec_MultiChainedStages,tec_GammaRayLasers,tec_MassDrivers";
+
+        // v0.4 default, replaced on load if the config still holds it unchanged.
+        private const string V04ResearchPlan =
             "tec_MassBiochemicalProcessing,tec_MolecularRecycling,tec_SmartGrids,tec_SuperTensileMaterials,tec_SelfAdjustingOptics,"
             + "tec_AdvancedSignalProcessing,tec_QuantumComputing,tec_Nanostructuring,tec_MicrowaveEnergyTranmission,tec_2ndGenComposites,"
             + "tec_MaglevServos,tec_OrbitalAssembly,tec_PlasmaChannelInduction,tec_MagneticRadiationShielding,tec_EmDrives,"
@@ -207,7 +227,7 @@ namespace InterplanetaryAI
                 "Research the Plan list in order (prerequisites are queued automatically) instead of the native random focus. Native research resumes when the plan is done.");
             ResearchPlan = Config.Bind("Research", "Plan", DefaultResearchPlan,
                 "Tech IDs in order. Default (v0.3): the human's order from the 31 Oct 2026 win, economy first (material and energy projects, yield upgrades, Offshore Mine, Floating Plant), then the Nuclear Missile line, then the rest.");
-            if (ResearchPlan.Value == V02ResearchPlan || ResearchPlan.Value == V03ResearchPlan)
+            if (ResearchPlan.Value == V02ResearchPlan || ResearchPlan.Value == V03ResearchPlan || ResearchPlan.Value == V04ResearchPlan)
             {
                 ResearchPlan.Value = DefaultResearchPlan;
                 Log.LogInfo("Research plan: replaced an unchanged older default with the v0.4 default.");
@@ -230,7 +250,14 @@ namespace InterplanetaryAI
             PlanetEfficiency = Config.Bind("Director", "PlanetEfficiency", true,
                 "On a limited planet, mines take Yield1 + Multi-Stage Refinery (drain x0.7) instead of two yield upgrades (which also multiply the drain).");
             UnpoweredPlantsPerTurn = Config.Bind("Director", "UnpoweredPlantsPerTurn", 5, "Most power plants built per turn to connect unpowered buildings.");
-            ScienceWeight = Config.Bind("Director", "ScienceWeight", 1.5f, "Science per turn valued against energy/material per turn when choosing projects.");
+            ScienceWeight = Config.Bind("Director", "ScienceWeight", 1.5f, "Science per turn valued against energy/material per turn when choosing projects and upgrades (base; raised while research is behind).");
+            ScienceTargetTurn = Config.Bind("Director", "ScienceTargetTurn", 40, "Turn by which the research plan should be done; science is valued more while the pace falls short.");
+            ScienceMaxMultiplier = Config.Bind("Director", "ScienceMaxMultiplier", 4f, "Most the science weight is raised when research is behind schedule.");
+            WeaponUpgradesEnabled = Config.Bind("Director", "WeaponUpgrades", true, "At war, buy weapon upgrades that raise damage per firing energy (population damage weighted).");
+            WeaponUpgradesPerTurn = Config.Bind("Director", "WeaponUpgradesPerTurn", 6, "Most weapon upgrades queued in one turn.");
+            WeaponUpgradeShare = Config.Bind("Director", "WeaponUpgradeShare", 0.3f, "Most of a turn's starting material spent on weapon upgrades.");
+            WeaponUpgradeMinGain = Config.Bind("Director", "WeaponUpgradeMinGain", 0.15f, "Smallest gain in damage per firing energy worth an upgrade (0.15 = +15%).");
+            PopulationDamageWeight = Config.Bind("Director", "PopulationDamageWeight", 1.5f, "Population damage valued against building damage when judging weapons (cities at 0 population decide the game).");
 
             DirectorEnabled = Config.Bind("Director", "Enabled", true,
                 "v0.3 economy director: replaces the native construction choice. Buys yield upgrades and city projects first, keeps energy income near EnergyToMaterialTarget x material income, places water buildings properly, holds weapons until WarFromTurn, and counters visible enemy weapons with defenses. Off = the v0.2 build planner.");

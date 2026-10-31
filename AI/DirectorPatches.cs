@@ -53,6 +53,9 @@ namespace InterplanetaryAI
             public float ObservedDefenseNeed;   // v0.6: energy our defenses needed in the last action phase (x margin)
             public int LastImpacts, LastIntercepted, LastNoEligible, LastUnpaid, LastEnergySpent, LastNearCity, LastNoDefenseNearby;
             public float CoverageShare;
+            public float ScienceWeight = 1.5f; // v0.9: raised while the research plan is behind schedule
+            public float RemainingPlanScience;
+            public int WeaponUpgradesThisTurn, WeaponUpgradeMaterial;
             public bool NukeThreat;          // v0.8: an enemy Nuclear Missile seen/remembered or recently landed
             public int AntiNukeWanted;       // v0.8.1: defenses still missing over the cities (per-city deficit)
             public int AntiNukeOwned;        // working (normal, powered) anti-nuke defenses
@@ -197,6 +200,27 @@ namespace InterplanetaryAI
             d.ObservedDefenseNeed = EconomyDirector.ObservedDefenseNeed(last.EnergySpent, last.NoResource, last.Impacts - last.NoEligibleDefense, 100f, Plugin.DefenseObservedMargin.Value);
             d.DesiredDefenses = EconomyDirector.DesiredDefenses(visibleEnemyWeapons, recentDamage, Plugin.DefensePerEnemyWeapon.Value, Plugin.DamagePerDefense.Value, Plugin.MaxDefenses.Value,
                 d.War, d.NonCityBuildings, Plugin.DefenseFloorShare.Value);
+            // v0.9 science: value it by how far the research plan is behind schedule.
+            try
+            {
+                PlayerTechnologyHandler tech = me.TechnologyHandler;
+                float remaining = 0f;
+                foreach (string id in Plugin.ResearchPlanIds)
+                {
+                    GameData_TechData t = tech.GetTechnologyById(id);
+                    if (t == null || !t.science_cost.IsValueSet || tech.GetTechnologyCompletionById(id)) continue;
+                    remaining += Math.Max(0, t.science_cost.Value - tech.GetTechnologyProgressById(id));
+                }
+                d.RemainingPlanScience = remaining;
+                d.ScienceWeight = ScienceValue.Weight(Plugin.ScienceWeight.Value, remaining, me.ResourceHandler.ScienceProductionPerTurn, turn,
+                    Plugin.ScienceTargetTurn.Value, Plugin.ScienceMaxMultiplier.Value);
+            }
+            catch (Exception e)
+            {
+                d.ScienceWeight = Plugin.ScienceWeight.Value;
+                ReportOnce("science-weight", e);
+            }
+
             // v0.8 anti-nuke: a Nuclear Missile seen (visible or remembered) or one that landed on us recently.
             int nukeHits;
             if (last.ImpactsByWeapon.TryGetValue(NuclearWeaponId, out nukeHits) && nukeHits > 0) economy.LastNukeHitTurn = turn;
@@ -448,6 +472,15 @@ namespace InterplanetaryAI
                 d.FailedThisTurn.Add("weapon");
             }
 
+            // 5b. Weapon upgrades (v0.9): damage per firing energy, population damage weighted. Cheap (50 energy +
+            // 150-400 material), permanent, and the AI is limited by firing energy at war.
+            if (d.War && Plugin.WeaponUpgradesEnabled.Value && d.WeaponUpgradesThisTurn < Plugin.WeaponUpgradesPerTurn.Value
+                && d.WeaponUpgradeMaterial < Plugin.WeaponUpgradeShare.Value * d.TurnStartMaterial && !d.FailedThisTurn.Contains("weapon-upgrade"))
+            {
+                if (TryWeaponUpgrade(construction, core, d)) return true;
+                d.FailedThisTurn.Add("weapon-upgrade");
+            }
+
             // 6. Economy: the best-value upgrade, project or building.
             if (TryEconomy(construction, core, economy, d)) return true;
 
@@ -661,7 +694,7 @@ namespace InterplanetaryAI
                 EnergyBudget = core.Resources.Energy,
                 MaterialBudget = core.Resources.Material,
                 EnergyPush = economy.EnergyPush,
-                ScienceWeight = Plugin.ScienceWeight.Value,
+                ScienceWeight = d.ScienceWeight,
             };
             for (int attempt = 0; attempt < 6; attempt++)
             {
@@ -709,6 +742,7 @@ namespace InterplanetaryAI
             PlayerAvailableBuildings available = me.BuildingHandler.AvailableBuildings;
             float globalEnergy = me.StatHandler.GetGlobalStatModifier(GlobalStatModifierID.TurnYieldEnergy);
             float globalMaterial = me.StatHandler.GetGlobalStatModifier(GlobalStatModifierID.TurnYieldMaterial);
+            float globalScience = me.StatHandler.GetGlobalStatModifier(GlobalStatModifierID.TurnYieldScience);
             // Identical options (same building type, same installed upgrades) are listed once.
             HashSet<string> seen = new HashSet<string>();
             foreach (BaseBuilding building in me.BuildingHandler.Buildings)
@@ -716,7 +750,8 @@ namespace InterplanetaryAI
                 if (building == null || building.IsCity || building.CurrentState != BaseBuilding.BuildingState.Normal || building.BuildingData == null) continue;
                 BuildingData data = building.BuildingData;
                 int baseEnergy = Value(data.turn_yield_energy), baseMaterial = Value(data.turn_yield_material);
-                if (baseEnergy <= 0 && baseMaterial <= 0) continue;
+                // v0.9: telescopes and Data Security Hubs yield nothing but take +20 science upgrades.
+                if (baseEnergy <= 0 && baseMaterial <= 0 && !HasScienceUpgrade(upgrades, data)) continue;
                 if (!building.Power.HasPotentialPower) continue; // the resource handler counts only (potentially) powered buildings
                 int planned;
                 d.PlannedUpgrades.TryGetValue(building, out planned);
@@ -783,7 +818,8 @@ namespace InterplanetaryAI
                     {
                         continue; // one yield upgrade per mine on a limited planet: the other slot is for the refinery
                     }
-                    if (energyGain <= 0f && materialGain <= 0f) continue;
+                    float scienceGain = Value(upgrade.turn_yield_science_addition) * globalScience;
+                    if (energyGain <= 0f && materialGain <= 0f && scienceGain <= 0f) continue;
                     if (!seen.Add(data.id.Value + "|" + installed + "|" + upgrade.id.Value + "|" + planned)) continue;
                     options.Add(new EconOption
                     {
@@ -793,12 +829,22 @@ namespace InterplanetaryAI
                         Material = Value(upgrade.build_cost_material),
                         EnergyGain = energyGain,
                         MaterialGain = materialGain,
+                        ScienceGain = scienceGain,
                         SavesReserve = savesReserve,
                         Payload = upgrade,
                         Target = building,
                     });
                 }
             }
+        }
+
+        private static bool HasScienceUpgrade(UpgradesData upgrades, BuildingData data)
+        {
+            foreach (UpgradeData u in upgrades.GetAvailableBuildingUpgrades(data.id.Value))
+            {
+                if (u != null && Value(u.turn_yield_science_addition) > 0) return true;
+            }
+            return false;
         }
 
         private static void AddProjectOptions(AIConstruction construction, AICore core, DirectorState d, List<EconOption> options)
@@ -969,6 +1015,82 @@ namespace InterplanetaryAI
             core.Resources.Energy -= project.EnergyCost;
             core.Resources.Material -= project.MaterialCost;
             Record(d, "project:" + project.Project.id.Value);
+            return true;
+        }
+
+        private static UpgradeEffect EffectOf(UpgradeData u)
+        {
+            return new UpgradeEffect
+            {
+                BuildingDamageMul = FloatValue(u.building_damage_multiplier, 1f),
+                PopulationDamageMul = FloatValue(u.population_damage_multiplier, 1f),
+                AoeMul = FloatValue(u.area_of_effect_radius_multiplier, 1f),
+                FiringMul = FloatValue(u.firing_cost_energy_multiplier, 1f),
+                FragmentAdd = Value(u.fragment_amount_addition),
+                ProjectileAdd = Value(u.projectile_amount_addition),
+            };
+        }
+
+        private static bool TryWeaponUpgrade(AIConstruction construction, AICore core, DirectorState d)
+        {
+            PlayerData me = core.PlayerData;
+            UpgradesData upgrades = GameDataFileManager.GetDataFile<UpgradesData>();
+            WeaponsData weapons = GameDataFileManager.GetDataFile<WeaponsData>();
+            PlayerAvailableBuildings available = me.BuildingHandler.AvailableBuildings;
+            float popWeight = Plugin.PopulationDamageWeight.Value;
+            float bestGain = Plugin.WeaponUpgradeMinGain.Value;
+            BaseBuilding bestBuilding = null;
+            UpgradeData bestUpgrade = null;
+            WeaponProfile bestProfile = new WeaponProfile();
+            foreach (BaseBuilding building in me.BuildingHandler.Buildings)
+            {
+                if (building == null || building.IsCity || building.CurrentState != BaseBuilding.BuildingState.Normal || building.BuildingData == null) continue;
+                BuildingData data = building.BuildingData;
+                if (!data.weapon_functionality.IsValueSet) continue;
+                int planned;
+                d.PlannedUpgrades.TryGetValue(building, out planned);
+                if (building.Upgrades.FreeSlots - planned <= 0) continue;
+                WeaponData w = weapons.GetWeapon(data.weapon_functionality.Value);
+                if (w == null) continue;
+                WeaponProfile profile = new WeaponProfile
+                {
+                    BuildingDamage = Value(w.building_damage),
+                    PopulationDamage = Value(w.population_damage),
+                    Aoe = FloatValue(w.area_of_effect_radius, 0f),
+                    FiringEnergy = Value(w.firing_cost_energy),
+                    Fragments = Value(w.fragment_amount),
+                    Projectiles = Value(w.projectile_amount),
+                    LockOn = FloatValue(w.lock_on_range, 0f) > 0f,
+                };
+                foreach (UpgradeData current in building.Upgrades.CurrentUpgrades)
+                {
+                    if (current != null) profile = WeaponUpgrades.Apply(profile, EffectOf(current));
+                }
+                foreach (UpgradeData upgrade in upgrades.GetAvailableBuildingUpgrades(data.id.Value))
+                {
+                    if (upgrade == null || !available.IsUpgradeAvailable(upgrade) || building.Upgrades.HasUpgrade(upgrade)) continue;
+                    string key = building.ObjectId + ":" + upgrade.id.Value;
+                    if (d.PlannedUpgradeKeys.Contains(key) || d.FailedThisTurn.Contains("upg:" + key)) continue;
+                    float gain = WeaponUpgrades.Gain(profile, EffectOf(upgrade), popWeight);
+                    if (gain > bestGain)
+                    {
+                        bestGain = gain;
+                        bestBuilding = building;
+                        bestUpgrade = upgrade;
+                        bestProfile = profile;
+                    }
+                }
+            }
+            if (bestUpgrade == null) return false;
+            if (!QueueUpgrade(construction, core, d, bestBuilding, bestUpgrade))
+            {
+                d.FailedThisTurn.Add("upg:" + bestBuilding.ObjectId + ":" + bestUpgrade.id.Value);
+                return false;
+            }
+            d.WeaponUpgradesThisTurn++;
+            d.WeaponUpgradeMaterial += Value(bestUpgrade.build_cost_material);
+            d.Upkeep += bestProfile.FiringEnergy * (FloatValue(bestUpgrade.firing_cost_energy_multiplier, 1f) - 1f);
+            Record(d, "weaponupgrade:" + bestUpgrade.id.Value);
             return true;
         }
 
@@ -1414,7 +1536,7 @@ namespace InterplanetaryAI
                 .Int("energyLeft", core.Resources.Energy).Int("materialLeft", core.Resources.Material)
                 .Num("upkeep", d.Upkeep).Int("ownDefenses", d.OwnDefenses).Int("desiredDefenses", d.DesiredDefenses).Int("defenseTurnCap", d.DefenseTurnCap)
                 .Int("lastImpacts", d.LastImpacts).Int("lastIntercepted", d.LastIntercepted).Int("lastNoEligibleDefense", d.LastNoEligible).Int("lastNearCity", d.LastNearCity).Int("lastNoDefenseNearby", d.LastNoDefenseNearby)
-                .Num("coverageKinetic", d.CoverageShare).Bool("nukeThreat", d.NukeThreat).Int("antiNukeMissing", d.AntiNukeWanted).Int("antiNukeOwned", d.AntiNukeOwned).Int("antiNukeQueued", d.AntiNukeThisTurn).Int("citiesProtected", d.CitiesProtected).Int("citiesCovered", d.CitiesCovered).Int("cities", d.CitiesTotal)
+                .Num("coverageKinetic", d.CoverageShare).Bool("nukeThreat", d.NukeThreat).Num("scienceWeight", d.ScienceWeight).Num("planScienceLeft", d.RemainingPlanScience).Int("weaponUpgrades", d.WeaponUpgradesThisTurn).Int("antiNukeMissing", d.AntiNukeWanted).Int("antiNukeOwned", d.AntiNukeOwned).Int("antiNukeQueued", d.AntiNukeThisTurn).Int("citiesProtected", d.CitiesProtected).Int("citiesCovered", d.CitiesCovered).Int("cities", d.CitiesTotal)
                 .Int("lastUnpaidRolls", d.LastUnpaid).Int("lastDefenseEnergy", d.LastEnergySpent).Int("observedNeed", (int)d.ObservedDefenseNeed)
                 .Str("observedPass", ObservedPassText(d.ObservedPass))
                 .Int("upgradesInstalled", upgradesInstalled).Str("weaponTarget", d.TargetName).Map("targetDefenses", d.TargetDefenses)
