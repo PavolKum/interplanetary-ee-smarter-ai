@@ -47,6 +47,7 @@ namespace InterplanetaryAI
             public float Upkeep;
             public int OwnDefenses;
             public int DesiredDefenses;
+            public int DefenseTurnCap;
             public string TargetName = "";
             public readonly Dictionary<string, int> TargetDefenses = new Dictionary<string, int>();
             public readonly Dictionary<BaseBuilding, int> PlannedUpgrades = new Dictionary<BaseBuilding, int>();
@@ -130,7 +131,9 @@ namespace InterplanetaryAI
             d.VisibleEnemyWeapons = visibleEnemyWeapons;
             d.EnemiesAlive = core.EnemyPlanets.Count;
             foreach (int n in economy.OwnDefenses.Values) d.OwnDefenses += n;
-            d.DesiredDefenses = EconomyDirector.DesiredDefenses(visibleEnemyWeapons, recentDamage, Plugin.DefensePerEnemyWeapon.Value, Plugin.DamagePerDefense.Value, Plugin.MaxDefenses.Value);
+            d.DesiredDefenses = EconomyDirector.DesiredDefenses(visibleEnemyWeapons, recentDamage, Plugin.DefensePerEnemyWeapon.Value, Plugin.DamagePerDefense.Value, Plugin.MaxDefenses.Value,
+                d.War, d.NonCityBuildings, Plugin.DefenseFloorShare.Value);
+            d.DefenseTurnCap = EconomyDirector.DefensesPerTurnCap(d.DesiredDefenses, d.OwnDefenses, Plugin.DefensesPerTurn.Value, Plugin.DefenseCatchUpTurns.Value);
 
             // Weapon choice is made against the strongest visible economy: the enemy most worth hitting.
             float bestEconomy = -1f;
@@ -279,8 +282,8 @@ namespace InterplanetaryAI
                 d.FailedThisTurn.Add("intel");
             }
 
-            // 4. Defenses against visible threats.
-            if (d.OwnDefenses + d.DefensesThisTurn < d.DesiredDefenses && d.DefensesThisTurn < Plugin.DefensesPerTurn.Value && d.SlotsLeft > 0 && !d.FailedThisTurn.Contains("defense"))
+            // 4. Defenses: known threats, damage taken, and at war a floor scaled to what we own (v0.5).
+            if (d.OwnDefenses + d.DefensesThisTurn < d.DesiredDefenses && d.DefensesThisTurn < d.DefenseTurnCap && d.SlotsLeft > 0 && !d.FailedThisTurn.Contains("defense"))
             {
                 if (TryDefense(construction, core, economy, d)) return true;
                 d.FailedThisTurn.Add("defense");
@@ -424,21 +427,8 @@ namespace InterplanetaryAI
                 owned[pair.Key] = n + pair.Value;
             }
             string choice = DefensePlanner.Choose(economy.EnemyWeapons, owned, candidates);
-            if (choice == null && d.RecentDamage > 0f)
-            {
-                // Hit by weapons we cannot see: spread over the defense types, fewest owned first.
-                int fewest = int.MaxValue;
-                foreach (string id in candidates)
-                {
-                    int n;
-                    owned.TryGetValue(id, out n);
-                    if (n < fewest)
-                    {
-                        fewest = n;
-                        choice = id;
-                    }
-                }
-            }
+            // No known threat (the floor, or hit by weapons we never saw): Kinetic first, then Ion.
+            if (choice == null) choice = DefensePlanner.ChooseBlind(owned, candidates);
             if (choice == null) return false;
             if (!QueueBuilding(construction, core, d, buildings.GetBuilding(choice), "defense")) return false;
             Increment(economy.DefensesQueued, choice);
@@ -967,7 +957,7 @@ namespace InterplanetaryAI
                 .Bool("war", d.War).Int("slotsAtStart", d.SlotsAtStart).Int("slotsLeft", d.SlotsLeft).Int("unpowered", d.Unpowered)
                 .Int("energyStart", d.TurnStartEnergy).Int("materialStart", d.TurnStartMaterial)
                 .Int("energyLeft", core.Resources.Energy).Int("materialLeft", core.Resources.Material)
-                .Num("upkeep", d.Upkeep).Int("ownDefenses", d.OwnDefenses).Int("desiredDefenses", d.DesiredDefenses)
+                .Num("upkeep", d.Upkeep).Int("ownDefenses", d.OwnDefenses).Int("desiredDefenses", d.DesiredDefenses).Int("defenseTurnCap", d.DefenseTurnCap)
                 .Int("upgradesInstalled", upgradesInstalled).Str("weaponTarget", d.TargetName).Map("targetDefenses", d.TargetDefenses)
                 .Int("intelBuildings", d.IntelBuildings + d.IntelThisTurn).Int("blindEnemies", d.BlindEnemies).Int("defenseReserve", d.DefenseReserve)
                 .Int("refunds", d.Refunds).Map("placementFailures", d.PlacementFailures).Int("steps", d.Steps)

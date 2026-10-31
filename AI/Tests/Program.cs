@@ -35,6 +35,7 @@ namespace InterplanetaryAI.Tests
             DirectorBuildsTheShortResource();
             DirectorRespectsBudgetAndSlots();
             DirectorWarAndDefenseRules();
+            DefenseMemoryAndBlindChoice();
             WeaponChoiceAvoidsTargetDefenses();
             PlanetMaterialRunsOut();
             BlindAiSpreadsFire();
@@ -179,9 +180,54 @@ namespace InterplanetaryAI.Tests
             Check(!EconomyDirector.WarPhase(10, 15, 100f, 600f), "turn 10, little damage: still booming");
             Check(EconomyDirector.WarPhase(10, 15, 700f, 600f), "heavy damage starts retaliation early");
             Check(EconomyDirector.WarPhase(15, 15, 0f, 600f), "war from WarFromTurn");
-            Check(EconomyDirector.DesiredDefenses(10, 1000f, 0.4f, 500f, 40) == 6, "10 visible weapons x 0.4 + 1000 damage / 500 = 6 defenses");
-            Check(EconomyDirector.DesiredDefenses(200, 0f, 0.4f, 500f, 40) == 40, "defenses are capped");
-            Check(EconomyDirector.DesiredDefenses(0, 0f, 0.4f, 500f, 40) == 0, "no threat, no defenses");
+            Check(EconomyDirector.DesiredDefenses(10, 1000f, 0.4f, 500f, 40, false, 0, 0.15f) == 6, "10 known weapons x 0.4 + 1000 damage / 500 = 6 defenses");
+            Check(EconomyDirector.DesiredDefenses(200, 0f, 0.4f, 500f, 40, true, 100, 0.15f) == 40, "defenses are capped");
+            Check(EconomyDirector.DesiredDefenses(0, 0f, 0.4f, 500f, 40, false, 140, 0.15f) == 0, "no threat before war, no defenses");
+
+            // v0.5 floor: 31 Oct 1v1, T21 Fey had 140 non-city buildings, saw 0 weapons, took no damage, wanted 0.
+            Check(EconomyDirector.DesiredDefenses(0, 0f, 0.4f, 500f, 60, true, 140, 0.15f) == 21, "at war, blind: floor 0.15 x 140 buildings = 21");
+            Check(EconomyDirector.DesiredDefenses(4, 0f, 0.4f, 500f, 60, true, 10, 0.15f) == 2, "small base: floor 2 beats 4 x 0.4 = 1.6 -> 2");
+            Check(EconomyDirector.DesiredDefenses(100, 0f, 0.4f, 500f, 60, true, 20, 0.15f) == 40, "threat above the floor still counts");
+            Check(EconomyDirector.DesiredDefenses(0, 0f, 0.4f, 500f, 60, true, 140, 0f) == 0, "floor share 0 = v0.4 behaviour");
+
+            // v0.5 catch-up: 0 owned, 21 wanted, 3 turns -> 7 a turn; on target -> base rate.
+            Check(EconomyDirector.DefensesPerTurnCap(21, 0, 3, 3) == 7, "21 behind over 3 turns = 7 a turn");
+            Check(EconomyDirector.DefensesPerTurnCap(40, 38, 3, 3) == 3, "nearly there: base rate 3");
+            Check(EconomyDirector.DefensesPerTurnCap(40, 0, 3, 0) == 40, "catch-up 0 turns: the whole gap");
+        }
+
+        private static void DefenseMemoryAndBlindChoice()
+        {
+            // 31 Oct 1v1: Fey saw Railguns, then counterintel hid them; v0.4.1 forgot them and built Ion.
+            var memory = new Dictionary<string, float>();
+            var known = new Dictionary<string, int>();
+            DefensePlanner.Remember(memory, new Dictionary<string, int> { { "wea_Railgun", 13 } }, 0.95f, known);
+            Check(known.ContainsKey("wea_Railgun") && known["wea_Railgun"] == 13, "seen now: 13 Railguns known");
+            DefensePlanner.Remember(memory, new Dictionary<string, int>(), 0.95f, known);
+            Check(known.ContainsKey("wea_Railgun") && known["wea_Railgun"] == 12, "hidden next turn: remembered 13 x 0.95 = 12");
+            DefensePlanner.Remember(memory, new Dictionary<string, int> { { "wea_Railgun", 36 }, { "wea_Missile", 2 } }, 0.95f, known);
+            Check(known["wea_Railgun"] == 36 && known["wea_Missile"] == 2, "seen again: the larger count wins, new types added");
+            for (int i = 0; i < 100; i++) DefensePlanner.Remember(memory, new Dictionary<string, int>(), 0.95f, known);
+            Check(!known.ContainsKey("wea_Missile"), "memory fades: unseen for 100 turns, gone");
+            var forget = new Dictionary<string, float>();
+            DefensePlanner.Remember(forget, new Dictionary<string, int> { { "wea_Railgun", 13 } }, 0f, known);
+            DefensePlanner.Remember(forget, new Dictionary<string, int>(), 0f, known);
+            Check(known.Count == 0, "decay 0 = v0.4 behaviour: forget at once");
+
+            // Remembered Railguns pick Kinetic, not Ion.
+            var candidates = new List<string> { "bui_KineticDefense", "bui_IonDefense" };
+            var owned = new Dictionary<string, int> { { "bui_KineticDefense", 9 } };
+            Check(DefensePlanner.Choose(new Dictionary<string, int> { { "wea_Railgun", 12 } }, owned, candidates) == "bui_KineticDefense",
+                "remembered Railguns: Kinetic even with 9 owned and 0 Ion");
+
+            // Nothing known: Kinetic 2:1 over Ion (v0.4.1 spread by fewest owned -> Ion).
+            Check(DefensePlanner.ChooseBlind(new Dictionary<string, int>(), candidates) == "bui_KineticDefense", "blind, none owned: Kinetic");
+            Check(DefensePlanner.ChooseBlind(new Dictionary<string, int> { { "bui_KineticDefense", 1 } }, candidates) == "bui_KineticDefense",
+                "blind, 1 Kinetic 0 Ion: 2/2 vs 1/1, tie keeps Kinetic (first)");
+            Check(DefensePlanner.ChooseBlind(new Dictionary<string, int> { { "bui_KineticDefense", 2 } }, candidates) == "bui_IonDefense",
+                "blind, 2 Kinetic 0 Ion: Ion's turn");
+            Check(DefensePlanner.ChooseBlind(new Dictionary<string, int>(), new List<string> { "bui_IonDefense" }) == "bui_IonDefense",
+                "blind, Kinetic unavailable: Ion");
         }
 
         private static void WeaponChoiceAvoidsTargetDefenses()

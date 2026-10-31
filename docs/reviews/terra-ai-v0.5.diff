@@ -1,0 +1,325 @@
+diff --git a/AI/Brain/DefensePlan.cs b/AI/Brain/DefensePlan.cs
+index 1572f8b..9c8e8fb 100644
+--- a/AI/Brain/DefensePlan.cs
++++ b/AI/Brain/DefensePlan.cs
+@@ -45,5 +45,57 @@ namespace InterplanetaryAI.Brain
+             }
+             return best;
+         }
++
++        // v0.5: no known threat but we still want defenses (the floor, or damage from weapons we cannot see).
++        // Railguns are the first and most common weapon, so Kinetic leads 2:1 over Ion; Shield last.
++        // v0.4.1 spread by fewest owned and built Ion against a Railgun attack (31 Oct 1v1, T27-30).
++        public static readonly Dictionary<string, float> BlindWeights = new Dictionary<string, float>
++        {
++            { "bui_KineticDefense", 2f }, { "bui_IonDefense", 1f }, { "bui_ShieldDefense", 0.5f },
++        };
++
++        public static string ChooseBlind(Dictionary<string, int> ownDefenses, ICollection<string> candidates)
++        {
++            string best = null;
++            float bestScore = 0f;
++            foreach (string defense in candidates)
++            {
++                float weight;
++                if (!BlindWeights.TryGetValue(defense, out weight)) continue;
++                int own;
++                ownDefenses.TryGetValue(defense, out own);
++                float score = weight / (1 + own);
++                if (score > bestScore)
++                {
++                    best = defense;
++                    bestScore = score;
++                }
++            }
++            return best;
++        }
++
++        // v0.5: remember enemy weapons once seen. Counterintel hides weapons it does not destroy: the 31 Oct
++        // human went dark at T21 and built 24 Railguns the AI no longer counted. Each type keeps the larger of
++        // what is visible now and the memory decayed by `decay` per turn. `known` gets the rounded result.
++        public static void Remember(Dictionary<string, float> memory, Dictionary<string, int> visible, float decay, Dictionary<string, int> known)
++        {
++            List<string> types = new List<string>(memory.Keys);
++            foreach (string type in visible.Keys)
++            {
++                if (!memory.ContainsKey(type)) types.Add(type);
++            }
++            known.Clear();
++            foreach (string type in types)
++            {
++                float old;
++                memory.TryGetValue(type, out old);
++                int now;
++                visible.TryGetValue(type, out now);
++                float value = System.Math.Max(now, old * decay);
++                memory[type] = value;
++                int rounded = (int)System.Math.Round(value);
++                if (rounded > 0) known[type] = rounded;
++            }
++        }
+     }
+ }
+diff --git a/AI/Brain/Director.cs b/AI/Brain/Director.cs
+index 34e658c..ddd2c75 100644
+--- a/AI/Brain/Director.cs
++++ b/AI/Brain/Director.cs
+@@ -120,13 +120,26 @@ namespace InterplanetaryAI.Brain
+             return turn >= warFromTurn || recentDamage >= damageTrigger;
+         }
+ 
+-        // Defenses wanted: a share of the visible enemy weapons plus a response to damage taken.
+-        public static int DesiredDefenses(int visibleEnemyWeapons, float recentDamage, float perWeapon, float damagePerDefense, int cap)
++        // Defenses wanted: a share of the known enemy weapons plus a response to damage taken, and at war never
++        // fewer than floorShare x our own non-city buildings (v0.5). v0.4.1 waited for visible weapons or damage:
++        // 0 defenses until T23 with a 277-building economy; the human who won had 19 Kinetic before any weapon.
++        public static int DesiredDefenses(int knownEnemyWeapons, float recentDamage, float perWeapon, float damagePerDefense, int cap,
++            bool war, int ownNonCityBuildings, float floorShare)
+         {
+-            float wanted = perWeapon * visibleEnemyWeapons + (damagePerDefense > 0f ? recentDamage / damagePerDefense : 0f);
++            float wanted = perWeapon * knownEnemyWeapons + (damagePerDefense > 0f ? recentDamage / damagePerDefense : 0f);
++            if (war) wanted = Math.Max(wanted, (float)Math.Ceiling(floorShare * ownNonCityBuildings - 1e-3f));
+             return Math.Min(cap, (int)Math.Round(wanted));
+         }
+ 
++        // Defenses queued per turn: the base rate, or faster to close a gap within catchUpTurns. v0.4.1 built
++        // 3/turn while losing 40-90 buildings a turn.
++        public static int DefensesPerTurnCap(int desired, int ownAndQueued, int basePerTurn, int catchUpTurns)
++        {
++            int deficit = Math.Max(0, desired - ownAndQueued);
++            int catchUp = catchUpTurns > 0 ? (deficit + catchUpTurns - 1) / catchUpTurns : deficit;
++            return Math.Max(basePerTurn, catchUp);
++        }
++
+         // Chance a weapon gets through the target's defenses. coverageFull = defenses of one type that cover
+         // the whole planet. stop = interception chance by defense id for this weapon.
+         public static float PassChance(string weaponId, Dictionary<string, int> targetDefenses, Dictionary<string, Dictionary<string, float>> counters, float coverageFull)
+diff --git a/AI/DirectorPatches.cs b/AI/DirectorPatches.cs
+index 768a630..c809b51 100644
+--- a/AI/DirectorPatches.cs
++++ b/AI/DirectorPatches.cs
+@@ -47,6 +47,7 @@ namespace InterplanetaryAI
+             public float Upkeep;
+             public int OwnDefenses;
+             public int DesiredDefenses;
++            public int DefenseTurnCap;
+             public string TargetName = "";
+             public readonly Dictionary<string, int> TargetDefenses = new Dictionary<string, int>();
+             public readonly Dictionary<BaseBuilding, int> PlannedUpgrades = new Dictionary<BaseBuilding, int>();
+@@ -130,7 +131,9 @@ namespace InterplanetaryAI
+             d.VisibleEnemyWeapons = visibleEnemyWeapons;
+             d.EnemiesAlive = core.EnemyPlanets.Count;
+             foreach (int n in economy.OwnDefenses.Values) d.OwnDefenses += n;
+-            d.DesiredDefenses = EconomyDirector.DesiredDefenses(visibleEnemyWeapons, recentDamage, Plugin.DefensePerEnemyWeapon.Value, Plugin.DamagePerDefense.Value, Plugin.MaxDefenses.Value);
++            d.DesiredDefenses = EconomyDirector.DesiredDefenses(visibleEnemyWeapons, recentDamage, Plugin.DefensePerEnemyWeapon.Value, Plugin.DamagePerDefense.Value, Plugin.MaxDefenses.Value,
++                d.War, d.NonCityBuildings, Plugin.DefenseFloorShare.Value);
++            d.DefenseTurnCap = EconomyDirector.DefensesPerTurnCap(d.DesiredDefenses, d.OwnDefenses, Plugin.DefensesPerTurn.Value, Plugin.DefenseCatchUpTurns.Value);
+ 
+             // Weapon choice is made against the strongest visible economy: the enemy most worth hitting.
+             float bestEconomy = -1f;
+@@ -279,8 +282,8 @@ namespace InterplanetaryAI
+                 d.FailedThisTurn.Add("intel");
+             }
+ 
+-            // 4. Defenses against visible threats.
+-            if (d.OwnDefenses + d.DefensesThisTurn < d.DesiredDefenses && d.DefensesThisTurn < Plugin.DefensesPerTurn.Value && d.SlotsLeft > 0 && !d.FailedThisTurn.Contains("defense"))
++            // 4. Defenses: known threats, damage taken, and at war a floor scaled to what we own (v0.5).
++            if (d.OwnDefenses + d.DefensesThisTurn < d.DesiredDefenses && d.DefensesThisTurn < d.DefenseTurnCap && d.SlotsLeft > 0 && !d.FailedThisTurn.Contains("defense"))
+             {
+                 if (TryDefense(construction, core, economy, d)) return true;
+                 d.FailedThisTurn.Add("defense");
+@@ -424,21 +427,8 @@ namespace InterplanetaryAI
+                 owned[pair.Key] = n + pair.Value;
+             }
+             string choice = DefensePlanner.Choose(economy.EnemyWeapons, owned, candidates);
+-            if (choice == null && d.RecentDamage > 0f)
+-            {
+-                // Hit by weapons we cannot see: spread over the defense types, fewest owned first.
+-                int fewest = int.MaxValue;
+-                foreach (string id in candidates)
+-                {
+-                    int n;
+-                    owned.TryGetValue(id, out n);
+-                    if (n < fewest)
+-                    {
+-                        fewest = n;
+-                        choice = id;
+-                    }
+-                }
+-            }
++            // No known threat (the floor, or hit by weapons we never saw): Kinetic first, then Ion.
++            if (choice == null) choice = DefensePlanner.ChooseBlind(owned, candidates);
+             if (choice == null) return false;
+             if (!QueueBuilding(construction, core, d, buildings.GetBuilding(choice), "defense")) return false;
+             Increment(economy.DefensesQueued, choice);
+@@ -967,7 +957,7 @@ namespace InterplanetaryAI
+                 .Bool("war", d.War).Int("slotsAtStart", d.SlotsAtStart).Int("slotsLeft", d.SlotsLeft).Int("unpowered", d.Unpowered)
+                 .Int("energyStart", d.TurnStartEnergy).Int("materialStart", d.TurnStartMaterial)
+                 .Int("energyLeft", core.Resources.Energy).Int("materialLeft", core.Resources.Material)
+-                .Num("upkeep", d.Upkeep).Int("ownDefenses", d.OwnDefenses).Int("desiredDefenses", d.DesiredDefenses)
++                .Num("upkeep", d.Upkeep).Int("ownDefenses", d.OwnDefenses).Int("desiredDefenses", d.DesiredDefenses).Int("defenseTurnCap", d.DefenseTurnCap)
+                 .Int("upgradesInstalled", upgradesInstalled).Str("weaponTarget", d.TargetName).Map("targetDefenses", d.TargetDefenses)
+                 .Int("intelBuildings", d.IntelBuildings + d.IntelThisTurn).Int("blindEnemies", d.BlindEnemies).Int("defenseReserve", d.DefenseReserve)
+                 .Int("refunds", d.Refunds).Map("placementFailures", d.PlacementFailures).Int("steps", d.Steps)
+diff --git a/AI/EconomyPatches.cs b/AI/EconomyPatches.cs
+index 3565bda..dd64783 100644
+--- a/AI/EconomyPatches.cs
++++ b/AI/EconomyPatches.cs
+@@ -34,7 +34,9 @@ namespace InterplanetaryAI
+             public bool Growth;
+             public readonly int[] Picks = new int[5];
+             public readonly int[] PickSuccesses = new int[5];
+-            public readonly Dictionary<string, int> EnemyWeapons = new Dictionary<string, int>();
++            public readonly Dictionary<string, int> EnemyWeapons = new Dictionary<string, int>();   // known: visible now or remembered (v0.5)
++            public readonly Dictionary<string, int> VisibleWeapons = new Dictionary<string, int>(); // visible this turn
++            public readonly Dictionary<string, float> WeaponMemory = new Dictionary<string, float>();
+             public readonly Dictionary<string, int> OwnDefenses = new Dictionary<string, int>();
+             public readonly Dictionary<string, int> DefensesQueued = new Dictionary<string, int>();
+         }
+@@ -85,7 +87,7 @@ namespace InterplanetaryAI
+ 
+                 // Enemy picture for the construction mix (same visible-only data as targeting).
+                 float maxEnemyEconomy = 0f, recentDamage = 0f;
+-                state.EnemyWeapons.Clear();
++                state.VisibleWeapons.Clear();
+                 foreach (CelestialBody planet in core.EnemyPlanets)
+                 {
+                     EnemyView view = AiPatches.BuildEnemyView(me, planet.Player, turn);
+@@ -94,9 +96,11 @@ namespace InterplanetaryAI
+                     foreach (BaseBuilding building in planet.Player.BuildingHandler.Buildings)
+                     {
+                         if (!AiPatches.IsVisibleIntact(me, building) || building.IsCity || !building.BuildingData.weapon_functionality.IsValueSet) continue;
+-                        Increment(state.EnemyWeapons, building.BuildingData.weapon_functionality.Value);
++                        Increment(state.VisibleWeapons, building.BuildingData.weapon_functionality.Value);
+                     }
+                 }
++                // Known weapons = visible now or remembered from earlier sight (fair: our own past observations).
++                DefensePlanner.Remember(state.WeaponMemory, state.VisibleWeapons, Math.Max(0f, Math.Min(1f, Plugin.WeaponMemoryDecay.Value)), state.EnemyWeapons);
+                 state.OwnDefenses.Clear();
+                 state.DefensesQueued.Clear();
+                 foreach (BaseBuilding building in me.BuildingHandler.Buildings)
+@@ -492,7 +496,7 @@ namespace InterplanetaryAI
+                     .Bool("growth", state.Growth)
+                     .Raw("picks", IntArray(state.Picks)).Raw("queued", IntArray(state.PickSuccesses))
+                     .Bool("superweaponBought", state.Bought)
+-                    .Map("enemyWeapons", state.EnemyWeapons).Map("ownDefenses", state.OwnDefenses).Map("defensesQueued", state.DefensesQueued).ToString());
++                    .Map("enemyWeapons", state.EnemyWeapons).Map("visibleWeapons", state.VisibleWeapons).Map("ownDefenses", state.OwnDefenses).Map("defensesQueued", state.DefensesQueued).ToString());
+             }
+             catch (Exception e)
+             {
+diff --git a/AI/Plugin.cs b/AI/Plugin.cs
+index fb24aff..4a08df4 100644
+--- a/AI/Plugin.cs
++++ b/AI/Plugin.cs
+@@ -22,7 +22,7 @@ namespace InterplanetaryAI
+     {
+         public const string GUID = "pavol.interplanetary.ai";
+         public const string NAME = "Interplanetary EE: Smarter AI";
+-        public const string VERSION = "0.4.1";
++        public const string VERSION = "0.5.0";
+ 
+         internal static ManualLogSource Log;
+ 
+@@ -65,6 +65,9 @@ namespace InterplanetaryAI
+         internal static ConfigEntry<float> DamagePerDefense;
+         internal static ConfigEntry<int> MaxDefenses;
+         internal static ConfigEntry<int> DefensesPerTurn;
++        internal static ConfigEntry<float> DefenseFloorShare;
++        internal static ConfigEntry<int> DefenseCatchUpTurns;
++        internal static ConfigEntry<float> WeaponMemoryDecay;
+         internal static ConfigEntry<float> DefensesForFullCover;
+         internal static ConfigEntry<int> PlacementStepCap;
+         internal static ConfigEntry<float> SuperweaponUpkeepShare;
+@@ -233,8 +236,20 @@ namespace InterplanetaryAI
+                 "Defenses wanted per visible enemy weapon building.");
+             DamagePerDefense = Config.Bind("Director", "DamagePerDefense", 500f,
+                 "One more defense wanted per this much recent damage taken.");
+-            MaxDefenses = Config.Bind("Director", "MaxDefenses", 40, "Cap on defenses wanted.");
+-            DefensesPerTurn = Config.Bind("Director", "DefensesPerTurn", 3, "Most defenses queued in one turn.");
++            MaxDefenses = Config.Bind("Director", "MaxDefenses", 60, "Cap on defenses wanted.");
++            if (MaxDefenses.Value == 40)
++            {
++                MaxDefenses.Value = 60; // v0.4 default; the 31 Oct human held 32 defenses against one AI
++                Log.LogInfo("MaxDefenses: replaced the unchanged v0.4 default 40 with 60.");
++            }
++            DefensesPerTurn = Config.Bind("Director", "DefensesPerTurn", 3,
++                "Defenses queued per turn when on target; more when behind (see DefenseCatchUpTurns).");
++            DefenseFloorShare = Config.Bind("Director", "DefenseFloorShare", 0.15f,
++                "At war, defenses wanted are at least this share of our own non-city buildings, seen threat or not. 0 = off (v0.4 behaviour).");
++            DefenseCatchUpTurns = Config.Bind("Director", "DefenseCatchUpTurns", 3,
++                "When behind on defenses, queue enough per turn to close the gap in this many turns.");
++            WeaponMemoryDecay = Config.Bind("Director", "WeaponMemoryDecay", 0.95f,
++                "Enemy weapons once seen are remembered while hidden by counterintel, shrinking by this factor per turn. 0 = forget at once (v0.4 behaviour).");
+             DefensesForFullCover = Config.Bind("Director", "DefensesForFullCover", 10f,
+                 "Defenses of one type taken to cover a whole planet, for picking weapons the target's defenses stop least.");
+             SuperweaponUpkeepShare = Config.Bind("Director", "SuperweaponUpkeepShare", 0.7f,
+diff --git a/AI/Tests/Program.cs b/AI/Tests/Program.cs
+index 179d4a8..ccc497c 100644
+--- a/AI/Tests/Program.cs
++++ b/AI/Tests/Program.cs
+@@ -35,6 +35,7 @@ namespace InterplanetaryAI.Tests
+             DirectorBuildsTheShortResource();
+             DirectorRespectsBudgetAndSlots();
+             DirectorWarAndDefenseRules();
++            DefenseMemoryAndBlindChoice();
+             WeaponChoiceAvoidsTargetDefenses();
+             PlanetMaterialRunsOut();
+             BlindAiSpreadsFire();
+@@ -179,9 +180,54 @@ namespace InterplanetaryAI.Tests
+             Check(!EconomyDirector.WarPhase(10, 15, 100f, 600f), "turn 10, little damage: still booming");
+             Check(EconomyDirector.WarPhase(10, 15, 700f, 600f), "heavy damage starts retaliation early");
+             Check(EconomyDirector.WarPhase(15, 15, 0f, 600f), "war from WarFromTurn");
+-            Check(EconomyDirector.DesiredDefenses(10, 1000f, 0.4f, 500f, 40) == 6, "10 visible weapons x 0.4 + 1000 damage / 500 = 6 defenses");
+-            Check(EconomyDirector.DesiredDefenses(200, 0f, 0.4f, 500f, 40) == 40, "defenses are capped");
+-            Check(EconomyDirector.DesiredDefenses(0, 0f, 0.4f, 500f, 40) == 0, "no threat, no defenses");
++            Check(EconomyDirector.DesiredDefenses(10, 1000f, 0.4f, 500f, 40, false, 0, 0.15f) == 6, "10 known weapons x 0.4 + 1000 damage / 500 = 6 defenses");
++            Check(EconomyDirector.DesiredDefenses(200, 0f, 0.4f, 500f, 40, true, 100, 0.15f) == 40, "defenses are capped");
++            Check(EconomyDirector.DesiredDefenses(0, 0f, 0.4f, 500f, 40, false, 140, 0.15f) == 0, "no threat before war, no defenses");
++
++            // v0.5 floor: 31 Oct 1v1, T21 Fey had 140 non-city buildings, saw 0 weapons, took no damage, wanted 0.
++            Check(EconomyDirector.DesiredDefenses(0, 0f, 0.4f, 500f, 60, true, 140, 0.15f) == 21, "at war, blind: floor 0.15 x 140 buildings = 21");
++            Check(EconomyDirector.DesiredDefenses(4, 0f, 0.4f, 500f, 60, true, 10, 0.15f) == 2, "small base: floor 2 beats 4 x 0.4 = 1.6 -> 2");
++            Check(EconomyDirector.DesiredDefenses(100, 0f, 0.4f, 500f, 60, true, 20, 0.15f) == 40, "threat above the floor still counts");
++            Check(EconomyDirector.DesiredDefenses(0, 0f, 0.4f, 500f, 60, true, 140, 0f) == 0, "floor share 0 = v0.4 behaviour");
++
++            // v0.5 catch-up: 0 owned, 21 wanted, 3 turns -> 7 a turn; on target -> base rate.
++            Check(EconomyDirector.DefensesPerTurnCap(21, 0, 3, 3) == 7, "21 behind over 3 turns = 7 a turn");
++            Check(EconomyDirector.DefensesPerTurnCap(40, 38, 3, 3) == 3, "nearly there: base rate 3");
++            Check(EconomyDirector.DefensesPerTurnCap(40, 0, 3, 0) == 40, "catch-up 0 turns: the whole gap");
++        }
++
++        private static void DefenseMemoryAndBlindChoice()
++        {
++            // 31 Oct 1v1: Fey saw Railguns, then counterintel hid them; v0.4.1 forgot them and built Ion.
++            var memory = new Dictionary<string, float>();
++            var known = new Dictionary<string, int>();
++            DefensePlanner.Remember(memory, new Dictionary<string, int> { { "wea_Railgun", 13 } }, 0.95f, known);
++            Check(known.ContainsKey("wea_Railgun") && known["wea_Railgun"] == 13, "seen now: 13 Railguns known");
++            DefensePlanner.Remember(memory, new Dictionary<string, int>(), 0.95f, known);
++            Check(known.ContainsKey("wea_Railgun") && known["wea_Railgun"] == 12, "hidden next turn: remembered 13 x 0.95 = 12");
++            DefensePlanner.Remember(memory, new Dictionary<string, int> { { "wea_Railgun", 36 }, { "wea_Missile", 2 } }, 0.95f, known);
++            Check(known["wea_Railgun"] == 36 && known["wea_Missile"] == 2, "seen again: the larger count wins, new types added");
++            for (int i = 0; i < 100; i++) DefensePlanner.Remember(memory, new Dictionary<string, int>(), 0.95f, known);
++            Check(!known.ContainsKey("wea_Missile"), "memory fades: unseen for 100 turns, gone");
++            var forget = new Dictionary<string, float>();
++            DefensePlanner.Remember(forget, new Dictionary<string, int> { { "wea_Railgun", 13 } }, 0f, known);
++            DefensePlanner.Remember(forget, new Dictionary<string, int>(), 0f, known);
++            Check(known.Count == 0, "decay 0 = v0.4 behaviour: forget at once");
++
++            // Remembered Railguns pick Kinetic, not Ion.
++            var candidates = new List<string> { "bui_KineticDefense", "bui_IonDefense" };
++            var owned = new Dictionary<string, int> { { "bui_KineticDefense", 9 } };
++            Check(DefensePlanner.Choose(new Dictionary<string, int> { { "wea_Railgun", 12 } }, owned, candidates) == "bui_KineticDefense",
++                "remembered Railguns: Kinetic even with 9 owned and 0 Ion");
++
++            // Nothing known: Kinetic 2:1 over Ion (v0.4.1 spread by fewest owned -> Ion).
++            Check(DefensePlanner.ChooseBlind(new Dictionary<string, int>(), candidates) == "bui_KineticDefense", "blind, none owned: Kinetic");
++            Check(DefensePlanner.ChooseBlind(new Dictionary<string, int> { { "bui_KineticDefense", 1 } }, candidates) == "bui_KineticDefense",
++                "blind, 1 Kinetic 0 Ion: 2/2 vs 1/1, tie keeps Kinetic (first)");
++            Check(DefensePlanner.ChooseBlind(new Dictionary<string, int> { { "bui_KineticDefense", 2 } }, candidates) == "bui_IonDefense",
++                "blind, 2 Kinetic 0 Ion: Ion's turn");
++            Check(DefensePlanner.ChooseBlind(new Dictionary<string, int>(), new List<string> { "bui_IonDefense" }) == "bui_IonDefense",
++                "blind, Kinetic unavailable: Ion");
+         }
+ 
+         private static void WeaponChoiceAvoidsTargetDefenses()

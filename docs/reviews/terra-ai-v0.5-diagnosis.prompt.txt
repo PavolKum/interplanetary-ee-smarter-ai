@@ -1,0 +1,23 @@
+READ-ONLY review. Do not edit, create or delete any file.
+
+You are reviewing a DIAGNOSIS, not code. Context: AI/ is a BepInEx plugin making the Interplanetary Enhanced Edition single-player AI stronger without hidden information (AI/README.md; you reviewed v0.1-v0.4, see docs/reviews/). Pavol (human, in-game name "jogi") just beat ONE v0.4.1 AI ("Fey", level 1) in a 1v1 at turn 38. The AI's economy was ~2x his at turns 20-28 (25.8k vs 11.8k energy/turn, 277 vs 99 buildings at T26), then collapsed from T29 to 19 buildings at T37. Before writing v0.5 I want you to check, independently and from the raw data, why it lost.
+
+Data (do not trust my summaries; recompute):
+- docs/playtests/data/v041-ai-decisions.jsonl - one JSON per AI decision. Records: "economy", "director" (per turn: ownDefenses, desiredDefenses, defenseReserve, upkeep, blindEnemies, intelBuildings, queued items, energy/material start/left), "target", "fire", "research", "build", "superweapon".
+- docs/playtests/data/v041-human-telemetry.jsonl - the human's per-turn state (turn_end records: resources incl. counterintelMultiplier and planetMaterials, buildings by id, research) and his shots (weaponType, hitOtherPlayerPlanet) and damage dealt (building_hp, population_millions).
+- My write-up: docs/playtests/2026-10-31-v0.4.1.md. Mechanics: docs/original-mechanics.md. Strategy notes: docs/strategy/optimal-play.md. Decompiled source: decompiled/ (PlayerDefenseHandler.cs, PlayerIntelHandler.cs, PlayerResourceHandler.cs, AI folder). Mod code: AI/DirectorPatches.cs, AI/EconomyPatches.cs (enemy weapon count ~line 86-99), AI/Brain/Director.cs (DesiredDefenses, DefenseReserve), AI/Patches.cs (BuildEnemyView, IsVisibleIntact).
+
+My hypotheses (try to refute each; say CONFIRMED / REFUTED / PARTLY with numbers and file:line):
+H1. Defenses were sized from visible enemy weapons only. The human had 0 weapons while Fey could see him (T11-T20), then his counterintel (Data Security Hubs, multiplier 2.05 -> 8.76) blinded Fey from T21 while he built 24 Railguns. desiredDefenses stayed 0 until T23, rose only through the damage term, and DefensesPerTurn=3 capped the build at 3/turn (20 defenses at T31) while Fey lost 100+ buildings a turn.
+H2. Fey's offense (41 Railguns + 16 Missiles at T26, more than the human) was absorbed by the human's 22-29 Kinetic/Ion defenses funded by 7-11k leftover energy; the human never lost a building and his population dipped only at T21 and T27.
+H3. Planet material ran out (288k at T10 -> 19k at T30 -> 0 at T37) at 22-25k drain/turn; material income would have ended around T31 even without the attack.
+H4. The superweapon (Nuclear Missile, research queued T27) came too late to matter.
+H5. Fey lost the intel race: ~10-13 telescopes vs the human's counterintel x8.8, and the director stopped adding telescopes when blindness returned (check why: caps, IntelPerTurn, slots, failures).
+
+Also answer:
+Q1. What did the human's leftover energy and defense count imply for each Fey shot (intercept probability/cost per PlayerDefenseHandler)? Was Fey's weapon mix wrong against Kinetic+Ion, and what mix or tactic would have gotten through (volleys exhausting defender energy, Missiles vs Kinetic, lasers, superweapon)?
+Q2. What could Fey legitimately know while blind (no hidden info): its own damage taken by weapon type, the enemy's last seen weapon count, turn number, tech era? Propose a defense rule that would have had ~20 defenses by T22 without cheating, and check it would not over-build in a peaceful game.
+Q3. Ranked: which 3 changes would most raise the AI's chance to beat this human next match, human-like and fair?
+Q4. Which game rules does each proposed change depend on? List them so the code review can test them.
+
+Output: per-hypothesis verdicts with evidence, answers to Q1-Q4, anything important I missed. Under 1,500 words.

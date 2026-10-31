@@ -34,7 +34,9 @@ namespace InterplanetaryAI
             public bool Growth;
             public readonly int[] Picks = new int[5];
             public readonly int[] PickSuccesses = new int[5];
-            public readonly Dictionary<string, int> EnemyWeapons = new Dictionary<string, int>();
+            public readonly Dictionary<string, int> EnemyWeapons = new Dictionary<string, int>();   // known: visible now or remembered (v0.5)
+            public readonly Dictionary<string, int> VisibleWeapons = new Dictionary<string, int>(); // visible this turn
+            public readonly Dictionary<string, float> WeaponMemory = new Dictionary<string, float>();
             public readonly Dictionary<string, int> OwnDefenses = new Dictionary<string, int>();
             public readonly Dictionary<string, int> DefensesQueued = new Dictionary<string, int>();
         }
@@ -85,7 +87,7 @@ namespace InterplanetaryAI
 
                 // Enemy picture for the construction mix (same visible-only data as targeting).
                 float maxEnemyEconomy = 0f, recentDamage = 0f;
-                state.EnemyWeapons.Clear();
+                state.VisibleWeapons.Clear();
                 foreach (CelestialBody planet in core.EnemyPlanets)
                 {
                     EnemyView view = AiPatches.BuildEnemyView(me, planet.Player, turn);
@@ -94,9 +96,11 @@ namespace InterplanetaryAI
                     foreach (BaseBuilding building in planet.Player.BuildingHandler.Buildings)
                     {
                         if (!AiPatches.IsVisibleIntact(me, building) || building.IsCity || !building.BuildingData.weapon_functionality.IsValueSet) continue;
-                        Increment(state.EnemyWeapons, building.BuildingData.weapon_functionality.Value);
+                        Increment(state.VisibleWeapons, building.BuildingData.weapon_functionality.Value);
                     }
                 }
+                // Known weapons = visible now or remembered from earlier sight (fair: our own past observations).
+                DefensePlanner.Remember(state.WeaponMemory, state.VisibleWeapons, Math.Max(0f, Math.Min(1f, Plugin.WeaponMemoryDecay.Value)), state.EnemyWeapons);
                 state.OwnDefenses.Clear();
                 state.DefensesQueued.Clear();
                 foreach (BaseBuilding building in me.BuildingHandler.Buildings)
@@ -492,7 +496,7 @@ namespace InterplanetaryAI
                     .Bool("growth", state.Growth)
                     .Raw("picks", IntArray(state.Picks)).Raw("queued", IntArray(state.PickSuccesses))
                     .Bool("superweaponBought", state.Bought)
-                    .Map("enemyWeapons", state.EnemyWeapons).Map("ownDefenses", state.OwnDefenses).Map("defensesQueued", state.DefensesQueued).ToString());
+                    .Map("enemyWeapons", state.EnemyWeapons).Map("visibleWeapons", state.VisibleWeapons).Map("ownDefenses", state.OwnDefenses).Map("defensesQueued", state.DefensesQueued).ToString());
             }
             catch (Exception e)
             {

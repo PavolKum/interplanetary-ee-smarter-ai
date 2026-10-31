@@ -45,5 +45,57 @@ namespace InterplanetaryAI.Brain
             }
             return best;
         }
+
+        // v0.5: no known threat but we still want defenses (the floor, or damage from weapons we cannot see).
+        // Railguns are the first and most common weapon, so Kinetic leads 2:1 over Ion; Shield last.
+        // v0.4.1 spread by fewest owned and built Ion against a Railgun attack (31 Oct 1v1, T27-30).
+        public static readonly Dictionary<string, float> BlindWeights = new Dictionary<string, float>
+        {
+            { "bui_KineticDefense", 2f }, { "bui_IonDefense", 1f }, { "bui_ShieldDefense", 0.5f },
+        };
+
+        public static string ChooseBlind(Dictionary<string, int> ownDefenses, ICollection<string> candidates)
+        {
+            string best = null;
+            float bestScore = 0f;
+            foreach (string defense in candidates)
+            {
+                float weight;
+                if (!BlindWeights.TryGetValue(defense, out weight)) continue;
+                int own;
+                ownDefenses.TryGetValue(defense, out own);
+                float score = weight / (1 + own);
+                if (score > bestScore)
+                {
+                    best = defense;
+                    bestScore = score;
+                }
+            }
+            return best;
+        }
+
+        // v0.5: remember enemy weapons once seen. Counterintel hides weapons it does not destroy: the 31 Oct
+        // human went dark at T21 and built 24 Railguns the AI no longer counted. Each type keeps the larger of
+        // what is visible now and the memory decayed by `decay` per turn. `known` gets the rounded result.
+        public static void Remember(Dictionary<string, float> memory, Dictionary<string, int> visible, float decay, Dictionary<string, int> known)
+        {
+            List<string> types = new List<string>(memory.Keys);
+            foreach (string type in visible.Keys)
+            {
+                if (!memory.ContainsKey(type)) types.Add(type);
+            }
+            known.Clear();
+            foreach (string type in types)
+            {
+                float old;
+                memory.TryGetValue(type, out old);
+                int now;
+                visible.TryGetValue(type, out now);
+                float value = System.Math.Max(now, old * decay);
+                memory[type] = value;
+                int rounded = (int)System.Math.Round(value);
+                if (rounded > 0) known[type] = rounded;
+            }
+        }
     }
 }

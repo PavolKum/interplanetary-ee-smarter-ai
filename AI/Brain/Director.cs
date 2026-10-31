@@ -120,11 +120,24 @@ namespace InterplanetaryAI.Brain
             return turn >= warFromTurn || recentDamage >= damageTrigger;
         }
 
-        // Defenses wanted: a share of the visible enemy weapons plus a response to damage taken.
-        public static int DesiredDefenses(int visibleEnemyWeapons, float recentDamage, float perWeapon, float damagePerDefense, int cap)
+        // Defenses wanted: a share of the known enemy weapons plus a response to damage taken, and at war never
+        // fewer than floorShare x our own non-city buildings (v0.5). v0.4.1 waited for visible weapons or damage:
+        // 0 defenses until T23 with a 277-building economy; the human who won had 19 Kinetic before any weapon.
+        public static int DesiredDefenses(int knownEnemyWeapons, float recentDamage, float perWeapon, float damagePerDefense, int cap,
+            bool war, int ownNonCityBuildings, float floorShare)
         {
-            float wanted = perWeapon * visibleEnemyWeapons + (damagePerDefense > 0f ? recentDamage / damagePerDefense : 0f);
+            float wanted = perWeapon * knownEnemyWeapons + (damagePerDefense > 0f ? recentDamage / damagePerDefense : 0f);
+            if (war) wanted = Math.Max(wanted, (float)Math.Ceiling(floorShare * ownNonCityBuildings - 1e-3f));
             return Math.Min(cap, (int)Math.Round(wanted));
+        }
+
+        // Defenses queued per turn: the base rate, or faster to close a gap within catchUpTurns. v0.4.1 built
+        // 3/turn while losing 40-90 buildings a turn.
+        public static int DefensesPerTurnCap(int desired, int ownAndQueued, int basePerTurn, int catchUpTurns)
+        {
+            int deficit = Math.Max(0, desired - ownAndQueued);
+            int catchUp = catchUpTurns > 0 ? (deficit + catchUpTurns - 1) / catchUpTurns : deficit;
+            return Math.Max(basePerTurn, catchUp);
         }
 
         // Chance a weapon gets through the target's defenses. coverageFull = defenses of one type that cover

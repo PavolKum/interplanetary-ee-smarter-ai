@@ -22,7 +22,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.4.1";
+        public const string VERSION = "0.5.0";
 
         internal static ManualLogSource Log;
 
@@ -65,6 +65,9 @@ namespace InterplanetaryAI
         internal static ConfigEntry<float> DamagePerDefense;
         internal static ConfigEntry<int> MaxDefenses;
         internal static ConfigEntry<int> DefensesPerTurn;
+        internal static ConfigEntry<float> DefenseFloorShare;
+        internal static ConfigEntry<int> DefenseCatchUpTurns;
+        internal static ConfigEntry<float> WeaponMemoryDecay;
         internal static ConfigEntry<float> DefensesForFullCover;
         internal static ConfigEntry<int> PlacementStepCap;
         internal static ConfigEntry<float> SuperweaponUpkeepShare;
@@ -233,8 +236,20 @@ namespace InterplanetaryAI
                 "Defenses wanted per visible enemy weapon building.");
             DamagePerDefense = Config.Bind("Director", "DamagePerDefense", 500f,
                 "One more defense wanted per this much recent damage taken.");
-            MaxDefenses = Config.Bind("Director", "MaxDefenses", 40, "Cap on defenses wanted.");
-            DefensesPerTurn = Config.Bind("Director", "DefensesPerTurn", 3, "Most defenses queued in one turn.");
+            MaxDefenses = Config.Bind("Director", "MaxDefenses", 60, "Cap on defenses wanted.");
+            if (MaxDefenses.Value == 40)
+            {
+                MaxDefenses.Value = 60; // v0.4 default; the 31 Oct human held 32 defenses against one AI
+                Log.LogInfo("MaxDefenses: replaced the unchanged v0.4 default 40 with 60.");
+            }
+            DefensesPerTurn = Config.Bind("Director", "DefensesPerTurn", 3,
+                "Defenses queued per turn when on target; more when behind (see DefenseCatchUpTurns).");
+            DefenseFloorShare = Config.Bind("Director", "DefenseFloorShare", 0.15f,
+                "At war, defenses wanted are at least this share of our own non-city buildings, seen threat or not. 0 = off (v0.4 behaviour).");
+            DefenseCatchUpTurns = Config.Bind("Director", "DefenseCatchUpTurns", 3,
+                "When behind on defenses, queue enough per turn to close the gap in this many turns.");
+            WeaponMemoryDecay = Config.Bind("Director", "WeaponMemoryDecay", 0.95f,
+                "Enemy weapons once seen are remembered while hidden by counterintel, shrinking by this factor per turn. 0 = forget at once (v0.4 behaviour).");
             DefensesForFullCover = Config.Bind("Director", "DefensesForFullCover", 10f,
                 "Defenses of one type taken to cover a whole planet, for picking weapons the target's defenses stop least.");
             SuperweaponUpkeepShare = Config.Bind("Director", "SuperweaponUpkeepShare", 0.7f,
