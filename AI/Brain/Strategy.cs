@@ -186,10 +186,9 @@ namespace InterplanetaryAI.Brain
             bool pulseReady = turn - lastStrikeTurn >= Math.Max(1, s.StrikeEvery);
             bool saturated = d.Passing >= s.MinPassingShots && (d.PassShare >= s.MinPassShare || d.Passing >= s.BigSalvoShots);
             bool broken = d.PassShare >= s.BrokenPassShare && d.Passing >= s.MinPassingShots;
-            // v0.11 aim first: weapons find trajectories only once pointed at a target (v0.10.1 T30: a first strike at a new
-            // target found 11 of 48). A target switch holds one turn while the weapons aim.
-            bool aimed = best.PlayerId == lastCommitId;
-            if (weapons >= s.MinWeapons && saturated && (pulseReady || broken) && aimed)
+            // v0.11.1: no "aim first" turn (Terra v0.11 #1: the engine resets every trajectory search each turn, so a turn of
+            // aiming carries nothing over). A strike whose weapons find no trajectory is called off at firing time instead.
+            if (weapons >= s.MinWeapons && saturated && (pulseReady || broken))
             {
                 d.Fire = true;
                 d.Reason = pulseReady ? "saturated" : "broken";
@@ -201,7 +200,7 @@ namespace InterplanetaryAI.Brain
             }
             else
             {
-                d.Reason = weapons < s.MinWeapons ? "building" : !saturated ? "below-saturation" : !aimed ? "aiming" : "pulse-wait";
+                d.Reason = weapons < s.MinWeapons ? "building" : !saturated ? "below-saturation" : "pulse-wait";
             }
             return d;
         }

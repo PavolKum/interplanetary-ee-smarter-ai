@@ -93,6 +93,7 @@ namespace InterplanetaryAI
             public bool HoldingFire;
             public bool MaterialGlut;
             public bool EnergyGlut;
+            public int CounterDefensesThisTurn;
             public int EndEnergyLeft;     // energy unspent when the turn's construction ended
             public int LastEnergyLeft, LastEnergyBudget;
             public readonly Dictionary<string, int> AbandonedLastTurn = new Dictionary<string, int>();
@@ -182,7 +183,17 @@ namespace InterplanetaryAI
             // v0.11 carried from the turn just before: unspent energy (energy glut) and abandoned placements (a full planet).
             bool consecutive = d.Turn == turn - 1;
             int lastLeft = consecutive ? d.EndEnergyLeft : 0, lastBudget = consecutive ? d.TurnStartEnergy : 0;
-            Dictionary<string, int> lastAbandons = consecutive ? new Dictionary<string, int>(d.PlacementFailures) : new Dictionary<string, int>();
+            // A throttled type stays throttled while its placements still fail (a capped turn has at most two failures).
+            Dictionary<string, int> lastAbandons = new Dictionary<string, int>();
+            if (consecutive)
+            {
+                foreach (KeyValuePair<string, int> pair in d.PlacementFailures)
+                {
+                    int before;
+                    d.AbandonedLastTurn.TryGetValue(pair.Key, out before);
+                    lastAbandons[pair.Key] = before >= 3 && pair.Value >= 1 ? Math.Max(3, pair.Value) : pair.Value;
+                }
+            }
             d = new DirectorState { WaterCooldownUntil = waterCooldown, Turn = turn, LastEnergyLeft = lastLeft, LastEnergyBudget = lastBudget };
             foreach (KeyValuePair<string, int> pair in lastAbandons) d.AbandonedLastTurn[pair.Key] = pair.Value;
             s_states[core.PlayerData.PlayerID] = d;
@@ -469,6 +480,13 @@ namespace InterplanetaryAI
                 d.FailedThisTurn.Add("antinuke");
             }
 
+            // 3c. Counter-defense (v0.11.1): a known enemy weapon type we barely stop gets its counter, even at the defense cap.
+            if (d.CounterDefensesThisTurn < 2 && d.SlotsLeft > 0 && !d.FailedThisTurn.Contains("counter-defense"))
+            {
+                if (TryCounterDefense(construction, core, economy, d)) return true;
+                d.FailedThisTurn.Add("counter-defense");
+            }
+
             // 4. Defenses: known threats, damage taken, and at war a floor scaled to what we own (v0.5).
             if (d.OwnDefenses + d.DefensesThisTurn < d.DesiredDefenses && d.DefensesThisTurn < d.DefenseTurnCap && d.SlotsLeft > 0 && !d.FailedThisTurn.Contains("defense"))
             {
@@ -592,7 +610,7 @@ namespace InterplanetaryAI
                 BuildingData data = buildings.GetBuilding(id);
                 if (data == null || data.weapon_functionality.IsValueSet) continue;
                 int yield = kind == "intel" ? Value(data.turn_yield_intel) : Value(data.turn_yield_counterintel);
-                if (yield <= 0 || !available.IsBuildingAvailable(data) || !Affordable(core, data) || d.FailedThisTurn.Contains(id)) continue;
+                if (yield <= 0 || !available.IsBuildingAvailable(data) || !Affordable(core, data) || Blocked(d, id)) continue;
                 if (!QueueBuilding(construction, core, d, data, kind)) continue;
                 if (kind == "counterintel") d.CounterintelThisTurn++;
                 if (kind == "intel") d.IntelThisTurn++;
@@ -631,7 +649,7 @@ namespace InterplanetaryAI
             {
                 BuildingData data = buildings.GetBuilding(id);
                 if (data == null || !available.IsBuildingAvailable(data)) continue;
-                if (d.FailedThisTurn.Contains(id) || !Affordable(core, data)) continue; // another type when one fails
+                if (Blocked(d, id) || !Affordable(core, data)) continue; // another type when one fails
                 candidates.Add(id);
             }
             Dictionary<string, int> owned = new Dictionary<string, int>(economy.OwnDefenses);
@@ -651,6 +669,33 @@ namespace InterplanetaryAI
             return true;
         }
 
+        private static bool TryCounterDefense(AIConstruction construction, AICore core, EconomyPatches.AiEconomyState economy, DirectorState d)
+        {
+            if (economy.EnemyWeapons.Count == 0) return false;
+            BuildingsData buildings = GameDataFileManager.GetDataFile<BuildingsData>();
+            PlayerAvailableBuildings available = core.PlayerData.BuildingHandler.AvailableBuildings;
+            List<string> buildable = new List<string>();
+            foreach (string id in DefensePlanner.Counters.Keys)
+            {
+                BuildingData data = buildings.GetBuilding(id);
+                if (data != null && available.IsBuildingAvailable(data) && Affordable(core, data) && !Blocked(d, id)) buildable.Add(id);
+            }
+            Dictionary<string, int> owned = new Dictionary<string, int>(economy.OwnDefenses);
+            foreach (KeyValuePair<string, int> pair in economy.DefensesQueued)
+            {
+                int n;
+                owned.TryGetValue(pair.Key, out n);
+                owned[pair.Key] = n + pair.Value;
+            }
+            string choice = DefensePlanner.CounterDeficit(economy.EnemyWeapons, owned, buildable);
+            if (choice == null) return false;
+            if (!QueueBuilding(construction, core, d, buildings.GetBuilding(choice), "defense")) return false;
+            Increment(economy.DefensesQueued, choice);
+            d.DefensesThisTurn++;
+            d.CounterDefensesThisTurn++;
+            return true;
+        }
+
         // ---- weapons -------------------------------------------------------------------------------
 
         private static bool TryWeapon(AIConstruction construction, AICore core, DirectorState d, float upkeepCap)
@@ -665,7 +710,7 @@ namespace InterplanetaryAI
                 BuildingData data = buildings.GetBuilding(id);
                 if (data == null || !data.weapon_functionality.IsValueSet) continue;
                 if (data.max_amount_at_once.IsValueSet && data.max_amount_at_once.Value > 0) continue; // superweapons: savings logic
-                if (!available.IsBuildingAvailable(data) || !Affordable(core, data) || d.FailedThisTurn.Contains(id)) continue;
+                if (!available.IsBuildingAvailable(data) || !Affordable(core, data) || Blocked(d, id)) continue;
                 WeaponData weapon = weapons.GetWeapon(data.weapon_functionality.Value);
                 if (weapon == null) continue;
                 string type = weapon.type.IsValueSet ? weapon.type.Value : "";
@@ -985,7 +1030,7 @@ namespace InterplanetaryAI
             foreach (string id in s_economyBuildings)
             {
                 BuildingData data = buildings.GetBuilding(id);
-                if (data == null || !available.IsBuildingAvailable(data) || d.FailedThisTurn.Contains(id)) continue;
+                if (data == null || !available.IsBuildingAvailable(data) || Blocked(d, id)) continue;
                 if (available.GetLimitedBuildingConstructionsLeft(data) == 0) continue;
                 bool isPlant = data.distribute_power.IsValueSet && data.distribute_power.Value;
                 bool waterOnly = IsWaterOnly(data);
@@ -1014,7 +1059,7 @@ namespace InterplanetaryAI
             foreach (string id in new[] { "bui_SolarPlant", "bui_NuclearPlant" })
             {
                 BuildingData data = buildings.GetBuilding(id);
-                if (data != null && available.IsBuildingAvailable(data) && Affordable(core, data) && !d.FailedThisTurn.Contains(id)) return data;
+                if (data != null && available.IsBuildingAvailable(data) && Affordable(core, data) && !Blocked(d, id)) return data;
             }
             return null;
         }
@@ -1027,22 +1072,29 @@ namespace InterplanetaryAI
             BuildingsData buildings = GameDataFileManager.GetDataFile<BuildingsData>();
             PlayerAvailableBuildings available = core.PlayerData.BuildingHandler.AvailableBuildings;
             BuildingData data = buildings.HasBuilding("bui_FloatingPlant") ? buildings.GetBuilding("bui_FloatingPlant") : null;
-            if (data != null && available.IsBuildingAvailable(data) && Affordable(core, data) && !d.FailedThisTurn.Contains("bui_FloatingPlant")) return data;
+            if (data != null && available.IsBuildingAvailable(data) && Affordable(core, data) && !Blocked(d, "bui_FloatingPlant")) return data;
             return null;
         }
 
         // ---- queue primitives ----------------------------------------------------------------------
 
+        // A type whose placement gave up this turn, or (v0.11) one throttled because its placements keep failing: placements
+        // resolve after many are queued, so a full planet saw 22-55 of one type queued and abandoned every turn (v0.10.1
+        // Maverick T24-T28). A type abandoned 3+ times last turn is queued at most twice this turn. Candidate filters use
+        // this too, so a throttled type is skipped before it is picked (Terra v0.11 #4).
+        private static bool Blocked(DirectorState d, string id)
+        {
+            if (d.FailedThisTurn.Contains(id)) return true;
+            int abandoned, queuedNow;
+            d.AbandonedLastTurn.TryGetValue(id, out abandoned);
+            d.QueuedById.TryGetValue(id, out queuedNow);
+            return abandoned >= 3 && queuedNow >= 2;
+        }
+
         private static bool QueueBuilding(AIConstruction construction, AICore core, DirectorState d, BuildingData data, string role)
         {
             // A type whose placement gave up this turn is not queued again (v0.3.1: 241 Railgun searches requeued).
-            if (data == null || d.FailedThisTurn.Contains(data.id.Value) || !Affordable(core, data)) return false;
-            // v0.11: placements resolve after many are queued, so a full planet saw 22-55 of one type queued and abandoned
-            // every turn (v0.10.1 Maverick T24-T28). A type abandoned 3+ times last turn is queued at most twice this turn.
-            int abandoned, queuedNow;
-            d.AbandonedLastTurn.TryGetValue(data.id.Value, out abandoned);
-            d.QueuedById.TryGetValue(data.id.Value, out queuedNow);
-            if (abandoned >= 3 && queuedNow >= 2) return false;
+            if (data == null || Blocked(d, data.id.Value) || !Affordable(core, data)) return false;
             bool needsSlot = !(data.distribute_power.IsValueSet && data.distribute_power.Value);
             if (needsSlot && d.SlotsLeft <= 0) return false;
             construction.ConstructionQueue.AddBuildingToQueue(data); // charges core.Resources

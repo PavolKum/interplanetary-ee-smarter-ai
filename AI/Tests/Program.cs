@@ -265,14 +265,10 @@ namespace InterplanetaryAI.Tests
             d = Strategy.Decide(26, true, Railguns(40), 1f, new List<SalvoTarget> { a, b }, counters, -1000, 0, 40, s, 0);
             Check(d.CommitTargetId == 2, "30 vs 20 through: switch; got " + d.CommitTargetId);
 
-            // Aim first: a saturating salvo at a target the weapons were not pointed at holds one turn.
+            // v0.11.1: no aiming turn (trajectory searches restart every turn); a new target is struck at once.
             SalvoTarget open = new SalvoTarget { PlayerId = 0, Score = 1f, DefensesSeen = true };
             d = Strategy.Decide(26, true, Railguns(30), 1f, new List<SalvoTarget> { open }, counters, -1000, 0, 30, s, -1);
-            Check(!d.Fire && d.Reason == "aiming", "a new target is aimed at before the strike; got " + d.Reason);
-            d = Strategy.Decide(26, true, Railguns(30), 1f, new List<SalvoTarget> { open }, counters, -1000, 0, 30, s, 0);
-            Check(d.Fire && d.Reason == "saturated", "aimed last turn: strike; got " + d.Reason);
-            d = Strategy.Decide(26, true, Railguns(30), 1f, new List<SalvoTarget> { open }, counters, -1000, s.MaxHoldTurns, 30, s, -1);
-            Check(d.Fire && d.Reason == "max-hold", "max-hold fires even unaimed");
+            Check(d.Fire && d.Reason == "saturated", "a new target saturated: strike this turn; got " + d.Reason);
 
             // Big salvo: 40 through at 44% fires (v0.10.1 Clowrus T29 held).
             SalvoTarget wall = new SalvoTarget { PlayerId = 0, Score = 1f, DefensesSeen = true, Defenses = new Dictionary<string, int> { { "bui_KineticDefense", 120 } } };
@@ -285,6 +281,20 @@ namespace InterplanetaryAI.Tests
             Strategy.EstimateSalvo(Railguns(35), t19, 1f, counters, s);
             Check(Math.Abs(t19.Passing - ExpectedPassing(35, 19, 0.8f, 12, 1000, float.MaxValue)) < 1e-3 && t19.Passing > 35f - 35f * 19f / 31f * 0.81f,
                 "default overlap ~ one roll; got " + t19.Passing);
+
+            // Counter-defense at the cap (Terra v0.11 #3): 14 Lasers, 26 Kinetic + 5 Ion, nothing stops Lasers -> Shield.
+            var enemy = new Dictionary<string, int> { { "wea_Laser", 14 }, { "wea_Railgun", 37 } };
+            var all = new List<string> { "bui_KineticDefense", "bui_IonDefense", "bui_ShieldDefense" };
+            var ownKI = new Dictionary<string, int> { { "bui_KineticDefense", 26 }, { "bui_IonDefense", 5 } };
+            Check(DefensePlanner.CounterDeficit(enemy, ownKI, all) == "bui_ShieldDefense", "Lasers with no Shield: build a Shield");
+            var ownS = new Dictionary<string, int>(ownKI); ownS["bui_ShieldDefense"] = 4;
+            Check(DefensePlanner.CounterDeficit(enemy, ownS, all) == null, "4 Shields for 14 Lasers (0.25 share): enough");
+            Check(DefensePlanner.CounterDeficit(enemy, ownKI, new List<string> { "bui_KineticDefense", "bui_IonDefense" }) == null, "no Shield buildable: nothing (Kinetic does not stop Lasers)");
+            var fewK = new Dictionary<string, int> { { "bui_KineticDefense", 2 }, { "bui_ShieldDefense", 30 } };
+            Check(DefensePlanner.CounterDeficit(new Dictionary<string, int> { { "wea_Railgun", 37 } }, fewK, all) == "bui_KineticDefense",
+                "37 Railguns vs 2 Kinetic: Kinetic (30 Shields at 0.15 do not count)");
+            var sixK = new Dictionary<string, int> { { "bui_KineticDefense", 6 } };
+            Check(DefensePlanner.CounterDeficit(new Dictionary<string, int> { { "wea_Railgun", 200 } }, sixK, all) == null, "capped at 6 per weapon type");
 
             // Energy glut.
             Check(EconomyDirector.IsEnergyGlut(11545, 19845, 0.3f, 5000), "v0.10.1 Clowrus T21 (11.5k of 19.8k unspent) is energy glut");

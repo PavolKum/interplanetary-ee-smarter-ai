@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 
 namespace InterplanetaryAI.Brain
@@ -53,6 +54,40 @@ namespace InterplanetaryAI.Brain
                 {
                     best = defense;
                     bestScore = score;
+                }
+            }
+            return best;
+        }
+
+        // v0.11.1 (Terra v0.11 #3): a known enemy weapon type our defenses barely stop gets its counter even when the total
+        // defense count is at its target (v0.10.1: 14 human Lasers, no Shield ever built; the total cap blocked any new type).
+        // Wanted per weapon: min(cap, ceil(share x count)) defenses stopping it at >= minChance. Returns the buildable defense
+        // that stops the most under-countered weapon best, or null.
+        public static string CounterDeficit(IDictionary<string, int> enemyWeapons, IDictionary<string, int> ownDefenses,
+            ICollection<string> buildable, float share = 0.25f, int cap = 6, float minChance = 0.5f)
+        {
+            string best = null;
+            int bestGap = 0;
+            foreach (KeyValuePair<string, int> weapon in enemyWeapons)
+            {
+                if (weapon.Value <= 0) continue;
+                int wanted = Math.Min(cap, (int)Math.Ceiling(share * weapon.Value - 1e-4f));
+                int have = 0;
+                string pick = null;
+                float pickChance = 0f;
+                foreach (KeyValuePair<string, Dictionary<string, float>> defense in Counters)
+                {
+                    float p;
+                    if (!defense.Value.TryGetValue(weapon.Key, out p) || p < minChance) continue;
+                    int own;
+                    if (ownDefenses.TryGetValue(defense.Key, out own)) have += own;
+                    if (buildable.Contains(defense.Key) && p > pickChance) { pick = defense.Key; pickChance = p; }
+                }
+                int gap = wanted - have;
+                if (pick != null && gap > bestGap)
+                {
+                    best = pick;
+                    bestGap = gap;
                 }
             }
             return best;

@@ -474,33 +474,48 @@ namespace InterplanetaryAI
                 if (core == null || !core.PlayerData.AIPlayer) return;
                 if (GameSessionManager.CurrentGameSettings.TechTree != 1) return;
                 PlayerTechnologyHandler tech = core.PlayerData.TechnologyHandler;
-                if (tech.IsTechQueued) return;
-                // Native urgent intel research (AIShortTermStrategy.IsMoreIntelTechRequired) goes first at queue boundaries.
-                if ((bool)s_moreIntelTechRequired.Invoke(core.ShortTermStrategy, null)) return;
-
-                List<string> before = tech.GetTechnologyQueueIdStringList();
-                List<string> plan = Plugin.ResearchPlanIds;
+                int pid = core.PlayerData.PlayerID;
                 // v0.11: a known enemy weapon we cannot counter puts its counter-defense's tech first.
+                List<string> urgent = new List<string>();
                 AiEconomyState economy;
-                if (Plugin.CounterResearch.Value && States.TryGetValue(core.PlayerData.PlayerID, out economy) && economy.EnemyWeapons.Count > 0)
+                if (Plugin.CounterResearch.Value && States.TryGetValue(pid, out economy) && economy.EnemyWeapons.Count > 0)
                 {
                     BuildingsData buildings = GameDataFileManager.GetDataFile<BuildingsData>();
                     PlayerAvailableBuildings available = core.PlayerData.BuildingHandler.AvailableBuildings;
-                    List<string> urgent = ResearchPlan.CounterTechs(economy.EnemyWeapons, DefensePlanner.Counters, s_defenseTechs, id =>
+                    foreach (string id in ResearchPlan.CounterTechs(economy.EnemyWeapons, DefensePlanner.Counters, s_defenseTechs, id =>
                     {
                         BuildingData data = buildings != null ? buildings.GetBuilding(id) : null;
                         return data != null && available.IsBuildingAvailable(data);
-                    });
-                    if (urgent.Count > 0)
+                    }))
                     {
-                        plan = new List<string>(urgent);
-                        plan.AddRange(Plugin.ResearchPlanIds);
+                        if (!SafeCompleted(tech, id, pid) && !s_refused.Contains(pid + ":" + id)) urgent.Add(id);
                     }
+                }
+                // v0.11.1 (Terra v0.11 #5): the engine queues a target with its prerequisites, so waiting for an empty queue
+                // could delay the counter by a whole chain. An urgent counter not yet queued replaces the queue once
+                // (research progress is kept per technology).
+                bool preempt = urgent.Count > 0 && tech.IsTechQueued && !tech.GetTechnologyIsInQueue(urgent[0])
+                    && s_preempted.Add(pid + ":" + urgent[0]);
+                if (tech.IsTechQueued && !preempt) return;
+                // Native urgent intel research (AIShortTermStrategy.IsMoreIntelTechRequired) goes first at queue boundaries.
+                if (!preempt && (bool)s_moreIntelTechRequired.Invoke(core.ShortTermStrategy, null)) return;
+
+                List<string> before = tech.GetTechnologyQueueIdStringList();
+                if (preempt) tech.SetTechnologyQueue(new string[0]);
+                List<string> plan = Plugin.ResearchPlanIds;
+                if (urgent.Count > 0)
+                {
+                    plan = new List<string>(urgent);
+                    plan.AddRange(Plugin.ResearchPlanIds);
                 }
                 for (int attempt = 0; attempt < 3; attempt++)
                 {
-                    string next = ResearchPlan.NextTarget(plan, id => SafeCompleted(tech, id), id => tech.GetTechnologyIsInQueue(id) || s_refused.Contains(id));
-                    if (next == null) return;
+                    string next = ResearchPlan.NextTarget(plan, id => SafeCompleted(tech, id, pid), id => tech.GetTechnologyIsInQueue(id) || s_refused.Contains(pid + ":" + id));
+                    if (next == null)
+                    {
+                        if (preempt) tech.SetTechnologyQueue(before.ToArray());
+                        return;
+                    }
                     bool queued = false;
                     try { queued = tech.AddTechnologyToQueueById(next, true); }
                     catch (Exception) { queued = false; }
@@ -510,11 +525,13 @@ namespace InterplanetaryAI
                     if (queued && after.Count > 0 && tech.IsTechnologyAvailable(after[0]))
                     {
                         Plugin.WriteDecision(new Json().Str("e", "research").Int("t", GameManager.CurrentTurn).Str("ai", core.PlayerData.UserNickName)
-                            .Str("target", next).Str("head", after[0]).Int("queueLength", after.Count).ToString());
+                            .Str("target", next).Str("head", after[0]).Int("queueLength", after.Count).Bool("counter", urgent.Contains(next))
+                            .Bool("preempted", preempt).ToString());
                         return;
                     }
                     tech.SetTechnologyQueue(before.ToArray());
-                    s_refused.Add(next);
+                    if (preempt) return; // the old queue is back; try the plan at the next boundary
+                    s_refused.Add(pid + ":" + next);
                     Plugin.Log.LogWarning("Research plan: " + next + " could not be queued for " + core.PlayerData.UserNickName + "; skipping it.");
                 }
             }
@@ -524,7 +541,9 @@ namespace InterplanetaryAI
             }
         }
 
+        // "playerId:techId": refused for that AI only (Terra v0.11 #5: one AI's failure must not hide a tech from the others).
         private static readonly HashSet<string> s_refused = new HashSet<string>();
+        private static readonly HashSet<string> s_preempted = new HashSet<string>(); // "playerId:techId" urgent preemptions done
 
         // Enhanced ruleset (tech_unlocks.py): the tech that unlocks each defense building.
         private static readonly Dictionary<string, string> s_defenseTechs = new Dictionary<string, string>
@@ -534,16 +553,17 @@ namespace InterplanetaryAI
             { "bui_ShieldDefense", "tec_UltrasonicProjection" },
         };
 
-        private static bool SafeCompleted(PlayerTechnologyHandler tech, string id)
+        private static bool SafeCompleted(PlayerTechnologyHandler tech, string id, int playerId)
         {
             try { return tech.GetTechnologyCompletionById(id); }
-            catch (Exception) { s_refused.Add(id); return true; }
+            catch (Exception) { s_refused.Add(playerId + ":" + id); return true; }
         }
 
         internal static void Reset()
         {
             States.Clear();
             s_refused.Clear();
+            s_preempted.Clear();
             DirectorPatches.Reset();
         }
 

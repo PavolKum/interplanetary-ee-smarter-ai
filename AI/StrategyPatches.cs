@@ -144,8 +144,12 @@ namespace InterplanetaryAI
                     if (weapon.Building.CurrentState != BaseBuilding.BuildingState.Normal || !weapon.Building.Power.HasPower) continue;
                     weapons++;
                     string id = weapon.WeaponData.id.Value;
-                    float projectiles = Math.Max(1, weapon.WeaponData.projectile_amount.IsValueSet ? weapon.WeaponData.projectile_amount.Value : 1)
-                        * Math.Max(1, weapon.WeaponData.fragment_amount.IsValueSet ? weapon.WeaponData.fragment_amount.Value : 1);
+                    // Live counts, upgrades included (Terra v0.11 #2): ShootingModule / SurfaceModule are what the action phase fires.
+                    int liveProjectiles = weapon.ShootingModule != null ? weapon.ShootingModule.ProjectileAmount : 0;
+                    int liveFragments = weapon.SurfaceModule != null ? weapon.SurfaceModule.SplitFragments : 0;
+                    if (liveProjectiles < 1) liveProjectiles = weapon.WeaponData.projectile_amount.IsValueSet ? weapon.WeaponData.projectile_amount.Value : 1;
+                    if (liveFragments < 1) liveFragments = weapon.WeaponData.fragment_amount.IsValueSet ? weapon.WeaponData.fragment_amount.Value : 1;
+                    float projectiles = Math.Max(1, liveProjectiles) * Math.Max(1, liveFragments);
                     Add(salvo, id, projectiles);
                     unreachable.Clear();
                     Plugin.Reach.FillUnreachable(AiPatches.WeaponKey(weapon), turn, unreachable);
