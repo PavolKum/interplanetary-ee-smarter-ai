@@ -94,6 +94,44 @@ namespace InterplanetaryAI
         internal static void Reset()
         {
             s_states.Clear();
+            LoadDefenseCounters();
+        }
+
+        // Which defense stops which weapon, from the active ruleset (Classic: Kinetic also stops Missiles, no Ion).
+        private static void LoadDefenseCounters()
+        {
+            try
+            {
+                BuildingsData buildings = GameDataFileManager.GetDataFile<BuildingsData>();
+                DefensesData defenses = GameDataFileManager.GetDataFile<DefensesData>();
+                if (buildings == null || defenses == null) return;
+                Dictionary<string, Dictionary<string, float>> counters = new Dictionary<string, Dictionary<string, float>>();
+                foreach (string id in buildings.GetBuildingIds())
+                {
+                    BuildingData data = buildings.GetBuilding(id);
+                    if (data == null || id.StartsWith("cit_") || !data.defense_functionality.IsValueSet) continue;
+                    DefenseData defense = defenses.GetDefense(data.defense_functionality.Value);
+                    if (defense == null || !defense.defends_against.IsValueSet || !defense.defense_probabilities.IsValueSet) continue;
+                    List<string> weapons = defense.defends_against.Value;
+                    List<float> chances = defense.defense_probabilities.Value;
+                    Dictionary<string, float> stops = new Dictionary<string, float>();
+                    for (int i = 0; i < weapons.Count && i < chances.Count; i++) stops[weapons[i]] = chances[i];
+                    if (stops.Count > 0) counters[id] = stops;
+                }
+                DefensePlanner.SetCounters(counters);
+                List<string> summary = new List<string>();
+                foreach (KeyValuePair<string, Dictionary<string, float>> pair in DefensePlanner.Counters)
+                {
+                    List<string> stops = new List<string>();
+                    foreach (KeyValuePair<string, float> stop in pair.Value) stops.Add(stop.Key + " " + stop.Value);
+                    summary.Add(pair.Key + ": " + string.Join(", ", stops.ToArray()));
+                }
+                Plugin.Log.LogInfo("Defense counters: " + string.Join("; ", summary.ToArray()));
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogError("Defense counters not loaded from the ruleset; the Enhanced table is used: " + e.Message);
+            }
         }
 
         private static DirectorState StateOf(PlayerData ai)
@@ -133,7 +171,6 @@ namespace InterplanetaryAI
             foreach (int n in economy.OwnDefenses.Values) d.OwnDefenses += n;
             d.DesiredDefenses = EconomyDirector.DesiredDefenses(visibleEnemyWeapons, recentDamage, Plugin.DefensePerEnemyWeapon.Value, Plugin.DamagePerDefense.Value, Plugin.MaxDefenses.Value,
                 d.War, d.NonCityBuildings, Plugin.DefenseFloorShare.Value);
-            d.DefenseTurnCap = EconomyDirector.DefensesPerTurnCap(d.DesiredDefenses, d.OwnDefenses, Plugin.DefensesPerTurn.Value, Plugin.DefenseCatchUpTurns.Value);
 
             // Weapon choice is made against the strongest visible economy: the enemy most worth hitting.
             float bestEconomy = -1f;
@@ -212,6 +249,8 @@ namespace InterplanetaryAI
             d.Started = true;
             d.SlotsAtStart = CountFreeSlots(core);
             d.SlotsLeft = d.SlotsAtStart;
+            d.DefenseTurnCap = EconomyDirector.DefensesPerTurnCap(d.DesiredDefenses, d.OwnDefenses, Plugin.DefensesPerTurn.Value,
+                Plugin.DefenseCatchUpTurns.Value, d.SlotsAtStart, d.RecentDamage > 0f);
             d.Unpowered = core.PowerGrid.BuildingsRequiringPowerAmount;
             d.TurnStartEnergy = core.Resources.Energy;
             d.TurnStartMaterial = core.Resources.Material;
@@ -224,7 +263,7 @@ namespace InterplanetaryAI
             if (d.War)
             {
                 int reserve = EconomyDirector.DefenseReserve(d.OwnDefenses, d.VisibleEnemyWeapons, d.EnemiesAlive, d.RecentDamage,
-                    150f, 125f, Plugin.DefenseReserveShare.Value, d.EnergyIncome);
+                    150f, 125f, Plugin.DefenseReserveShare.Value, d.EnergyIncome, 1f);
                 reserve = Math.Max(0, Math.Min(reserve, core.Resources.Energy));
                 if (economy.BuyPending && !economy.Bought) reserve = Math.Min(reserve, Math.Max(0, core.Resources.Energy - economy.GoalEnergyCost));
                 core.Resources.Energy -= reserve;
@@ -416,7 +455,7 @@ namespace InterplanetaryAI
             {
                 BuildingData data = buildings.GetBuilding(id);
                 if (data == null || !available.IsBuildingAvailable(data)) continue;
-                if (!Affordable(core, data)) continue;
+                if (d.FailedThisTurn.Contains(id) || !Affordable(core, data)) continue; // another type when one fails
                 candidates.Add(id);
             }
             Dictionary<string, int> owned = new Dictionary<string, int>(economy.OwnDefenses);
@@ -937,7 +976,17 @@ namespace InterplanetaryAI
                     d.FailedThisTurn.Add("superweapon");
                 }
             }
-            if (data.defense_functionality.IsValueSet) d.DefensesThisTurn = Math.Max(0, d.DefensesThisTurn - 1);
+            if (data.defense_functionality.IsValueSet)
+            {
+                d.DefensesThisTurn = Math.Max(0, d.DefensesThisTurn - 1);
+                EconomyPatches.AiEconomyState economyState;
+                int queued;
+                if (EconomyPatches.States.TryGetValue(me.PlayerID, out economyState) && economyState.DefensesQueued.TryGetValue(id, out queued))
+                {
+                    if (queued <= 1) economyState.DefensesQueued.Remove(id);
+                    else economyState.DefensesQueued[id] = queued - 1;
+                }
+            }
             if (Value(data.turn_yield_intel) > 0) d.IntelThisTurn = Math.Max(0, d.IntelThisTurn - 1);
         }
 

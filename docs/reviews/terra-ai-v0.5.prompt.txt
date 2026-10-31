@@ -1,0 +1,15 @@
+READ-ONLY review. Do not edit, create or delete any file.
+
+Code review of AI v0.5.0 (commit 85aa072; diff in docs/reviews/terra-ai-v0.5.diff). Context: you just reviewed the v0.4.1 match diagnosis (docs/reviews/terra-ai-v0.5-diagnosis.md); my disposition and the change list are in docs/reviews/terra-ai-v0.5-diagnosis-disposition.md. The AI lost a 1v1 with a 2x economy because it had no defenses until T23, then built 3 per turn, and built Ion against hidden Railguns.
+
+Changes: (1) at war, DesiredDefenses >= ceil(0.15 x own non-city buildings); (2) per-turn defense cap = max(3, ceil(deficit/3)); (3) enemy weapons remembered per type, max(visible, memory x 0.95 per turn), feeding defense count, type choice and DefenseReserve; (4) no known threat -> Kinetic 2:1 over Ion; (5) MaxDefenses 40 -> 60 with migration.
+
+Check, with file:line evidence from AI/ and decompiled/:
+1. Correctness: memory updates once per AI per turn (CoreBeginTurnPostfix) and resets between matches (EconomyPatches.Reset); multiple enemies (memory is summed per type across all enemies - is that right when an enemy dies? its remembered weapons linger ~20+ turns); dead enemies' weapons.
+2. Does the floor interact badly with anything: NonCityBuildings includes defenses (feedback loop?), slot/power use of 20-40 defenses, defense upkeep/energy (DefenseReserve now driven by remembered weapons), the weapon and economy steps that come after defenses in Step(), the superweapon purchase, a tiny/limited planet.
+3. Are the defense ids and weapon ids in DefensePlanner.Counters / BlindWeights right for both rulesets (docs/ruleset/)? Is Kinetic the right blind default (which weapons unlock first in TechTreeData)?
+4. Is the v0.2 smart-defense path (EconomyPatches TryConstructDefensePrefix, DefensePlanner.Choose) still consistent now that EnemyWeapons means "known" not "visible"?
+5. Fairness: anything that reads hidden information?
+6. Tests (AI/Tests/Program.cs DirectorWarAndDefenseRules, DefenseMemoryAndBlindChoice): do they test the behaviour or just arithmetic; what is missing.
+
+Output: verdict (ship / fix first), findings ranked High/Medium/Low with file:line and a concrete fix, then "checked and fine". Under 1,200 words.

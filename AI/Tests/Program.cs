@@ -191,9 +191,20 @@ namespace InterplanetaryAI.Tests
             Check(EconomyDirector.DesiredDefenses(0, 0f, 0.4f, 500f, 60, true, 140, 0f) == 0, "floor share 0 = v0.4 behaviour");
 
             // v0.5 catch-up: 0 owned, 21 wanted, 3 turns -> 7 a turn; on target -> base rate.
-            Check(EconomyDirector.DefensesPerTurnCap(21, 0, 3, 3) == 7, "21 behind over 3 turns = 7 a turn");
-            Check(EconomyDirector.DefensesPerTurnCap(40, 38, 3, 3) == 3, "nearly there: base rate 3");
-            Check(EconomyDirector.DefensesPerTurnCap(40, 0, 3, 0) == 40, "catch-up 0 turns: the whole gap");
+            Check(EconomyDirector.DefensesPerTurnCap(21, 0, 3, 3, 113, false) == 7, "21 behind over 3 turns = 7 a turn");
+            Check(EconomyDirector.DefensesPerTurnCap(40, 38, 3, 3, 113, false) == 3, "nearly there: base rate 3");
+            Check(EconomyDirector.DefensesPerTurnCap(40, 0, 3, 0, 200, false) == 40, "catch-up 0 turns: the whole gap");
+            // Terra v0.5 #4: a small planet keeps room for weapons and growth unless under attack.
+            Check(EconomyDirector.DefensesPerTurnCap(60, 0, 3, 3, 8, false) == 4, "60 behind, 8 free slots, no damage: half the slots = 4");
+            Check(EconomyDirector.DefensesPerTurnCap(60, 0, 3, 3, 8, true) == 20, "under attack: full catch-up 20");
+            Check(EconomyDirector.DefensesPerTurnCap(60, 0, 3, 3, 2, false) == 3, "never below the base rate");
+        }
+
+        private static Dictionary<int, Dictionary<string, int>> Seen(int enemy, string weapon, int count)
+        {
+            var seen = new Dictionary<string, int>();
+            if (weapon != null) seen[weapon] = count;
+            return new Dictionary<int, Dictionary<string, int>> { { enemy, seen } };
         }
 
         private static void DefenseMemoryAndBlindChoice()
@@ -201,24 +212,37 @@ namespace InterplanetaryAI.Tests
             // 31 Oct 1v1: Fey saw Railguns, then counterintel hid them; v0.4.1 forgot them and built Ion.
             var memory = new Dictionary<string, float>();
             var known = new Dictionary<string, int>();
-            DefensePlanner.Remember(memory, new Dictionary<string, int> { { "wea_Railgun", 13 } }, 0.95f, known);
+            var human = new List<int> { 0 };
+            DefensePlanner.Remember(memory, Seen(0, "wea_Railgun", 13), human, 0.95f, known);
             Check(known.ContainsKey("wea_Railgun") && known["wea_Railgun"] == 13, "seen now: 13 Railguns known");
-            DefensePlanner.Remember(memory, new Dictionary<string, int>(), 0.95f, known);
+            DefensePlanner.Remember(memory, Seen(0, null, 0), human, 0.95f, known);
             Check(known.ContainsKey("wea_Railgun") && known["wea_Railgun"] == 12, "hidden next turn: remembered 13 x 0.95 = 12");
-            DefensePlanner.Remember(memory, new Dictionary<string, int> { { "wea_Railgun", 36 }, { "wea_Missile", 2 } }, 0.95f, known);
-            Check(known["wea_Railgun"] == 36 && known["wea_Missile"] == 2, "seen again: the larger count wins, new types added");
-            for (int i = 0; i < 100; i++) DefensePlanner.Remember(memory, new Dictionary<string, int>(), 0.95f, known);
-            Check(!known.ContainsKey("wea_Missile"), "memory fades: unseen for 100 turns, gone");
-            var forget = new Dictionary<string, float>();
-            DefensePlanner.Remember(forget, new Dictionary<string, int> { { "wea_Railgun", 13 } }, 0f, known);
-            DefensePlanner.Remember(forget, new Dictionary<string, int>(), 0f, known);
-            Check(known.Count == 0, "decay 0 = v0.4 behaviour: forget at once");
 
-            // Remembered Railguns pick Kinetic, not Ion.
+            // Remembered Railguns pick Kinetic, not Ion: the memory output drives the choice.
             var candidates = new List<string> { "bui_KineticDefense", "bui_IonDefense" };
             var owned = new Dictionary<string, int> { { "bui_KineticDefense", 9 } };
-            Check(DefensePlanner.Choose(new Dictionary<string, int> { { "wea_Railgun", 12 } }, owned, candidates) == "bui_KineticDefense",
+            Check(DefensePlanner.Choose(known, owned, candidates) == "bui_KineticDefense",
                 "remembered Railguns: Kinetic even with 9 owned and 0 Ion");
+
+            var both = Seen(0, "wea_Railgun", 36);
+            both[0]["wea_Missile"] = 2;
+            DefensePlanner.Remember(memory, both, human, 0.95f, known);
+            Check(known["wea_Railgun"] == 36 && known["wea_Missile"] == 2, "seen again: the larger count wins, new types added");
+            for (int i = 0; i < 100; i++) DefensePlanner.Remember(memory, Seen(0, null, 0), human, 0.95f, known);
+            Check(!known.ContainsKey("wea_Missile"), "memory fades: unseen for 100 turns, gone");
+            var forget = new Dictionary<string, float>();
+            DefensePlanner.Remember(forget, Seen(0, "wea_Railgun", 13), human, 0f, known);
+            DefensePlanner.Remember(forget, Seen(0, null, 0), human, 0f, known);
+            Check(known.Count == 0, "decay 0 = v0.4 behaviour: forget at once");
+
+            // Terra v0.5 #3: per enemy. A's 20 hidden while B's 20 appear = 19 + 20, not 20.
+            var multi = new Dictionary<string, float>();
+            var ab = new List<int> { 1, 2 };
+            DefensePlanner.Remember(multi, Seen(1, "wea_Railgun", 20), ab, 0.95f, known);
+            DefensePlanner.Remember(multi, Seen(2, "wea_Railgun", 20), ab, 0.95f, known);
+            Check(known["wea_Railgun"] == 39, "A hidden (20 x 0.95) + B seen (20) = 39");
+            DefensePlanner.Remember(multi, Seen(2, "wea_Railgun", 20), new List<int> { 2 }, 0.95f, known);
+            Check(known["wea_Railgun"] == 20, "A eliminated: its weapons are forgotten");
 
             // Nothing known: Kinetic 2:1 over Ion (v0.4.1 spread by fewest owned -> Ion).
             Check(DefensePlanner.ChooseBlind(new Dictionary<string, int>(), candidates) == "bui_KineticDefense", "blind, none owned: Kinetic");
@@ -303,9 +327,12 @@ namespace InterplanetaryAI.Tests
 
         private static void DefenseReserveRules()
         {
-            Check(EconomyDirector.DefenseReserve(0, 50, 2, 5000f, 150f, 125f, 0.3f, 20000f) == 0, "no defenses: nothing to fund");
-            Check(EconomyDirector.DefenseReserve(10, 40, 4, 1250f, 150f, 125f, 0.3f, 20000f) == 3000, "40 weapons over 4 enemies + 10 hits = 20 shots x 150");
-            Check(EconomyDirector.DefenseReserve(10, 400, 1, 0f, 150f, 125f, 0.3f, 20000f) == 6000, "capped at 30% of income");
+            Check(EconomyDirector.DefenseReserve(0, 50, 2, 5000f, 150f, 125f, 0.3f, 20000f, 1f) == 0, "no defenses: nothing to fund");
+            Check(EconomyDirector.DefenseReserve(10, 40, 4, 1250f, 150f, 125f, 0.3f, 20000f, 1f) == 3000, "40 weapons over 4 enemies + 10 hits = 20 shots x 150");
+            Check(EconomyDirector.DefenseReserve(10, 400, 1, 0f, 150f, 125f, 0.3f, 20000f, 1f) == 6000, "capped at 30% of income");
+            // Terra v0.5 #1: floor defenses with no known weapons and no damage still get one roll each.
+            Check(EconomyDirector.DefenseReserve(21, 0, 1, 0f, 150f, 125f, 0.3f, 20000f, 1f) == 3150, "21 floor defenses, blind, undamaged: 21 x 150");
+            Check(EconomyDirector.DefenseReserve(21, 0, 1, 0f, 150f, 125f, 0.3f, 20000f, 0f) == 0, "min rolls 0 = v0.4 behaviour");
         }
 
         private static void EndgameBankRules()

@@ -132,11 +132,13 @@ namespace InterplanetaryAI.Brain
         }
 
         // Defenses queued per turn: the base rate, or faster to close a gap within catchUpTurns. v0.4.1 built
-        // 3/turn while losing 40-90 buildings a turn.
-        public static int DefensesPerTurnCap(int desired, int ownAndQueued, int basePerTurn, int catchUpTurns)
+        // 3/turn while losing 40-90 buildings a turn. Without damage taken the catch-up uses at most half the
+        // free power slots, so a small planet keeps room for weapons and growth; under attack it may use all.
+        public static int DefensesPerTurnCap(int desired, int own, int basePerTurn, int catchUpTurns, int freeSlots, bool underAttack)
         {
-            int deficit = Math.Max(0, desired - ownAndQueued);
+            int deficit = Math.Max(0, desired - own);
             int catchUp = catchUpTurns > 0 ? (deficit + catchUpTurns - 1) / catchUpTurns : deficit;
+            if (!underAttack) catchUp = Math.Min(catchUp, Math.Max(0, freeSlots) / 2);
             return Math.Max(basePerTurn, catchUp);
         }
 
@@ -198,11 +200,14 @@ namespace InterplanetaryAI.Brain
         // Energy kept unspent for defense rolls (each roll costs the defender 100-200 energy from what is
         // left that turn; at 0 the defense fails). Expected incoming shots: our share of the visible enemy
         // weapons plus the hits behind recent damage. Capped as a share of income.
+        // v0.5: never fewer than minRollsPerDefense rolls per own defense, so defenses built on the floor
+        // (no known weapons, no damage yet) can still answer the first unseen volley.
         public static int DefenseReserve(int ownDefenses, int visibleEnemyWeapons, int enemiesAlive, float recentDamage,
-            float energyPerRoll, float damagePerHit, float capShare, float energyIncome)
+            float energyPerRoll, float damagePerHit, float capShare, float energyIncome, float minRollsPerDefense)
         {
             if (ownDefenses <= 0) return 0;
             float shots = visibleEnemyWeapons / (float)Math.Max(1, enemiesAlive) + (damagePerHit > 0f ? recentDamage / damagePerHit : 0f);
+            shots = Math.Max(shots, minRollsPerDefense * ownDefenses);
             float reserve = Math.Min(shots * energyPerRoll, capShare * energyIncome);
             return (int)Math.Max(0f, reserve);
         }

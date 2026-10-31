@@ -2,11 +2,16 @@ using System.Collections.Generic;
 
 namespace InterplanetaryAI.Brain
 {
-    // Pick the defense that covers the most visible enemy firepower not yet covered by our own defenses.
-    // Interception chances from docs/ruleset/DefensesData.csv (defends_against / defense_probabilities).
+    // Pick the defense that covers the most known enemy firepower not yet covered by our own defenses.
+    // Interception chances: the Enhanced table below until the adapter loads the active ruleset's data
+    // (defends_against / defense_probabilities); Classic differs (Kinetic also stops Missiles, no Ion).
     public static class DefensePlanner
     {
-        public static readonly Dictionary<string, Dictionary<string, float>> Counters = new Dictionary<string, Dictionary<string, float>>
+        public static Dictionary<string, Dictionary<string, float>> Counters = EnhancedCounters();
+
+        public static Dictionary<string, Dictionary<string, float>> EnhancedCounters()
+        {
+            return new Dictionary<string, Dictionary<string, float>>
         {
             { "bui_KineticDefense", new Dictionary<string, float> { { "wea_Railgun", 0.8f }, { "wea_Coilcannon", 0.8f } } },
             { "bui_IonDefense", new Dictionary<string, float> { { "wea_Missile", 0.8f }, { "wea_MIRV", 0.8f }, { "wea_NuclearMissile", 0.8f } } },
@@ -16,7 +21,14 @@ namespace InterplanetaryAI.Brain
                     { "wea_Missile", 0.15f }, { "wea_MIRV", 0.15f }, { "wea_NuclearMissile", 0.15f },
                 }
             },
-        };
+            };
+        }
+
+        // Replace the table (from the ruleset). An empty table keeps the current one.
+        public static void SetCounters(Dictionary<string, Dictionary<string, float>> counters)
+        {
+            if (counters != null && counters.Count > 0) Counters = counters;
+        }
 
         // enemyWeapons: visible enemy weapon buildings by weapon id. ownDefenses: our intact defenses by building id.
         // candidates: defense buildings we can build now. Returns null when nothing is threatening us.
@@ -75,26 +87,48 @@ namespace InterplanetaryAI.Brain
         }
 
         // v0.5: remember enemy weapons once seen. Counterintel hides weapons it does not destroy: the 31 Oct
-        // human went dark at T21 and built 24 Railguns the AI no longer counted. Each type keeps the larger of
-        // what is visible now and the memory decayed by `decay` per turn. `known` gets the rounded result.
-        public static void Remember(Dictionary<string, float> memory, Dictionary<string, int> visible, float decay, Dictionary<string, int> known)
+        // human went dark at T21 and built 24 Railguns the AI no longer counted. Per enemy and type, keep the
+        // larger of what is visible now and the memory decayed by `decay` per turn; forget enemies no longer
+        // alive (elimination is public). `known` gets the per-type sum over living enemies, rounded.
+        public static void Remember(Dictionary<string, float> memory, Dictionary<int, Dictionary<string, int>> visibleByEnemy,
+            ICollection<int> aliveEnemies, float decay, Dictionary<string, int> known)
         {
-            List<string> types = new List<string>(memory.Keys);
-            foreach (string type in visible.Keys)
+            List<string> keys = new List<string>(memory.Keys);
+            foreach (KeyValuePair<int, Dictionary<string, int>> enemy in visibleByEnemy)
             {
-                if (!memory.ContainsKey(type)) types.Add(type);
+                foreach (string type in enemy.Value.Keys)
+                {
+                    string key = enemy.Key + "|" + type;
+                    if (!memory.ContainsKey(key)) keys.Add(key);
+                }
+            }
+            Dictionary<string, float> sums = new Dictionary<string, float>();
+            foreach (string key in keys)
+            {
+                int bar = key.IndexOf('|');
+                int enemyId = int.Parse(key.Substring(0, bar));
+                string type = key.Substring(bar + 1);
+                if (!aliveEnemies.Contains(enemyId))
+                {
+                    memory.Remove(key);
+                    continue;
+                }
+                float old;
+                memory.TryGetValue(key, out old);
+                int now = 0;
+                Dictionary<string, int> visible;
+                if (visibleByEnemy.TryGetValue(enemyId, out visible)) visible.TryGetValue(type, out now);
+                float value = System.Math.Max(now, old * decay);
+                memory[key] = value;
+                float sum;
+                sums.TryGetValue(type, out sum);
+                sums[type] = sum + value;
             }
             known.Clear();
-            foreach (string type in types)
+            foreach (KeyValuePair<string, float> pair in sums)
             {
-                float old;
-                memory.TryGetValue(type, out old);
-                int now;
-                visible.TryGetValue(type, out now);
-                float value = System.Math.Max(now, old * decay);
-                memory[type] = value;
-                int rounded = (int)System.Math.Round(value);
-                if (rounded > 0) known[type] = rounded;
+                int rounded = (int)System.Math.Round(pair.Value);
+                if (rounded > 0) known[pair.Key] = rounded;
             }
         }
     }

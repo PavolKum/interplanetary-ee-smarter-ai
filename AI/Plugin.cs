@@ -237,10 +237,16 @@ namespace InterplanetaryAI
             DamagePerDefense = Config.Bind("Director", "DamagePerDefense", 500f,
                 "One more defense wanted per this much recent damage taken.");
             MaxDefenses = Config.Bind("Director", "MaxDefenses", 60, "Cap on defenses wanted.");
-            if (MaxDefenses.Value == 40)
+            ConfigEntry<string> migrated = Config.Bind("General", "ConfigMigratedTo", "",
+                "Last version whose default changes were applied to this file. Do not edit.");
+            if (string.CompareOrdinal(migrated.Value, "0.5") < 0)
             {
-                MaxDefenses.Value = 60; // v0.4 default; the 31 Oct human held 32 defenses against one AI
-                Log.LogInfo("MaxDefenses: replaced the unchanged v0.4 default 40 with 60.");
+                if (MaxDefenses.Value == 40)
+                {
+                    MaxDefenses.Value = 60; // v0.4 default; the 31 Oct human held 32 defenses against one AI
+                    Log.LogInfo("MaxDefenses: replaced the unchanged v0.4 default 40 with 60 (once).");
+                }
+                migrated.Value = "0.5";
             }
             DefensesPerTurn = Config.Bind("Director", "DefensesPerTurn", 3,
                 "Defenses queued per turn when on target; more when behind (see DefenseCatchUpTurns).");

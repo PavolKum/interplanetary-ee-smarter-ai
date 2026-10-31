@@ -35,7 +35,8 @@ namespace InterplanetaryAI
             public readonly int[] Picks = new int[5];
             public readonly int[] PickSuccesses = new int[5];
             public readonly Dictionary<string, int> EnemyWeapons = new Dictionary<string, int>();   // known: visible now or remembered (v0.5)
-            public readonly Dictionary<string, int> VisibleWeapons = new Dictionary<string, int>(); // visible this turn
+            public readonly Dictionary<string, int> VisibleWeapons = new Dictionary<string, int>(); // visible this turn, all enemies
+            public readonly Dictionary<int, Dictionary<string, int>> VisibleByEnemy = new Dictionary<int, Dictionary<string, int>>();
             public readonly Dictionary<string, float> WeaponMemory = new Dictionary<string, float>();
             public readonly Dictionary<string, int> OwnDefenses = new Dictionary<string, int>();
             public readonly Dictionary<string, int> DefensesQueued = new Dictionary<string, int>();
@@ -88,19 +89,26 @@ namespace InterplanetaryAI
                 // Enemy picture for the construction mix (same visible-only data as targeting).
                 float maxEnemyEconomy = 0f, recentDamage = 0f;
                 state.VisibleWeapons.Clear();
+                state.VisibleByEnemy.Clear();
+                List<int> alive = new List<int>();
                 foreach (CelestialBody planet in core.EnemyPlanets)
                 {
                     EnemyView view = AiPatches.BuildEnemyView(me, planet.Player, turn);
                     maxEnemyEconomy = Math.Max(maxEnemyEconomy, view.Economy);
                     recentDamage += view.Grudge;
+                    alive.Add(planet.Player.PlayerID);
+                    Dictionary<string, int> seen = new Dictionary<string, int>();
+                    state.VisibleByEnemy[planet.Player.PlayerID] = seen;
                     foreach (BaseBuilding building in planet.Player.BuildingHandler.Buildings)
                     {
                         if (!AiPatches.IsVisibleIntact(me, building) || building.IsCity || !building.BuildingData.weapon_functionality.IsValueSet) continue;
+                        Increment(seen, building.BuildingData.weapon_functionality.Value);
                         Increment(state.VisibleWeapons, building.BuildingData.weapon_functionality.Value);
                     }
                 }
-                // Known weapons = visible now or remembered from earlier sight (fair: our own past observations).
-                DefensePlanner.Remember(state.WeaponMemory, state.VisibleWeapons, Math.Max(0f, Math.Min(1f, Plugin.WeaponMemoryDecay.Value)), state.EnemyWeapons);
+                // Known weapons = visible now or remembered from earlier sight, per living enemy (fair: our own
+                // past observations; eliminations are public).
+                DefensePlanner.Remember(state.WeaponMemory, state.VisibleByEnemy, alive, Math.Max(0f, Math.Min(1f, Plugin.WeaponMemoryDecay.Value)), state.EnemyWeapons);
                 state.OwnDefenses.Clear();
                 state.DefensesQueued.Clear();
                 foreach (BaseBuilding building in me.BuildingHandler.Buildings)

@@ -107,10 +107,27 @@ Missile unlocked; half their weapon-turns were unpowered; Railgun placements wer
 | Up to 5 plants a turn to connect unpowered buildings; science valued 1.5x in project choice; failed placement types not requeued | `UnpoweredPlantsPerTurn`, `ScienceWeight` |
 | Research: economy core, then the chain that gives telescopes, missiles and the Nuclear Missile | `[Research] Plan` (older defaults migrated) |
 
+## v0.5 - defend what you build
+
+The v0.4.1 1v1 (`docs/playtests/2026-10-31-v0.4.1.md`): Fey out-produced the human 2x (25.8k vs 11.8k energy/turn,
+277 vs 99 buildings at T26) and lost at T38. It had 0 defenses until T23 (defenses followed visible weapons and
+damage only; the human armed while his counterintel hid him), then 3 a turn, and built Ion against hidden Railguns.
+Diagnosis checked by Terra (`docs/reviews/terra-ai-v0.5-diagnosis*.md`), code reviewed (`terra-ai-v0.5*.md`).
+
+| Change | Config |
+|---|---|
+| At war, defenses wanted >= 15% of our own non-city buildings, seen threat or not | `[Director] DefenseFloorShare` |
+| Behind on defenses: catch up within 3 turns (at most half the free slots unless under attack) | `DefenseCatchUpTurns`, `DefensesPerTurn` |
+| Enemy weapons once seen are remembered per enemy while hidden (x0.95 a turn; eliminated enemies forgotten) | `WeaponMemoryDecay` |
+| No known threat: Kinetic 2:1 over Ion; defense counters read from the active ruleset (Classic differs) | |
+| Every own defense gets energy for at least one roll, even before the first attack | `DefenseReserveShare` caps it |
+| Defense cap 40 -> 60 (migrated once) | `MaxDefenses` |
+
 ## Next
 
-- Read the first v0.4 match: did the AIs see the human (`target` records `known`), where did their fire go, did the bank buy a superweapon, how many weapons were unpowered.
-- Read the first v0.3 match log (`summarize_decisions.py` prints a director section): did the AIs build Floating Plants and upgrades, how much energy went unspent, how often did placement give up.
+- Instrument real outcomes: shot type, interception and damage on both sides (Terra v0.5 #3); why powered weapons fell 57 -> 31 at T26-29.
+- Offense against a defense wall: weapon mix and volleys once outcomes are measured.
+- Planet pacing: Fey's planet ran dry at T32 (drain = max(cost, production)).
 - Calibrate accuracy from the AIs' realized hit rate against the human's 58-67%.
-- Lasers: one throwaway match with `EnableLasers = true` (the human won with 35 lasers).
+- Lasers: one throwaway match with `EnableLasers = true`.
 - Population: filling a city's power connectors multiplies its population growth (x1.3 each); the director ignores it.
