@@ -42,13 +42,15 @@ namespace InterplanetaryAI
             foreach (CodeInstruction instruction in instructions)
             {
                 string text = instruction.operand as string;
+                yield return instruction;
                 if (text == "type_Laser" || text == "type_EMPLaser" || text == "type_SolarLaser")
                 {
-                    instruction.operand = Unbanned;
+                    // The ban string stays; MaybeUnban swaps it for a never-matching one only in offline games.
+                    yield return new CodeInstruction(System.Reflection.Emit.OpCodes.Call, AccessTools.Method(typeof(LaserPatches), "MaybeUnban"));
                     replaced++;
                 }
-                yield return instruction;
             }
+            s_constructionMatches = replaced;
             Plugin.Log.LogInfo("Lasers: construction ban lifted (" + replaced + " of 3 type checks).");
         }
 
@@ -67,12 +69,22 @@ namespace InterplanetaryAI
                 }
                 yield return instruction;
             }
+            s_targetingMatches = replaced;
             Plugin.Log.LogInfo("Lasers: targeting skip lifted (" + replaced + " of 1 IsLaser checks).");
         }
 
+        private static int s_constructionMatches;
+        private static int s_targetingMatches;
+
+        public static string MaybeUnban(string bannedType)
+        {
+            return Plugin.Active ? Unbanned : bannedType;
+        }
+
+        // Replaces the IsLaser skip in AIWeaponTargeting.BeginTurn: lasers are targeted only in offline games.
         public static bool NeverSkip(WeaponGameplayData weapon)
         {
-            return false;
+            return Plugin.Active ? false : weapon.IsLaser;
         }
 
         // ---- fix 1: empty valid-target list -------------------------------------------------
@@ -139,7 +151,8 @@ namespace InterplanetaryAI
                 BaseBuilding building = buildings[buildingIndex];
                 s_buildingIndex.SetValue(__instance, buildingIndex + 1);
                 if (planet == null || planet == core.Planet || building == null || building.CurrentState != BaseBuilding.BuildingState.Normal) return false;
-                if (!core.PlayerData.IntelHandler.IsBuildingVisible(building)) return false;
+                // Visible only: IsBuildingVisible also accepts Shadow (last-known) buildings, whose live position is hidden information.
+                if (core.PlayerData.IntelHandler.GetBuildingVisibility(building) != BuildingIntelVisibility.Visible) return false;
                 if (!__instance.WeaponTargeting.findLaserTrajectory(__instance, planet, building)) return false;
 
                 bool primary = planet == __instance.TargetEnemy;
@@ -177,6 +190,11 @@ namespace InterplanetaryAI
             installed += Patch(harmony, AccessTools.Method(typeof(AILaserTrajectoryWeapon), "setBuildingsToTry"), "SetBuildingsToTryPrefix", null);
             installed += Patch(harmony, AccessTools.Method(typeof(AILaserTrajectoryWeapon), "Update"), "UpdatePrefix", null);
             installed += Patch(harmony, AccessTools.Method(typeof(AITargetWeapons), "CalculateTrajectory"), "CalculateTrajectoryPrefix", null);
+            if (installed == 5 && (s_constructionMatches != 3 || s_targetingMatches != 1))
+            {
+                Plugin.Log.LogError("Lasers: IL did not match (construction " + s_constructionMatches + "/3, targeting " + s_targetingMatches + "/1).");
+                installed = 0;
+            }
             if (installed < 5)
             {
                 Plugin.Log.LogError("Lasers: only " + installed + " of 5 laser patches installed; removing them so the native ban stays intact.");

@@ -25,6 +25,8 @@ namespace InterplanetaryAI
             public bool BuyPending;
             public int BuyAttempts;
             public bool Bought;
+            public bool NeedSlotForGoal;  // goal affordable but no free power slot: build one generator, buy next turn
+            public bool SlotAttempted;
             public float[] Weights;
             public bool Growth;
             public readonly int[] Picks = new int[5];
@@ -47,6 +49,9 @@ namespace InterplanetaryAI
             AccessTools.Field(typeof(AIConstruction), "m_counterintelConstruction"),
         };
         private static readonly MethodInfo s_tryBuildAffordable = AccessTools.Method(typeof(AIConstructionModule), "tryBuildAffordableBuilding");
+        private static readonly MethodInfo s_tryPowerGenerator = AccessTools.Method(typeof(AIConstruction), "tryConstructPowerGeneratingBuilding");
+        private static readonly FieldInfo s_intelModule = AccessTools.Field(typeof(AIConstruction), "m_intelConstruction");
+        private static readonly MethodInfo s_moreIntelTechRequired = AccessTools.PropertyGetter(typeof(AIShortTermStrategy), "IsMoreIntelTechRequired");
 
         private static readonly HashSet<string> s_reportedErrors = new HashSet<string>();
 
@@ -106,6 +111,8 @@ namespace InterplanetaryAI
                 state.BuyPending = false;
                 state.BuyAttempts = 0;
                 state.Bought = false;
+                state.NeedSlotForGoal = false;
+                state.SlotAttempted = false;
                 int stockEnergy = core.Resources.Energy, stockMaterial = core.Resources.Material;
                 int reserveEnergy = 0, reserveMaterial = 0;
                 state.Goal = Plugin.SuperweaponSavings.Value ? FindSuperweaponGoal(core) : null;
@@ -113,9 +120,26 @@ namespace InterplanetaryAI
                 {
                     state.GoalEnergyCost = AIWeaponConstruction.GetWeaponEnergyCost(state.Goal, core);
                     state.GoalMaterialCost = AIWeaponConstruction.GetWeaponMaterialCost(state.Goal, core);
-                    if (Savings.CanBuy(stockEnergy, stockMaterial, state.GoalEnergyCost, state.GoalMaterialCost))
+                    bool needsSlot = !(state.Goal.Building.distribute_power.IsValueSet && state.Goal.Building.distribute_power.Value);
+                    bool slotFree = core.Construction.PowerSlotNeed < 0; // AIConstruction.BeginTurn: negative = free slots
+                    bool affordable = Savings.CanBuy(stockEnergy, stockMaterial, state.GoalEnergyCost, state.GoalMaterialCost);
+                    if (affordable && (slotFree || !needsSlot))
                     {
                         state.BuyPending = true; // buy first thing in construction; nothing reserved
+                    }
+                    else if (affordable)
+                    {
+                        // Affordable but no free power slot. Buying now would raise PowerSlotNeed, and the native need
+                        // branch never lowers it within a turn, so the savings would go on power plants
+                        // (AIConstruction.tryConstructPowerGeneratingBuilding). Keep the goal reserved, build one
+                        // generator from what is left, and buy next turn when the slot exists.
+                        state.NeedSlotForGoal = true;
+                        reserveEnergy = Math.Min(stockEnergy, state.GoalEnergyCost);
+                        reserveMaterial = Math.Min(stockMaterial, state.GoalMaterialCost);
+                        core.Resources.Energy -= reserveEnergy;
+                        core.Resources.Material -= reserveMaterial;
+                        core.Construction.ConstructionQueue.AllottedEnergy -= reserveEnergy;
+                        core.Construction.ConstructionQueue.AllottedMaterial -= reserveMaterial;
                     }
                     else
                     {
@@ -180,24 +204,46 @@ namespace InterplanetaryAI
                 {
                     if (TryBuyGoal(core, __instance, state, ref __result)) return false;
                 }
+                if (state.NeedSlotForGoal && !state.SlotAttempted)
+                {
+                    state.SlotAttempted = true;
+                    if ((bool)s_tryPowerGenerator.Invoke(__instance, null))
+                    {
+                        __result = true;
+                        return false;
+                    }
+                }
 
                 if (!Plugin.BuildPlannerEnabled.Value || state.Weights == null) return true;
                 // Keep the native intel minimum: let native run when it is short of minimum intel.
-                if (core.ConstructionEvaluation.IntelEvaluation.AvailableIntelEntitiesByEfficiency.Count > 0 && core.Intel.IntelNeed > 0f && !core.Intel.HasMinimumIntel) return true;
+                bool intelAvailable = core.ConstructionEvaluation.IntelEvaluation.AvailableIntelEntitiesByEfficiency.Count > 0 && core.Intel.IntelNeed > 0f;
+                if (intelAvailable && !core.Intel.HasMinimumIntel) return true;
+                // Keep the native preferred-intel weight (6 in AIConstruction.tryConstructNewBuilding) alongside the plan.
+                if (intelAvailable && !core.Intel.HasPreferredIntel)
+                {
+                    float total = 0f;
+                    foreach (float w in state.Weights) total += w;
+                    if (Plugin.Rng.NextDouble() < 6f / (total + 6f))
+                    {
+                        AIIntelConstruction intelModule = (AIIntelConstruction)s_intelModule.GetValue(__instance);
+                        if (intelModule.TryConstructIntel())
+                        {
+                            __result = true;
+                            return false;
+                        }
+                    }
+                }
 
                 BuildCategory category = BuildPlanner.Pick(state.Weights, Plugin.Rng);
                 state.Picks[(int)category]++;
-                int powerSlotNeed = __instance.PowerSlotNeed, energyNeed = __instance.EnergyNeed, materialNeed = __instance.MaterialNeed;
                 if (TryCategory(__instance, category))
                 {
                     state.PickSuccesses[(int)category]++;
                     __result = true;
                     return false;
                 }
-                // A failed module attempt can raise needs; undo so the native roulette runs unchanged.
-                __instance.PowerSlotNeed = powerSlotNeed;
-                __instance.EnergyNeed = energyNeed;
-                __instance.MaterialNeed = materialNeed;
+                // A failed module attempt may have raised energy/material needs and marked entities attempted.
+                // Both are kept, as if native had rolled this category: native then takes its need branch.
                 return true;
             }
             catch (Exception e)
@@ -217,6 +263,13 @@ namespace InterplanetaryAI
             }
             if (!Savings.CanBuy(core.Resources.Energy, core.Resources.Material, state.GoalEnergyCost, state.GoalMaterialCost))
             {
+                state.BuyPending = false;
+                return false;
+            }
+            bool needsSlot = !(state.Goal.Building.distribute_power.IsValueSet && state.Goal.Building.distribute_power.Value);
+            if (needsSlot && construction.PowerSlotNeed >= 0)
+            {
+                // The free slot was used earlier this turn; buying now would start the power-plant burst. Retry next turn.
                 state.BuyPending = false;
                 return false;
             }
@@ -294,8 +347,10 @@ namespace InterplanetaryAI
                 string choice = DefensePlanner.Choose(state.EnemyWeapons, owned, options.Keys);
                 if (choice == null) return true; // no visible threat it counters: native choice
 
+                int queuedBefore = QueueCount(core.Construction);
                 s_tryBuildAffordable.Invoke(__instance, new object[] { options[choice] });
-                Increment(state.DefensesQueued, choice);
+                // No free power slot: native raises PowerSlotNeed instead of queueing; count only real queue additions.
+                if (QueueCount(core.Construction) > queuedBefore) Increment(state.DefensesQueued, choice);
                 __result = true;
                 return false;
             }
@@ -333,6 +388,8 @@ namespace InterplanetaryAI
                 if (GameSessionManager.CurrentGameSettings.TechTree != 1) return;
                 PlayerTechnologyHandler tech = core.PlayerData.TechnologyHandler;
                 if (tech.IsTechQueued) return;
+                // Native urgent intel research (AIShortTermStrategy.IsMoreIntelTechRequired) goes first at queue boundaries.
+                if ((bool)s_moreIntelTechRequired.Invoke(core.ShortTermStrategy, null)) return;
 
                 List<string> before = tech.GetTechnologyQueueIdStringList();
                 for (int attempt = 0; attempt < 3; attempt++)

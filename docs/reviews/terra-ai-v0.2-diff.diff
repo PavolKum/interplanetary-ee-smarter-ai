@@ -55,10 +55,10 @@ index 0000000..1572f8b
 +}
 diff --git a/AI/Brain/EconomyPlan.cs b/AI/Brain/EconomyPlan.cs
 new file mode 100644
-index 0000000..097d168
+index 0000000..d334fd9
 --- /dev/null
 +++ b/AI/Brain/EconomyPlan.cs
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,123 @@
 +using System;
 +using System.Collections.Generic;
 +
@@ -91,6 +91,7 @@ index 0000000..097d168
 +        Energy = 1,
 +        Material = 2,
 +        Defense = 3,
++        Counterintel = 4,
 +    }
 +
 +    public sealed class BuildSituation
@@ -103,18 +104,20 @@ index 0000000..097d168
 +
 +    public sealed class BuildWeights
 +    {
-+        public float[] Growth = { 1.5f, 3.5f, 3f, 0.7f };   // firepower, energy, material, defense
-+        public float[] Pressure = { 3f, 2f, 1.5f, 1f };
++        // firepower, energy, material, defense, counterintel
++        public float[] Growth = { 1.5f, 3.5f, 3f, 0.7f, 0.3f };
++        public float[] Pressure = { 2.5f, 2.5f, 2f, 1f, 0.8f };
 +        public int GrowthUntilTurn = 15;
-+        public float BehindRatio = 0.9f;                     // growth while own economy < ratio x strongest enemy
 +        public float DefenseBonusWhenHit = 1.5f;
 +    }
 +
 +    public static class BuildPlanner
 +    {
++        // Growth is the opening only. "Grow while behind the leader" was tried and rejected: against a human
++        // who out-booms the AIs it keeps them building economy all game and never punishing the boom.
 +        public static bool IsGrowthPhase(BuildSituation s, BuildWeights w)
 +        {
-+            return s.Turn < w.GrowthUntilTurn || s.OwnEconomy < w.BehindRatio * s.MaxEnemyEconomy;
++            return s.Turn < w.GrowthUntilTurn;
 +        }
 +
 +        public static float[] Weights(BuildSituation s, BuildWeights w)
@@ -142,9 +145,9 @@ index 0000000..097d168
 +        {
 +            if (string.IsNullOrEmpty(text)) return fallback;
 +            string[] parts = text.Split(',');
-+            if (parts.Length != 4) return fallback;
-+            float[] values = new float[4];
-+            for (int i = 0; i < 4; i++)
++            if (parts.Length != 5) return fallback;
++            float[] values = new float[5];
++            for (int i = 0; i < 5; i++)
 +            {
 +                float v;
 +                if (!float.TryParse(parts[i].Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v) || v < 0f) return fallback;
@@ -181,10 +184,10 @@ index 0000000..097d168
 +}
 diff --git a/AI/EconomyPatches.cs b/AI/EconomyPatches.cs
 new file mode 100644
-index 0000000..1407cca
+index 0000000..4e8f608
 --- /dev/null
 +++ b/AI/EconomyPatches.cs
-@@ -0,0 +1,444 @@
+@@ -0,0 +1,446 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Reflection;
@@ -214,8 +217,8 @@ index 0000000..1407cca
 +            public bool Bought;
 +            public float[] Weights;
 +            public bool Growth;
-+            public readonly int[] Picks = new int[4];
-+            public readonly int[] PickSuccesses = new int[4];
++            public readonly int[] Picks = new int[5];
++            public readonly int[] PickSuccesses = new int[5];
 +            public readonly Dictionary<string, int> EnemyWeapons = new Dictionary<string, int>();
 +            public readonly Dictionary<string, int> OwnDefenses = new Dictionary<string, int>();
 +            public readonly Dictionary<string, int> DefensesQueued = new Dictionary<string, int>();
@@ -231,6 +234,7 @@ index 0000000..1407cca
 +            AccessTools.Field(typeof(AIConstruction), "m_energyConstruction"),
 +            AccessTools.Field(typeof(AIConstruction), "m_materialConstruction"),
 +            AccessTools.Field(typeof(AIConstruction), "m_defenseConstruction"),
++            AccessTools.Field(typeof(AIConstruction), "m_counterintelConstruction"),
 +        };
 +        private static readonly MethodInfo s_tryBuildAffordable = AccessTools.Method(typeof(AIConstructionModule), "tryBuildAffordableBuilding");
 +
@@ -286,7 +290,7 @@ index 0000000..1407cca
 +                BuildSituation situation = new BuildSituation { Turn = turn, OwnEconomy = ownEconomy, MaxEnemyEconomy = maxEnemyEconomy, RecentDamage = recentDamage };
 +                state.Growth = BuildPlanner.IsGrowthPhase(situation, Plugin.Build);
 +                state.Weights = BuildPlanner.Weights(situation, Plugin.Build);
-+                for (int i = 0; i < 4; i++) { state.Picks[i] = 0; state.PickSuccesses[i] = 0; }
++                for (int i = 0; i < 5; i++) { state.Picks[i] = 0; state.PickSuccesses[i] = 0; }
 +
 +                // Superweapon goal.
 +                state.BuyPending = false;
@@ -433,7 +437,8 @@ index 0000000..1407cca
 +                case BuildCategory.Firepower: return ((AIWeaponConstruction)module).TryConstructWeapon();
 +                case BuildCategory.Energy: return ((AIEnergyConstruction)module).TryConstructEnergy();
 +                case BuildCategory.Material: return ((AIMaterialConstruction)module).TryConstructMaterial();
-+                default: return ((AIDefenseConstruction)module).TryConstructDefense();
++                case BuildCategory.Defense: return ((AIDefenseConstruction)module).TryConstructDefense();
++                default: return ((AICounterintelConstruction)module).TryConstructCounterintel();
 +            }
 +        }
 +
@@ -885,7 +890,7 @@ index 1f2023c..1258e06 100644
              if (building == null || building.CurrentState != BaseBuilding.BuildingState.Normal) return false;
              return me.IntelHandler.GetBuildingVisibility(building) == BuildingIntelVisibility.Visible;
 diff --git a/AI/Plugin.cs b/AI/Plugin.cs
-index 634e0a9..5ce0113 100644
+index 634e0a9..62cdce1 100644
 --- a/AI/Plugin.cs
 +++ b/AI/Plugin.cs
 @@ -21,7 +21,7 @@ namespace InterplanetaryAI
@@ -897,7 +902,7 @@ index 634e0a9..5ce0113 100644
  
          internal static ManualLogSource Log;
  
-@@ -41,6 +41,34 @@ namespace InterplanetaryAI
+@@ -41,6 +41,33 @@ namespace InterplanetaryAI
          internal static ConfigEntry<bool> SmartStrikes;
          internal static ConfigEntry<float> WeaponBuildingShare;
          internal static ConfigEntry<bool> DecisionLog;
@@ -908,7 +913,6 @@ index 634e0a9..5ce0113 100644
 +        internal static ConfigEntry<string> GrowthWeights;
 +        internal static ConfigEntry<string> PressureWeights;
 +        internal static ConfigEntry<int> GrowthUntilTurn;
-+        internal static ConfigEntry<float> BehindRatio;
 +        internal static ConfigEntry<float> DefenseBonusWhenHit;
 +        internal static ConfigEntry<bool> ResearchPlanEnabled;
 +        internal static ConfigEntry<string> ResearchPlan;
@@ -932,7 +936,7 @@ index 634e0a9..5ce0113 100644
  
          internal static readonly PlannerSettings Planner = new PlannerSettings();
          internal static float[] Accuracy = new float[] { 0.6f, 0.95f, 1f, 1f };
-@@ -91,6 +119,34 @@ namespace InterplanetaryAI
+@@ -91,6 +118,32 @@ namespace InterplanetaryAI
              WeaponBuildingShare = Config.Bind("Strikes", "WeaponBuildingShare", 0.25f,
                  "Chance a guided strike goes for the weakest visible weapon building instead of a city.");
  
@@ -944,13 +948,11 @@ index 634e0a9..5ce0113 100644
 +                "Superweapon buildings to save for, in priority order. Add bui_SolarLaser only together with [Lasers] EnableLasers.");
 +            BuildPlannerEnabled = Config.Bind("Economy", "BuildPlanner", true,
 +                "Replace the native fixed construction roulette (firepower 3 / energy 1.75 / material 1.2 / defense 0.7) with phase weights below. Needs and minimum intel stay native.");
-+            GrowthWeights = Config.Bind("Economy", "GrowthWeights", "1.5,3.5,3,0.7",
-+                "Firepower,Energy,Material,Defense weights while growing: before GrowthUntilTurn, or while the AI's economy trails the strongest visible enemy's.");
-+            PressureWeights = Config.Bind("Economy", "PressureWeights", "3,2,1.5,1",
-+                "Firepower,Energy,Material,Defense weights once the AI has caught up.");
-+            GrowthUntilTurn = Config.Bind("Economy", "GrowthUntilTurn", 15, "Always grow before this turn.");
-+            BehindRatio = Config.Bind("Economy", "BehindRatio", 0.9f,
-+                "Grow while own economy < this x the strongest visible enemy economy (energy + material + science per turn).");
++            GrowthWeights = Config.Bind("Economy", "GrowthWeights", "1.5,3.5,3,0.7,0.3",
++                "Firepower,Energy,Material,Defense,Counterintel weights in the opening (before GrowthUntilTurn).");
++            PressureWeights = Config.Bind("Economy", "PressureWeights", "2.5,2.5,2,1,0.8",
++                "Firepower,Energy,Material,Defense,Counterintel weights after the opening: keeps growing while arming. Native was 3 / 1.75 / 1.2 / 0.7 / 1.25 (+ intel).");
++            GrowthUntilTurn = Config.Bind("Economy", "GrowthUntilTurn", 15, "Opening length in turns.");
 +            DefenseBonusWhenHit = Config.Bind("Economy", "DefenseBonusWhenHit", 1.5f, "Extra defense weight while the AI has recently taken damage.");
 +
 +            SmartDefense = Config.Bind("Economy", "SmartDefense", true,
@@ -967,7 +969,7 @@ index 634e0a9..5ce0113 100644
              DecisionLog = Config.Bind("Logging", "DecisionLog", true,
                  "Write one JSON line per AI decision to BepInEx/InterplanetaryAI/decisions-<start time>.jsonl.");
  
-@@ -108,11 +164,20 @@ namespace InterplanetaryAI
+@@ -108,11 +161,20 @@ namespace InterplanetaryAI
              patched += TryPatch(typeof(AIWeaponTargetingGoal), "TargetWeapons", "GoalTargetWeaponsPrefix", "GoalTargetWeaponsPostfix");
              patched += TryPatch(typeof(AIWeaponTargeting), "HandleSecondPhaseTargeting", "SecondPhasePrefix", null);
              patched += TryPatch(typeof(PlayerBuildingHandler), "DealDamageToBuilding", "DealDamagePrefix", null);
@@ -990,7 +992,7 @@ index 634e0a9..5ce0113 100644
              try
              {
                  MethodInfo target = AccessTools.Method(type, method);
-@@ -121,8 +186,8 @@ namespace InterplanetaryAI
+@@ -121,8 +183,8 @@ namespace InterplanetaryAI
                      Log.LogError("Hook target not found: " + type.Name + "." + method + " - that behaviour stays native.");
                      return 0;
                  }
@@ -1001,14 +1003,13 @@ index 634e0a9..5ce0113 100644
                  m_harmony.Patch(target, pre, post);
                  return 1;
              }
-@@ -141,6 +206,14 @@ namespace InterplanetaryAI
+@@ -141,6 +203,13 @@ namespace InterplanetaryAI
              Planner.FinishWeight = FinishWeight.Value;
              Planner.HumanBias = HumanBias.Value;
  
 +            Build.Growth = BuildPlanner.Parse(GrowthWeights.Value, Build.Growth);
 +            Build.Pressure = BuildPlanner.Parse(PressureWeights.Value, Build.Pressure);
 +            Build.GrowthUntilTurn = GrowthUntilTurn.Value;
-+            Build.BehindRatio = BehindRatio.Value;
 +            Build.DefenseBonusWhenHit = DefenseBonusWhenHit.Value;
 +            SuperweaponIds = Brain.ResearchPlan.Parse(Superweapons.Value);
 +            ResearchPlanIds = Brain.ResearchPlan.Parse(ResearchPlan.Value);
@@ -1016,7 +1017,7 @@ index 634e0a9..5ce0113 100644
              float[] parsed = ParseAccuracy(AccuracyByLevel.Value);
              if (parsed == null)
              {
-@@ -183,6 +256,7 @@ namespace InterplanetaryAI
+@@ -183,6 +252,7 @@ namespace InterplanetaryAI
              Reach.Clear();
              AccuracyCarry.Clear();
              LastTurnSeen = 0;
@@ -1024,8 +1025,53 @@ index 634e0a9..5ce0113 100644
          }
  
          internal static void WriteDecision(string json)
+diff --git a/AI/README.md b/AI/README.md
+index a4e1687..1cf6d76 100644
+--- a/AI/README.md
++++ b/AI/README.md
+@@ -32,10 +32,11 @@ Review: two GPT-6.1 Terra passes; see `docs/reviews/terra-ai-disposition.md` for
+ ## Files
+ 
+ - `Brain/` - game-independent decision logic (planner, memories, accuracy, strike choice).
+-- `Patches.cs` - Harmony adapters. Any exception keeps the native behaviour for that hook and is logged once.
++- `Patches.cs` - v0.1 combat hooks; `EconomyPatches.cs` - v0.2 economy, research and defense hooks; `LaserPatches.cs` - experimental laser support. Any exception keeps the native behaviour for that hook and is logged once.
+ - `Plugin.cs` - config, hook registration, offline guard, decision log.
+ - `Tests/` - console checks for `Brain/`: `dotnet run -c Release` in `AI/Tests` (exit code 1 on failure).
+-- `tools/summarize_decisions.py` - reads the newest decision log and prints targets, trajectory success and threat scores for the last match.
++- `tools/summarize_decisions.py` - reads the newest decision log and prints targets, trajectory success, threat scores, economy, superweapons, research and defense for the last match.
++- `tools/human_research_order.py` - consensus research order from the recorder's winning-match debriefs.
+ 
+ ## Build, install, uninstall
+ 
+@@ -55,8 +56,22 @@ Uninstall: delete `<game>/BepInEx/plugins/InterplanetaryAI/`, or set `[General]
+ 3. Compare against the recorder's postgame facts (`ScheduleImodes/interplanetary/debriefs/`).
+ 4. Tune config or change the Brain; rebuild; repeat.
+ 
+-## Next (v0.2 candidates)
++## v0.2 - build and research like a strong player
+ 
+-- Economy: the AIs plateau at 2-3.5k energy from turn ~20. Find out why (construction placement, `MinimumEnergyThreshold`, material builds failing per the director run) and fix it.
+-- Early pressure: weapon build-up timed against the leader's undefended boom.
+-- Research path: the native AIs never research some economy techs (Robotic Mining in the director run).
++| Change | Hook | Config |
++|---|---|---|
++| Superweapon savings: once Nuclear Missile / Asteroid Diversion is unlocked, a reserve that converges on the cost (the native AI drops any need above 1.65x its stock, so it never saves); bought through the native weapon module | postfix `AICore.BeginTurn` (reserve), prefix `AIConstruction.tryConstructNewBuilding` (buy) | `[Economy] SuperweaponSavings`, `SaveShare`, `Superweapons` |
++| Build planner: growth weights (energy/material heavy) for the first 15 turns, then a balanced mix that keeps growing while arming (growing while behind the leader was rejected: it never punishes a human boom); counterintel kept; +defense when recently hit. Replaces the fixed native roulette; needs and minimum intel stay native | prefix `AIConstruction.tryConstructNewBuilding` | `[Economy] BuildPlanner`, `GrowthWeights`, `PressureWeights`, `GrowthUntilTurn` |
++| Research plan: the human's consensus opening from 6 recorded wins (`tools/human_research_order.py`), the Nuclear Missile line pulled forward, then the rest, then Asteroid Diversion. Prerequisites are queued by the game; native research resumes after the plan | prefix `AITechQueue.BeginTurn` | `[Research] UsePlan`, `Plan` |
++| Smart defense: build the defense that counters the most visible, not-yet-covered enemy firepower (Kinetic vs Railgun/Coilcannon, Ion vs Missile/MIRV/Nuclear, Shield vs Laser) | prefix `AIDefenseConstruction.TryConstructDefense` | `[Economy] SmartDefense` |
++| Lasers (EXPERIMENTAL, off): lift the two native bans and fix the dormant AI laser code (crash on an empty target list, wrong building aimed, projectile simulation of a never-set shot) | transpilers on `AIWeaponConstruction.TryConstructWeapon` and `AIWeaponTargeting.BeginTurn`, prefixes on `AILaserTrajectoryWeapon.setBuildingsToTry` / `Update`, `AITargetWeapons.CalculateTrajectory` | `[Lasers] EnableLasers` |
++| Economy, build, research, superweapon and defense records in the decision log, to diagnose the turn-20 plateau | same hooks | `[Logging] DecisionLog` |
++
++Why the research plan is not the human order verbatim: that order reaches Thermonuclear Warheads at about 24.5k cumulative science, and the strongest native AI in the 30 Oct match had 17k by turn 40.
++
++## Next
++
++- Read the first v0.2 match log: is the economy still flat (placement? planet material?), did anyone buy a superweapon, did the plan keep up.
++- Calibrate accuracy from the AIs' realized hit rate against the human's 58-67%.
++- Lasers: one throwaway match with `EnableLasers = true`.
++- Upgrades and projects (the native AI never builds projects: "Project handling not implemented").
 diff --git a/AI/Tests/Program.cs b/AI/Tests/Program.cs
-index 48c9dbd..c90f62e 100644
+index 48c9dbd..371296c 100644
 --- a/AI/Tests/Program.cs
 +++ b/AI/Tests/Program.cs
 @@ -24,11 +24,95 @@ namespace InterplanetaryAI.Tests
@@ -1069,7 +1115,7 @@ index 48c9dbd..c90f62e 100644
 +        {
 +            BuildWeights w = new BuildWeights();
 +            Check(BuildPlanner.IsGrowthPhase(new BuildSituation { Turn = 5, OwnEconomy = 9000, MaxEnemyEconomy = 1000 }, w), "early turns are always growth");
-+            Check(BuildPlanner.IsGrowthPhase(new BuildSituation { Turn = 30, OwnEconomy = 3000, MaxEnemyEconomy = 13000 }, w), "trailing the leader (3k vs 13k) means growth");
++            Check(!BuildPlanner.IsGrowthPhase(new BuildSituation { Turn = 30, OwnEconomy = 3000, MaxEnemyEconomy = 13000 }, w), "trailing a booming leader after the opening must NOT stay in growth (keeps arming)");
 +            Check(!BuildPlanner.IsGrowthPhase(new BuildSituation { Turn = 30, OwnEconomy = 13000, MaxEnemyEconomy = 12000 }, w), "caught up after the opening means pressure");
 +        }
 +
@@ -1172,3 +1218,63 @@ index 0000000..62b0a4a
 +
 +if __name__ == "__main__":
 +    main()
+diff --git a/AI/tools/summarize_decisions.py b/AI/tools/summarize_decisions.py
+index 5906266..b6de323 100644
+--- a/AI/tools/summarize_decisions.py
++++ b/AI/tools/summarize_decisions.py
+@@ -83,6 +83,55 @@ def main():
+             cells = [f"{e['name']} {e['score']:.2f} ({e['leader']:.2f}/{e['grudgeTerm']:.2f}/{e['finish']:.2f})" for e in r["enemies"]]
+             print(f"  {r['ai']:<8} " + "; ".join(cells))
+ 
++    summarize_economy(rows)
++
++
++def summarize_economy(rows):
++    economy = [r for r in rows if r["e"] == "economy"]
++    if not economy:
++        return
++    print("\neconomy per AI (energy / material / science per turn; planet material):")
++    by_ai = defaultdict(list)
++    for r in economy:
++        by_ai[r["ai"]].append(r)
++    for ai in sorted(by_ai):
++        series = by_ai[ai]
++        marks = [r for r in series if r["t"] % 10 == 0] + [series[-1]]
++        cells = [f"T{r['t']} {r['energyPerTurn']}/{r['materialPerTurn']}/{r['sciencePerTurn']} pm{r['planetMaterial']}{' G' if r['growth'] else ''}" for r in marks]
++        print(f"  {ai:<8} " + "  ".join(cells))
++        last = series[-1]
++        print(f"           buildings T{last['t']}: " + ", ".join(f"{k} {v}" for k, v in sorted(last["buildings"].items(), key=lambda kv: -kv[1])))
++        goal_turns = [r["t"] for r in series if r["goal"]]
++        if goal_turns:
++            print(f"           saving for {series[-1]['goal'] or 'goal'} from T{goal_turns[0]}; last reserve E{last['reservedEnergy']} M{last['reservedMaterial']}")
++
++    supers = [r for r in rows if r["e"] == "superweapon"]
++    print("\nsuperweapons queued:", ", ".join(f"T{r['t']} {r['ai']} {r['building']}" for r in supers) if supers else "none")
++
++    research = defaultdict(list)
++    for r in rows:
++        if r["e"] == "research":
++            research[r["ai"]].append(r["target"].replace("tec_", ""))
++    if research:
++        print("\nresearch plan targets queued:")
++        for ai in sorted(research):
++            print(f"  {ai:<8} {len(research[ai])}: " + ", ".join(research[ai][-6:]) + (" (last 6)" if len(research[ai]) > 6 else ""))
++
++    builds = [r for r in rows if r["e"] == "build"]
++    if builds:
++        picks = [0, 0, 0, 0]
++        queued = [0, 0, 0, 0]
++        defenses = Counter()
++        for r in builds:
++            for i in range(4):
++                picks[i] += r["picks"][i]
++                queued[i] += r["queued"][i]
++            defenses.update(r.get("defensesQueued", {}))
++        names = ["firepower", "energy", "material", "defense"]
++        print("\nbuild planner picks -> module said yes: " + ", ".join(f"{names[i]} {picks[i]}->{queued[i]}" for i in range(4)))
++        if defenses:
++            print("smart defense queued: " + ", ".join(f"{k.replace('bui_', '')} {v}" for k, v in defenses.most_common()))
++
+ 
+ if __name__ == "__main__":
+     main()
