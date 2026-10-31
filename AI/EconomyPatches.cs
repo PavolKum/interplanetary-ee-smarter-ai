@@ -83,6 +83,7 @@ namespace InterplanetaryAI
         private static void CoreBeginTurnPostfix(AICore __instance)
         {
             if (!Plugin.Active || !__instance.PlayerData.AIPlayer) return;
+            StrategyPatches.ClearDecision(__instance.PlayerData.PlayerID); // a failure below must not leave last turn's hold
             try
             {
                 AICore core = __instance;
@@ -214,6 +215,9 @@ namespace InterplanetaryAI
                 state.ReservedMaterial = reserveMaterial;
 
                 LogEconomy(core, turn, state, stockEnergy, stockMaterial, ownEconomy, maxEnemyEconomy, recentDamage);
+                // v0.10: fire or hold, and at whom; before the director so construction knows whether the firing
+                // reservation is free this turn.
+                StrategyPatches.BeginTurn(core, state, recentDamage, turn);
                 if (Plugin.DirectorEnabled.Value) DirectorPatches.BeginTurn(core, state, recentDamage, turn);
             }
             catch (Exception e)

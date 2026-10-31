@@ -22,7 +22,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.9.1";
+        public const string VERSION = "0.10.0";
 
         internal static ManualLogSource Log;
 
@@ -89,6 +89,18 @@ namespace InterplanetaryAI
         internal static ConfigEntry<float> WeaponUpgradeShare;
         internal static ConfigEntry<float> WeaponUpgradeMinGain;
         internal static ConfigEntry<float> PopulationDamageWeight;
+        internal static ConfigEntry<float> MaterialGlutRatio;
+        internal static ConfigEntry<int> MaterialGlutMin;
+        internal static ConfigEntry<bool> StrategyEnabled;
+        internal static ConfigEntry<int> StrikeEvery;
+        internal static ConfigEntry<float> MinPassingShots;
+        internal static ConfigEntry<float> MinPassShare;
+        internal static ConfigEntry<float> BrokenPassShare;
+        internal static ConfigEntry<int> MaxHoldTurns;
+        internal static ConfigEntry<int> MinWeapons;
+        internal static ConfigEntry<float> CoverHalf;
+        internal static ConfigEntry<float> RollEnergyShare;
+        internal static readonly StrategySettings StrategyCfg = new StrategySettings();
 
         internal static readonly BuildWeights Build = new BuildWeights();
         internal static List<string> SuperweaponIds = new List<string>();
@@ -99,7 +111,22 @@ namespace InterplanetaryAI
         // science project (Quantum Computing), Kinetic and Ion defense on the way.
         // v0.9: science (Quantum Computing, Ultracapacitors) and weapon-upgrade techs (Uranium Alloys, Zero Reluctance
         // Engineering, Magnetic Saturation Elimination) moved up; Railgun population damage was 31st of 38.
+        // v0.10: 4th Gen Nuclear Reactors and Lossless Energy Transfer (Reactor Trials: x1.3 global energy per city
+        // project) moved from #30-31 to #6-7; the human had them by T15, the AIs never reached them in v0.9.1.
+        // Kinetic Defense (2nd Gen Composites -> Maglev Servos) right after them at #8-9 (v0.9: #12), Plasma Channel
+        // Induction (Ion) at #15 ahead of the weapon-upgrade techs.
         private const string DefaultResearchPlan =
+            "tec_MassBiochemicalProcessing,tec_MolecularRecycling,tec_SmartGrids,tec_SuperTensileMaterials,tec_QuantumComputing,"
+            + "tec_4thGenNuclearReactors,tec_LosslessEnergyTransfer,tec_2ndGenComposites,tec_MaglevServos,tec_SelfAdjustingOptics,"
+            + "tec_AdvancedSignalProcessing,tec_Nanostructuring,tec_MicrowaveEnergyTranmission,tec_OrbitalAssembly,tec_PlasmaChannelInduction,"
+            + "tec_UraniumAlloys,tec_Ultracapacitors,tec_MagneticRadiationShielding,tec_EmDrives,tec_ThermonuclearWarheads,"
+            + "tec_ExperimentalMatterControl,tec_InductionCoils,tec_ZeroReluctanceEngineering,tec_MagneticSaturationElimination,tec_RoboticMining,"
+            + "tec_EarlyWarningAI,tec_Metamaterials,tec_DesignerNanomaterials,tec_VerticalFarming,tec_QuantumCommunications,"
+            + "tec_AtmosphericInterferenceMitigation,tec_CompositeHeatCells,tec_Octaazacubane,tec_AdvancedGenetics,tec_SelfHealingMaterials,"
+            + "tec_AITargetTracking,tec_MultiChainedStages,tec_GammaRayLasers,tec_MassDrivers";
+
+        // v0.9 default, replaced on load if the config still holds it unchanged.
+        private const string V09ResearchPlan =
             "tec_MassBiochemicalProcessing,tec_MolecularRecycling,tec_SmartGrids,tec_SuperTensileMaterials,tec_SelfAdjustingOptics,"
             + "tec_AdvancedSignalProcessing,tec_QuantumComputing,tec_UraniumAlloys,tec_Nanostructuring,tec_MicrowaveEnergyTranmission,"
             + "tec_2ndGenComposites,tec_MaglevServos,tec_OrbitalAssembly,tec_Ultracapacitors,tec_PlasmaChannelInduction,"
@@ -227,10 +254,11 @@ namespace InterplanetaryAI
                 "Research the Plan list in order (prerequisites are queued automatically) instead of the native random focus. Native research resumes when the plan is done.");
             ResearchPlan = Config.Bind("Research", "Plan", DefaultResearchPlan,
                 "Tech IDs in order. Default (v0.3): the human's order from the 31 Oct 2026 win, economy first (material and energy projects, yield upgrades, Offshore Mine, Floating Plant), then the Nuclear Missile line, then the rest.");
-            if (ResearchPlan.Value == V02ResearchPlan || ResearchPlan.Value == V03ResearchPlan || ResearchPlan.Value == V04ResearchPlan)
+            if (ResearchPlan.Value == V02ResearchPlan || ResearchPlan.Value == V03ResearchPlan || ResearchPlan.Value == V04ResearchPlan
+                || ResearchPlan.Value == V09ResearchPlan)
             {
                 ResearchPlan.Value = DefaultResearchPlan;
-                Log.LogInfo("Research plan: replaced an unchanged older default with the v0.4 default.");
+                Log.LogInfo("Research plan: replaced an unchanged older default with the v0.10 default.");
             }
             if (Math.Abs(GrudgeWeight.Value - 0.6f) < 1e-4f)
             {
@@ -252,17 +280,31 @@ namespace InterplanetaryAI
             UnpoweredPlantsPerTurn = Config.Bind("Director", "UnpoweredPlantsPerTurn", 5, "Most power plants built per turn to connect unpowered buildings.");
             ScienceWeight = Config.Bind("Director", "ScienceWeight", 1.5f, "Science per turn valued against energy/material per turn when choosing projects and upgrades (base; raised while research is behind).");
             ScienceTargetTurn = Config.Bind("Director", "ScienceTargetTurn", 40, "Turn by which the research plan should be done; science is valued more while the pace falls short.");
-            ScienceMaxMultiplier = Config.Bind("Director", "ScienceMaxMultiplier", 4f, "Most the science weight is raised when research is behind schedule.");
+            ScienceMaxMultiplier = Config.Bind("Director", "ScienceMaxMultiplier", 2.5f, "Most the science weight is raised when research is behind schedule.");
             WeaponUpgradesEnabled = Config.Bind("Director", "WeaponUpgrades", true, "At war, buy weapon upgrades that raise damage per firing energy (population damage weighted).");
             WeaponUpgradesPerTurn = Config.Bind("Director", "WeaponUpgradesPerTurn", 6, "Most weapon upgrades queued in one turn.");
             WeaponUpgradeShare = Config.Bind("Director", "WeaponUpgradeShare", 0.3f, "Most of a turn's starting material spent on weapon upgrades.");
             WeaponUpgradeMinGain = Config.Bind("Director", "WeaponUpgradeMinGain", 0.15f, "Smallest gain in damage per firing energy worth an upgrade (0.15 = +15%).");
             PopulationDamageWeight = Config.Bind("Director", "PopulationDamageWeight", 1.5f, "Population damage valued against building damage when judging weapons (cities at 0 population decide the game).");
+            MaterialGlutRatio = Config.Bind("Director", "MaterialGlutRatio", 3f,
+                "v0.10: material counts as in glut once the banked stock is this many times the turn's energy budget; energy gains then count fully, material gains and material cost at 0.25. 0 = off.");
+            MaterialGlutMin = Config.Bind("Director", "MaterialGlutMin", 5000, "Smallest material stock that counts as glut.");
+
+            StrategyEnabled = Config.Bind("Strategy", "Enabled", true,
+                "v0.10: hold fire (and give the firing energy the game reserves to construction) until a salvo at one committed target is expected to get enough shots through its defenses; then strike, at most every StrikeEvery turns. Off = fire every turn, split targets (v0.9).");
+            StrikeEvery = Config.Bind("Strategy", "StrikeEvery", 2, "Turns between strikes (2 = every other turn, as the human who won).");
+            MinPassingShots = Config.Bind("Strategy", "MinPassingShots", 12f, "Strike when at least this many shots are expected through the target's defenses...");
+            MinPassShare = Config.Bind("Strategy", "MinPassShare", 0.45f, "...and at least this share of the salvo.");
+            BrokenPassShare = Config.Bind("Strategy", "BrokenPassShare", 0.7f, "Expected pass share at which the target counts as broken: strike again without waiting for the pulse.");
+            MaxHoldTurns = Config.Bind("Strategy", "MaxHoldTurns", 5, "At war with weapons, never hold fire longer than this many turns in a row.");
+            MinWeapons = Config.Bind("Strategy", "MinWeapons", 6, "Fewer weapons than this: keep building, do not fire.");
+            CoverHalf = Config.Bind("Strategy", "CoverHalf", 12f, "Defenses at which half of our shots are assumed to meet one in range (corrected by our observed shots).");
+            RollEnergyShare = Config.Bind("Strategy", "RollEnergyShare", 0.5f, "Share of a target's energy income assumed left for its defense rolls (150 energy each).");
 
             DirectorEnabled = Config.Bind("Director", "Enabled", true,
                 "v0.3 economy director: replaces the native construction choice. Buys yield upgrades and city projects first, keeps energy income near EnergyToMaterialTarget x material income, places water buildings properly, holds weapons until WarFromTurn, and counters visible enemy weapons with defenses. Off = the v0.2 build planner.");
-            WarFromTurn = Config.Bind("Director", "WarFromTurn", 15,
-                "Turn from which the AI builds weapons (the human who won built none until ~25). Before it, only retaliation after heavy damage.");
+            WarFromTurn = Config.Bind("Director", "WarFromTurn", 20,
+                "Turn from which the AI builds weapons (v0.9.1: the human built its first at T22). Before it, only retaliation after heavy damage. Firing is decided by [Strategy].");
             WarDamageTrigger = Config.Bind("Director", "WarDamageTrigger", 600f,
                 "Recent damage taken that starts retaliation before WarFromTurn.");
             WarUpkeepShare = Config.Bind("Director", "WarUpkeepShare", 0.4f,
@@ -288,6 +330,21 @@ namespace InterplanetaryAI
                     Log.LogInfo("MaxDefenses: replaced the unchanged v0.4 default 40 with 60 (once).");
                 }
                 migrated.Value = "0.5";
+            }
+            // Ordinal compare puts "0.10" before "0.5", so later migrations chain on equality.
+            if (migrated.Value == "0.5")
+            {
+                if (WarFromTurn.Value == 15)
+                {
+                    WarFromTurn.Value = 20; // v0.10: the human built its first weapons at T22; grow first
+                    Log.LogInfo("WarFromTurn: replaced the unchanged default 15 with 20 (once).");
+                }
+                if (Math.Abs(ScienceMaxMultiplier.Value - 4f) < 1e-4f)
+                {
+                    ScienceMaxMultiplier.Value = 2.5f; // v0.9.1: a weight ~3 from T15 cut the AIs' T15 energy to 3.0k
+                    Log.LogInfo("ScienceMaxMultiplier: replaced the unchanged default 4 with 2.5 (once).");
+                }
+                migrated.Value = "0.10";
             }
             DefensesPerTurn = Config.Bind("Director", "DefensesPerTurn", 3,
                 "Defenses queued per turn when on target; more when behind (see DefenseCatchUpTurns).");
@@ -394,6 +451,16 @@ namespace InterplanetaryAI
             Planner.HumanBias = HumanBias.Value;
             Planner.UnknownEconomyShare = UnknownEconomyShare.Value;
 
+            StrategyCfg.StrikeEvery = Math.Max(1, StrikeEvery.Value);
+            StrategyCfg.MinPassingShots = MinPassingShots.Value;
+            StrategyCfg.MinPassShare = Clamp01(MinPassShare.Value);
+            StrategyCfg.BrokenPassShare = Clamp01(BrokenPassShare.Value);
+            StrategyCfg.MaxHoldTurns = Math.Max(1, MaxHoldTurns.Value);
+            StrategyCfg.MinWeapons = Math.Max(1, MinWeapons.Value);
+            StrategyCfg.CoverHalf = Math.Max(0.1f, CoverHalf.Value);
+            StrategyCfg.RollEnergyShare = Clamp01(RollEnergyShare.Value);
+            StrategyCfg.ObservedMinImpacts = Math.Max(1, ObservedMinImpacts.Value);
+
             Build.Growth = BuildPlanner.Parse(GrowthWeights.Value, Build.Growth);
             Build.Pressure = BuildPlanner.Parse(PressureWeights.Value, Build.Pressure);
             Build.GrowthUntilTurn = GrowthUntilTurn.Value;
@@ -445,6 +512,7 @@ namespace InterplanetaryAI
             AccuracyCarry.Clear();
             LastTurnSeen = 0;
             EconomyPatches.Reset();
+            StrategyPatches.Reset();
         }
 
         internal static void WriteDecision(string json)

@@ -57,6 +57,30 @@ namespace InterplanetaryAI
         private static void TargetingBeginTurnPostfix(AIWeaponTargeting __instance)
         {
             if (!Plugin.Active || !Plugin.SmartTargeting.Value) return;
+            try
+            {
+                AICore core = (AICore)s_moduleCore.GetValue(__instance);
+                if (core == null || !core.PlayerData.AIPlayer) return;
+                // Backstop for the Initialize reset: the init-time turn value is not proven fresh, but the first targeting
+                // of a new match or an earlier save always shows the turn going backwards. Runs here, before this turn's
+                // economy and strategy state are built (EconomyPatches.CoreBeginTurnPostfix), never after.
+                int turn = GameManager.CurrentTurn;
+                if (turn < Plugin.LastTurnSeen) Plugin.ResetMatchMemory();
+                Plugin.LastTurnSeen = turn;
+            }
+            catch (Exception e)
+            {
+                ReportOnce("targeting-reset", e);
+            }
+            // v0.10: with the strategy on, targets are assigned once it has decided (StrategyPatches.BeginTurn, later in
+            // the same AICore.BeginTurn), so a strike commits every weapon to one enemy.
+            if (Plugin.StrategyEnabled.Value) return;
+            AssignTargets(__instance, -1);
+        }
+
+        // commitPlayerId >= 0: every weapon at that enemy (each falling back to one it can reach); -1: the v0.9 split plan.
+        internal static void AssignTargets(AIWeaponTargeting __instance, int commitPlayerId)
+        {
             PlayerData logMe = null;
             List<EnemyView> logEnemies = null;
             int[] countByEnemy = null;
@@ -70,10 +94,6 @@ namespace InterplanetaryAI
                 if (planets == null || planets.Count == 0) return;
 
                 int turn = GameManager.CurrentTurn;
-                // Backstop for the Initialize reset: the init-time turn value is not proven fresh, but the
-                // first targeting of a new match or an earlier save always shows the turn going backwards.
-                if (turn < Plugin.LastTurnSeen) Plugin.ResetMatchMemory();
-                Plugin.LastTurnSeen = turn;
                 PlayerData me = core.PlayerData;
                 List<EnemyView> enemies = new List<EnemyView>();
                 foreach (CelestialBody planet in planets)
@@ -94,8 +114,10 @@ namespace InterplanetaryAI
                 }
                 if (slots.Count == 0) return;
 
+                int commitIndex = -1;
+                for (int i = 0; i < enemies.Count; i++) if (commitPlayerId >= 0 && enemies[i].PlayerId == commitPlayerId) commitIndex = i;
                 // The whole plan is computed above; only plain assignments from here on.
-                int[] plan = TargetPlanner.Assign(enemies, slots, Plugin.Planner, Plugin.Rng);
+                int[] plan = TargetPlanner.Assign(enemies, slots, Plugin.Planner, Plugin.Rng, commitIndex);
                 countByEnemy = new int[enemies.Count];
                 for (int i = 0; i < plan.Length; i++)
                 {
@@ -143,6 +165,11 @@ namespace InterplanetaryAI
             {
                 bool intelOff = GameSessionManager.CurrentGameSettings.Intelligence != 1;
                 int intel = ours.Intel;
+                if (intelOff || intel >= theirs.EnergyStealth)
+                {
+                    view.EnergyKnown = true;
+                    view.EnergyProduction = Math.Max(0, theirs.EnergyProduction);
+                }
                 if (intelOff || (intel >= theirs.EnergyStealth && intel >= theirs.MaterialStealth))
                 {
                     view.EconomyKnown = true;
@@ -219,6 +246,24 @@ namespace InterplanetaryAI
         {
             __state = !__instance.AreWeaponsTargeted;
             if (!__state || !Plugin.Active) return;
+            try
+            {
+                // v0.10 hold fire: nothing in the firing lists, nothing fired, no firing energy charged (the reserved
+                // energy went to construction this turn).
+                AICore holder = (AICore)s_goalCore.GetValue(__instance);
+                if (holder != null && StrategyPatches.HoldFire(holder.PlayerData.PlayerID))
+                {
+                    List<AITrajectoryWeapon> holdHitting = (List<AITrajectoryWeapon>)s_goalHitting.GetValue(__instance);
+                    List<AITrajectoryWeapon> holdMissing = (List<AITrajectoryWeapon>)s_goalMissing.GetValue(__instance);
+                    if (holdHitting != null) holdHitting.Clear();
+                    if (holdMissing != null) holdMissing.Clear();
+                    return;
+                }
+            }
+            catch (Exception e)
+            {
+                ReportOnce("hold-fire", e);
+            }
             try
             {
                 if (Plugin.RefreshFiringList.Value) __instance.DetermineShootingWeapons();

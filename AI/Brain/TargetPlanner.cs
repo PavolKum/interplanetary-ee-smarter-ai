@@ -16,6 +16,8 @@ namespace InterplanetaryAI.Brain
         public float CityPopulation; // total city population when our intel shows it; a city's durability (ruined at 0)
         public int VisibleCities;    // 0 = nothing known, so no finish-off bonus
         public float Grudge;         // decayed damage this enemy dealt to us
+        public bool EnergyKnown;     // v0.10: our intel reads its energy production (pays for its defense rolls)
+        public float EnergyProduction;
 
         // outputs, filled by Score()
         public float Score;
@@ -88,7 +90,9 @@ namespace InterplanetaryAI.Brain
         // Returns, for each weapon, an index into enemies. The first FocusShare of weapons go at the
         // top-scored enemy; the rest draw at random weighted by score. A weapon that failed to find
         // any trajectory onto its target recently is moved to the best enemy it can still reach.
-        public static int[] Assign(IList<EnemyView> enemies, IList<WeaponSlot> weapons, PlannerSettings settings, Random rng)
+        // v0.10: commitIndex >= 0 sends every weapon at that enemy (a strike), each falling back to the best
+        // enemy it can still reach. v0.9.1: split fire put 55% of assignments on the other AI.
+        public static int[] Assign(IList<EnemyView> enemies, IList<WeaponSlot> weapons, PlannerSettings settings, Random rng, int commitIndex = -1)
         {
             int[] result = new int[weapons.Count];
             if (enemies.Count == 0)
@@ -100,6 +104,13 @@ namespace InterplanetaryAI.Brain
             List<int> byScore = new List<int>();
             for (int i = 0; i < enemies.Count; i++) byScore.Add(i);
             byScore.Sort((a, b) => enemies[b].Score.CompareTo(enemies[a].Score));
+            if (commitIndex >= 0 && commitIndex < enemies.Count)
+            {
+                byScore.Remove(commitIndex);
+                byScore.Insert(0, commitIndex); // fallbacks after the committed target, best score first
+                for (int w = 0; w < weapons.Count; w++) result[w] = ReachableOrBest(commitIndex, byScore, enemies, weapons[w]);
+                return result;
+            }
             int top = byScore[0];
 
             float topScore = enemies[top].Score;

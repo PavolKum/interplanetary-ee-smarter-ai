@@ -88,6 +88,9 @@ namespace InterplanetaryAI
             public int IntelBuildings;
             public int IntelThisTurn;
             public int DefenseReserve;
+            public int ReleasedEnergy;    // v0.10: firing reservation given to construction on a hold-fire turn
+            public bool HoldingFire;
+            public bool MaterialGlut;
             // across turns
             public int WaterCooldownUntil;
         }
@@ -356,6 +359,21 @@ namespace InterplanetaryAI
             d.EnergyIncome = res.EnergyProductionPerTurn;
             d.MaterialIncome = res.PlanetMaterial > 0 ? res.MaterialProductionPerTurn : 0;
             d.Upkeep = core.Resources.EnergyUpkeep;
+            // v0.10 hold fire: the game reserved every weapon's firing cost (AIResources.BeginTurn), but nothing fires
+            // this turn (StrategyPatches), so construction gets it. v0.9.1: ~35% of income sat in that reservation.
+            if (StrategyPatches.HoldFire(core.PlayerData.PlayerID))
+            {
+                int energyBack = Math.Max(0, core.Resources.EnergyUpkeep);
+                int materialBack = Math.Max(0, core.Resources.MaterialUpkeep);
+                core.Resources.Energy += energyBack;
+                core.Resources.Material += materialBack;
+                core.Construction.ConstructionQueue.AllottedEnergy += energyBack;
+                core.Construction.ConstructionQueue.AllottedMaterial += materialBack;
+                d.ReleasedEnergy = energyBack;
+                d.HoldingFire = true;
+                d.TurnStartEnergy = core.Resources.Energy;
+                d.TurnStartMaterial = core.Resources.Material;
+            }
             // v0.4: at war, keep energy back for our defense rolls (each costs the defender 100-200 energy from
             // what is left that turn; PlayerDefenseHandler.IsHitIntercepted). v0.3 spent it all.
             if (d.War)
@@ -696,7 +714,11 @@ namespace InterplanetaryAI
                 MaterialBudget = core.Resources.Material,
                 EnergyPush = economy.EnergyPush,
                 ScienceWeight = d.ScienceWeight,
+                // Turn-start stock against turn-start energy: spending during the turn must not flip it.
+                MaterialGlut = Plugin.MaterialGlutRatio.Value > 0f
+                    && EconomyDirector.IsMaterialGlut(d.TurnStartMaterial, d.TurnStartEnergy, Plugin.MaterialGlutRatio.Value, Plugin.MaterialGlutMin.Value),
             };
+            d.MaterialGlut = balance.MaterialGlut;
             for (int attempt = 0; attempt < 6; attempt++)
             {
                 EconOption best = EconomyDirector.Best(options, balance, d.SlotsLeft);
@@ -1613,6 +1635,7 @@ namespace InterplanetaryAI
                 .Str("observedPass", ObservedPassText(d.ObservedPass))
                 .Int("upgradesInstalled", upgradesInstalled).Str("weaponTarget", d.TargetName).Map("targetDefenses", d.TargetDefenses)
                 .Int("intelBuildings", d.IntelBuildings + d.IntelThisTurn).Int("blindEnemies", d.BlindEnemies).Int("defenseReserve", d.DefenseReserve)
+                .Bool("holdingFire", d.HoldingFire).Int("releasedEnergy", d.ReleasedEnergy).Bool("materialGlut", d.MaterialGlut)
                 .Int("refunds", d.Refunds).Map("placementFailures", d.PlacementFailures).Int("steps", d.Steps)
                 .Map("queued", d.Actions).ToString());
         }

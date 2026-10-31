@@ -50,6 +50,8 @@ namespace InterplanetaryAI.Brain
         public int MaterialBudget;    // usable material left this turn
         public bool EnergyPush;       // e.g. superweapon material saved, energy short
         public float ScienceWeight = 1f; // science per turn valued against energy/material per turn
+        public bool MaterialGlut;     // v0.10: more material banked than energy can turn into anything
+        public float GlutMaterialWeight = 0.25f;
     }
 
     public sealed class WeaponStats
@@ -68,7 +70,14 @@ namespace InterplanetaryAI.Brain
         public static void Weights(EconomyBalance b, out float energyWeight, out float materialWeight)
         {
             float wantedEnergy = b.TargetRatio * b.MaterialIncome + b.WeaponUpkeep;
-            if (b.EnergyPush || b.EnergyIncome < wantedEnergy)
+            if (b.MaterialGlut)
+            {
+                // v0.10: v0.9.1 Guts banked 15-37k material from T19 while energy-bound, and still preferred material
+                // gains (energy income sat just above 0.6 x material income + upkeep).
+                energyWeight = 1f;
+                materialWeight = b.GlutMaterialWeight;
+            }
+            else if (b.EnergyPush || b.EnergyIncome < wantedEnergy)
             {
                 energyWeight = 1f;
                 materialWeight = 0.5f;
@@ -86,11 +95,18 @@ namespace InterplanetaryAI.Brain
             return b.MaterialBudget >= 1.3f * b.EnergyBudget ? 1f : 0.3f;
         }
 
-        public static float Score(EconOption o, float energyWeight, float materialWeight, float energyCostFactor, float scienceWeight = 1f)
+        public static float Score(EconOption o, float energyWeight, float materialWeight, float energyCostFactor, float scienceWeight = 1f,
+            float materialCostFactor = 1f)
         {
             float value = energyWeight * o.EnergyGain + materialWeight * o.MaterialGain + scienceWeight * o.ScienceGain;
-            float cost = o.Material + energyCostFactor * o.Energy;
+            float cost = materialCostFactor * o.Material + energyCostFactor * o.Energy;
             return value / Math.Max(1f, cost);
+        }
+
+        // v0.10: material is in glut when the banked stock is several turns of what this turn's energy can spend.
+        public static bool IsMaterialGlut(int materialStock, int energyBudget, float ratio, int minimum)
+        {
+            return materialStock >= minimum && materialStock >= ratio * Math.Max(1, energyBudget);
         }
 
         // The best affordable option with a positive score, or null.
@@ -99,13 +115,14 @@ namespace InterplanetaryAI.Brain
             float wE, wM;
             Weights(b, out wE, out wM);
             float eFactor = EnergyCostFactor(b);
+            float mFactor = b.MaterialGlut ? b.GlutMaterialWeight : 1f;
             EconOption best = null;
             float bestScore = 0f;
             foreach (EconOption o in options)
             {
                 if (o.Energy > b.EnergyBudget || o.Material > b.MaterialBudget) continue;
                 if (o.NeedsSlot && slotsLeft <= 0) continue;
-                float score = Score(o, wE, wM, eFactor, b.ScienceWeight);
+                float score = Score(o, wE, wM, eFactor, b.ScienceWeight, mFactor);
                 if (score > bestScore)
                 {
                     best = o;

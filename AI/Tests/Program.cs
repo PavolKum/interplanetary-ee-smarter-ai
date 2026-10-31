@@ -45,9 +45,187 @@ namespace InterplanetaryAI.Tests
             UnknownEnemyIsNotIgnored();
             DefenseReserveRules();
             EndgameBankRules();
+            SalvoEstimateRules();
+            StrategyFireRules();
+            StrategyCommitsToBestValue();
+            CommittedAssignmentRules();
+            MaterialGlutRules();
 
             Console.WriteLine(s_checks + " checks, " + s_failures + " failed");
             return s_failures == 0 ? 0 : 1;
+        }
+
+        // ---- v0.10 strategy -------------------------------------------------------------------------
+
+        private static Dictionary<string, Dictionary<string, float>> EnhancedCounters()
+        {
+            return new Dictionary<string, Dictionary<string, float>>
+            {
+                { "bui_KineticDefense", new Dictionary<string, float> { { "wea_Railgun", 0.8f }, { "wea_Coilcannon", 0.8f } } },
+                { "bui_IonDefense", new Dictionary<string, float> { { "wea_Missile", 0.8f }, { "wea_NuclearMissile", 0.8f } } },
+            };
+        }
+
+        private static SalvoTarget Target(int id, float score, int kinetic, bool energyKnown, float energy)
+        {
+            return new SalvoTarget
+            {
+                PlayerId = id, Name = "p" + id, Score = score, EnergyKnown = energyKnown, EnergyProduction = energy,
+                Defenses = new Dictionary<string, int> { { "bui_KineticDefense", kinetic } },
+            };
+        }
+
+        private static Dictionary<string, int> Railguns(int n)
+        {
+            return new Dictionary<string, int> { { "wea_Railgun", n } };
+        }
+
+        private static void SalvoEstimateRules()
+        {
+            StrategySettings s = new StrategySettings(); // CoverHalf 12, roll share 0.5 at 150
+            var counters = EnhancedCounters();
+
+            // v0.9.1 T22 shape: 35 Railguns at the human's 19 Kinetic, 6,000 energy. cover 19/31, eligible 21.45,
+            // rolls 20, intercepted 16, through 19.
+            SalvoTarget human = Target(0, 1f, 19, true, 6000f);
+            Strategy.EstimateSalvo(Railguns(35), human, counters, s);
+            Check(Math.Abs(human.Rolls - 20f) < 1e-3, "6000 energy x 0.5 / 150 = 20 rolls; got " + human.Rolls);
+            Check(Math.Abs(human.Eligible - 35f * 19f / 31f) < 1e-3, "eligible = shots x cover; got " + human.Eligible);
+            Check(Math.Abs(human.Passing - (35f - 20f * 0.8f)) < 1e-3, "rolls bind: 35 - 20 x 0.8 = 19 through; got " + human.Passing);
+
+            // Unknown energy: rolls unlimited, only coverage limits.
+            SalvoTarget blind = Target(0, 1f, 19, false, 0f);
+            Strategy.EstimateSalvo(Railguns(35), blind, counters, s);
+            Check(Math.Abs(blind.Passing - (35f - 35f * 19f / 31f * 0.8f)) < 1e-3, "unknown energy: only coverage limits; got " + blind.Passing);
+            Check(blind.Passing < human.Passing, "unknown energy is assumed to pay every roll (more conservative)");
+
+            // Saturation: doubling the salvo against the same rolls more than doubles what gets through.
+            SalvoTarget small = Target(0, 1f, 19, true, 6000f), big = Target(0, 1f, 19, true, 6000f);
+            Strategy.EstimateSalvo(Railguns(20), small, counters, s);
+            Strategy.EstimateSalvo(Railguns(40), big, counters, s);
+            Check(big.Passing > 2f * small.Passing, "a salvo past the target's rolls saturates; 20 -> " + small.Passing + ", 40 -> " + big.Passing);
+
+            // Defenses that do not stop the weapon do nothing; no defenses, everything through.
+            SalvoTarget ionOnly = new SalvoTarget { PlayerId = 1, Score = 1f, Defenses = new Dictionary<string, int> { { "bui_IonDefense", 30 } } };
+            Strategy.EstimateSalvo(Railguns(10), ionOnly, counters, s);
+            Check(Math.Abs(ionOnly.Passing - 10f) < 1e-3, "Ion defenses do not stop Railguns; got " + ionOnly.Passing);
+            SalvoTarget open = new SalvoTarget { PlayerId = 1, Score = 1f, Defenses = null };
+            Strategy.EstimateSalvo(Railguns(10), open, counters, s);
+            Check(Math.Abs(open.Passing - 10f) < 1e-3, "no known defenses: all through; got " + open.Passing);
+
+            // Our observed shots correct the coverage guess: 40 impacts, 36 intercepted at 0.8 -> cover capped 0.9.
+            SalvoTarget seen = Target(0, 1f, 5, false, 0f);
+            seen.ObservedImpacts = 40;
+            seen.ObservedIntercepted = 36;
+            SalvoTarget unseen = Target(0, 1f, 5, false, 0f);
+            Strategy.EstimateSalvo(Railguns(30), seen, counters, s);
+            Strategy.EstimateSalvo(Railguns(30), unseen, counters, s);
+            float modelCover = 5f / 17f;
+            float blended = (20f * modelCover + 40f * 0.9f) / 60f;
+            Check(Math.Abs(seen.Passing - (30f - 30f * blended * 0.8f)) < 1e-3, "observed interceptions blend into coverage; got " + seen.Passing);
+            Check(seen.Passing < unseen.Passing, "a target that intercepted most of our shots is harder than its visible defenses suggest");
+            SalvoTarget few = Target(0, 1f, 5, false, 0f);
+            few.ObservedImpacts = 5;
+            few.ObservedIntercepted = 5;
+            Strategy.EstimateSalvo(Railguns(30), few, counters, s);
+            Check(Math.Abs(few.Passing - unseen.Passing) < 1e-3, "fewer than ObservedMinImpacts shots do not move the estimate");
+        }
+
+        private static void StrategyFireRules()
+        {
+            StrategySettings s = new StrategySettings();
+            var counters = EnhancedCounters();
+            Func<int, List<SalvoTarget>> human = kinetic => new List<SalvoTarget> { Target(0, 1f, kinetic, true, 6000f) };
+
+            StrategyDecision none = Strategy.Decide(25, true, new Dictionary<string, int>(), human(19), counters, -1000, 0, s);
+            Check(!none.Fire && none.Reason == "no-weapons", "no weapons, no fire; got " + none.Reason);
+            StrategyDecision peace = Strategy.Decide(10, false, Railguns(40), human(0), counters, -1000, 0, s);
+            Check(!peace.Fire && peace.Reason == "peace", "before war, no fire even into an open planet; got " + peace.Reason);
+            StrategyDecision few = Strategy.Decide(25, true, Railguns(5), human(0), counters, -1000, 0, s);
+            Check(!few.Fire && few.Reason == "building", "under MinWeapons, keep building; got " + few.Reason);
+
+            // 20 Railguns at 19 Kinetic, 6k energy: ~10 through (< 12): hold. 35: ~19 through, 54%: strike.
+            StrategyDecision small = Strategy.Decide(25, true, Railguns(20), human(19), counters, -1000, 0, s);
+            Check(!small.Fire && small.Reason == "below-saturation", "a salvo the defenses absorb is held; got " + small.Reason + " " + small.Passing);
+            StrategyDecision big = Strategy.Decide(25, true, Railguns(35), human(19), counters, -1000, 0, s);
+            Check(big.Fire && big.Reason == "saturated", "a saturating salvo strikes; got " + big.Reason + " " + big.Passing);
+            Check(big.CommitTargetId == 0, "commits to the only enemy");
+
+            // Pulse: struck last turn -> wait, unless the defenses are broken (>= 70% through).
+            StrategyDecision wait = Strategy.Decide(26, true, Railguns(35), human(19), counters, 25, 0, s);
+            Check(!wait.Fire && wait.Reason == "pulse-wait", "struck last turn: invest this turn; got " + wait.Reason);
+            StrategyDecision again = Strategy.Decide(27, true, Railguns(35), human(19), counters, 25, 0, s);
+            Check(again.Fire, "two turns after a strike, strike again");
+            StrategyDecision broken = Strategy.Decide(26, true, Railguns(35), human(3), counters, 25, 0, s);
+            Check(broken.Fire && broken.Reason == "broken", "broken defenses: strike again at once; got " + broken.Reason + " " + broken.PassShare);
+
+            // Never hold forever.
+            StrategyDecision stuck = Strategy.Decide(30, true, Railguns(20), human(40), counters, -1000, s.MaxHoldTurns, s);
+            Check(stuck.Fire && stuck.Reason == "max-hold", "after MaxHoldTurns held, fire anyway; got " + stuck.Reason);
+            StrategyDecision notYet = Strategy.Decide(30, true, Railguns(20), human(40), counters, -1000, s.MaxHoldTurns - 1, s);
+            Check(!notYet.Fire, "one turn short of MaxHoldTurns still holds");
+        }
+
+        private static void StrategyCommitsToBestValue()
+        {
+            StrategySettings s = new StrategySettings();
+            // The leader (score 1.0) behind 40 Kinetic vs a weaker rival (0.6) with 2: the open target is worth more.
+            List<SalvoTarget> targets = new List<SalvoTarget> { Target(0, 1f, 40, false, 0f), Target(2, 0.6f, 2, false, 0f) };
+            StrategyDecision d = Strategy.Decide(25, true, Railguns(30), targets, EnhancedCounters(), -1000, 0, s);
+            Check(d.CommitTargetId == 2, "commit where score x expected shots through is highest; got " + d.CommitTargetId);
+            // Same defenses: the higher score wins.
+            targets = new List<SalvoTarget> { Target(0, 1f, 10, false, 0f), Target(2, 0.6f, 10, false, 0f) };
+            d = Strategy.Decide(25, true, Railguns(30), targets, EnhancedCounters(), -1000, 0, s);
+            Check(d.CommitTargetId == 0, "equal defenses: the leader; got " + d.CommitTargetId);
+        }
+
+        private static void CommittedAssignmentRules()
+        {
+            List<EnemyView> enemies = ThreeEnemies();
+            PlannerSettings settings = new PlannerSettings { FocusShare = 0.7f };
+            TargetPlanner.Score(enemies, settings);
+            int[] plan = TargetPlanner.Assign(enemies, Weapons(10), settings, new Random(1), 2);
+            bool all = true;
+            foreach (int t in plan) all &= t == 2;
+            Check(all, "a committed strike sends every weapon at the committed enemy, not the top-scored one");
+            List<WeaponSlot> weapons = Weapons(2);
+            weapons[0].UnreachableTargetIds.Add(enemies[2].PlayerId);
+            plan = TargetPlanner.Assign(enemies, weapons, settings, new Random(1), 2);
+            int bestOther = 0;
+            for (int i = 1; i < enemies.Count; i++) if (i != 2 && enemies[i].Score > enemies[bestOther].Score) bestOther = i;
+            Check(plan[0] == bestOther && plan[1] == 2, "a weapon that cannot reach the committed enemy falls back to the best other; got " + plan[0] + "," + plan[1]);
+            plan = TargetPlanner.Assign(enemies, Weapons(10), new PlannerSettings { FocusShare = 0.7f }, new Random(1), -1);
+            int atTop = 0;
+            foreach (int t in plan) if (t == 0) atTop++;
+            Check(atTop >= 7, "no commit keeps the v0.9 split plan");
+        }
+
+        private static void MaterialGlutRules()
+        {
+            Check(EconomyDirector.IsMaterialGlut(17836, 1829, 3f, 5000), "v0.9.1 Guts T21 (17.8k material, 1.8k energy) is glut");
+            Check(!EconomyDirector.IsMaterialGlut(6948, 3045, 3f, 5000), "v0.9.1 T15 (6.9k vs 3.0k) is not");
+            Check(!EconomyDirector.IsMaterialGlut(4000, 500, 3f, 5000), "under the minimum is never glut");
+
+            // Energy income above 0.6 x material income + upkeep: without glut material gains win, with glut energy gains.
+            EconOption energy = new EconOption { Id = "trials", Kind = OptionKind.Project, Energy = 150, Material = 300, EnergyGain = 1100f, MaterialGain = -360f };
+            EconOption material = new EconOption { Id = "matproj", Kind = OptionKind.Project, Energy = 150, Material = 350, EnergyGain = 0f, MaterialGain = 900f };
+            List<EconOption> options = new List<EconOption> { energy, material };
+            EconomyBalance b = new EconomyBalance { EnergyIncome = 6300, MaterialIncome = 6000, WeaponUpkeep = 2500, TargetRatio = 0.6f, EnergyBudget = 2000, MaterialBudget = 30000 };
+            Check(EconomyDirector.Best(options, b, 10) == material, "v0.9 weights prefer the material project here (the bug)");
+            b.MaterialGlut = true;
+            Check(EconomyDirector.Best(options, b, 10) == energy, "in material glut the energy project wins");
+            float wE, wM;
+            EconomyDirector.Weights(b, out wE, out wM);
+            Check(wE == 1f && Math.Abs(wM - b.GlutMaterialWeight) < 1e-6, "glut weights: energy 1, material GlutMaterialWeight");
+
+            // Same gain, one costs energy, the other material: in glut material is cheap, so spend it and keep the energy.
+            EconOption energyHeavy = new EconOption { Id = "eh", Kind = OptionKind.Plant, Energy = 300, Material = 100, EnergyGain = 1000f };
+            EconOption materialHeavy = new EconOption { Id = "mh", Kind = OptionKind.Plant, Energy = 100, Material = 700, EnergyGain = 1000f };
+            List<EconOption> pair = new List<EconOption> { energyHeavy, materialHeavy };
+            EconomyBalance plain = new EconomyBalance { EnergyIncome = 6300, MaterialIncome = 6000, TargetRatio = 0.6f, EnergyBudget = 2000, MaterialBudget = 30000 };
+            Check(EconomyDirector.Best(pair, plain, 10) == energyHeavy, "without glut, material counts at full price");
+            plain.MaterialGlut = true;
+            Check(EconomyDirector.Best(pair, plain, 10) == materialHeavy, "in glut, material cost counts at GlutMaterialWeight");
         }
 
         // Simulates turns: income arrives, the reserve is set, everything unreserved is spent.
