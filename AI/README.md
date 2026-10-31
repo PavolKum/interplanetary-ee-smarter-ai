@@ -69,9 +69,28 @@ Uninstall: delete `<game>/BepInEx/plugins/InterplanetaryAI/`, or set `[General] 
 
 Why the research plan is not the human order verbatim: that order reaches Thermonuclear Warheads at about 24.5k cumulative science, and the strongest native AI in the 30 Oct match had 17k by turn 40.
 
+## v0.3 - the economy director
+
+The 31 Oct 2026 match (`docs/playtests/2026-10-31-v0.2.0.md`): by turn 25 the human made 31.5k energy and 13.8k material a turn, the best AI 3.1k and 1.25k. The human's engine was mines first, then 83 Floating Plants and 27 Offshore Mines, every one with yield upgrades (x1.75 then x2), plus city projects. Three native bugs kept the AIs from building the same:
+
+1. A non-power building with no free power slot only raises `PowerSlotNeed` and reports success; the need branch then builds power plants on every call and never lowers the need. Result: Solar Plant spam, 1-3 mines all game.
+2. Water-only buildings are placed next to a random land building, and the search never gives up. Result: 0 Floating Plants in 40 turns with the tech from turn 9.
+3. A queued building's pre-installed upgrades are dropped at placement (`AIConstructBuildingAction` passes `{null, null}`), though their cost was budgeted.
+
+v0.2.2 also fixed a v0.2 bug: the superweapon reserve saved energy, which resets every turn, so construction froze from turn 25.
+
+| Change | Hook | Config |
+|---|---|---|
+| Economy director (`Brain/Director.cs`, adapter `DirectorPatches.cs`): one queued item per call, by value per cost. Yield upgrades and city projects (no power slot needed), then mines / offshore mines into free power slots and plants (Solar, Floating, Nuclear). Energy income is kept near 0.6x material income plus weapon upkeep. Upgrades and projects are charged to the decision budget (the native queue does not) | prefix `AIConstruction.tryConstructNewBuilding` | `[Director] Enabled`, `EnergyToMaterialTarget` |
+| Military: no weapons before `WarFromTurn` (15) unless hit hard (retaliation, smaller upkeep cap); then up to `WarSpendShare` of the turn's energy on weapons and leftover energy too, under a firing-upkeep cap. Weapon type scored by damage per cost against the defenses of the strongest visible economy (32 kinetic defenses -> missiles). Defenses: a share of visible enemy weapons plus damage taken, the type from the smart-defense rule | same | `WarFromTurn`, `WarDamageTrigger`, `WarUpkeepShare`, `RetaliationUpkeepShare`, `WarSpendShare`, `DefensePerEnemyWeapon`, `DamagePerDefense`, `MaxDefenses`, `DefensesPerTurn`, `DefensesForFullCover` |
+| Water placement: water-only buildings go next to our own water buildings with a free slot; plants (no power line needed) may also go anywhere on the planet | prefix `AIBuildingPlacementSearch.step` | - |
+| Stuck placements give up after `PlacementStepCap` steps and the queue gets the cost back; water types then rest 3 turns | prefix `AIBuildingPlacementFinder.Update` | `PlacementStepCap` |
+| Research default: the human's 31 Oct order (an unchanged v0.2 default in the config is migrated) | - | `[Research] Plan` |
+| `director` record per AI turn: power slots, unspent energy, queued items, upgrades installed, refunds, placement failures | `AICore.EndTurn` postfix | - |
+
 ## Next
 
-- Read the first v0.2 match log: is the economy still flat (placement? planet material?), did anyone buy a superweapon, did the plan keep up.
+- Read the first v0.3 match log (`summarize_decisions.py` prints a director section): did the AIs build Floating Plants and upgrades, how much energy went unspent, how often did placement give up.
 - Calibrate accuracy from the AIs' realized hit rate against the human's 58-67%.
-- Lasers: one throwaway match with `EnableLasers = true`.
-- Upgrades and projects (the native AI never builds projects: "Project handling not implemented").
+- Lasers: one throwaway match with `EnableLasers = true` (the human won with 35 lasers).
+- Population: filling a city's power connectors multiplies its population growth (x1.3 each); the director ignores it.

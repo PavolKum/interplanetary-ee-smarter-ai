@@ -22,7 +22,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.3.0";
+        public const string VERSION = "0.3.1";
 
         internal static ManualLogSource Log;
 
@@ -67,6 +67,9 @@ namespace InterplanetaryAI
         internal static ConfigEntry<int> DefensesPerTurn;
         internal static ConfigEntry<float> DefensesForFullCover;
         internal static ConfigEntry<int> PlacementStepCap;
+        internal static ConfigEntry<float> SuperweaponUpkeepShare;
+        internal static ConfigEntry<int> CounterintelPerBuildings;
+        internal static ConfigEntry<int> CounterintelFromTurn;
 
         internal static readonly BuildWeights Build = new BuildWeights();
         internal static List<string> SuperweaponIds = new List<string>();
@@ -195,6 +198,11 @@ namespace InterplanetaryAI
             DefensesPerTurn = Config.Bind("Director", "DefensesPerTurn", 3, "Most defenses queued in one turn.");
             DefensesForFullCover = Config.Bind("Director", "DefensesForFullCover", 10f,
                 "Defenses of one type taken to cover a whole planet, for picking weapons the target's defenses stop least.");
+            SuperweaponUpkeepShare = Config.Bind("Director", "SuperweaponUpkeepShare", 0.7f,
+                "Buy a superweapon only if all weapon firing costs, its own (700-800 a turn) included, stay under this share of energy income. Otherwise build power first.");
+            CounterintelPerBuildings = Config.Bind("Director", "CounterintelPerBuildings", 12,
+                "One counterintel building (Data Security Hub) wanted per this many non-city buildings; hides them from enemy intel. 0 = none.");
+            CounterintelFromTurn = Config.Bind("Director", "CounterintelFromTurn", 8, "First turn counterintel is built.");
             PlacementStepCap = Config.Bind("Director", "PlacementStepCap", 1500,
                 "Placement attempts before a building search gives up and its cost is returned (native searches never give up).");
 

@@ -55,7 +55,14 @@ namespace InterplanetaryAI
             public readonly Dictionary<string, int> Actions = new Dictionary<string, int>();
             public readonly Dictionary<string, int> PlacementFailures = new Dictionary<string, int>();
             public int Refunds;
-            public int Calls;
+            public int Steps;
+            public bool Waiting;          // nothing left to buy, queued placements still resolving
+            public bool Reopened;         // a placement was abandoned and refunded: decide again
+            public float RecentDamage;
+            public int OwnCounterintel;
+            public int CounterintelThisTurn;
+            public int NonCityBuildings;
+            public readonly Dictionary<BaseBuilding, float[]> PlannedMultipliers = new Dictionary<BaseBuilding, float[]>();
             // across turns
             public int WaterCooldownUntil;
         }
@@ -72,7 +79,6 @@ namespace InterplanetaryAI
         private static readonly FieldInfo s_searchSteps = AccessTools.Field(typeof(AIBuildingPlacementSearch), "m_steps");
         private static readonly MethodInfo s_placeRandom = AccessTools.Method(typeof(AIBuildingPlacementSearch), "tryPlaceToRandomPosition");
         private static readonly MethodInfo s_placeNextTo = AccessTools.Method(typeof(AIBuildingPlacementSearch), "tryPlaceBuildingNextToExistingBuilding");
-        private static readonly FieldInfo s_intelModule = AccessTools.Field(typeof(AIConstruction), "m_intelConstruction");
         private static readonly FieldInfo s_materialModule = AccessTools.Field(typeof(AIConstruction), "m_materialConstruction");
         private static readonly MethodInfo s_tryProject = AccessTools.Method(typeof(AIConstructionModule), "tryBuildAffordableProject");
 
@@ -104,6 +110,13 @@ namespace InterplanetaryAI
             s_states[core.PlayerData.PlayerID] = d;
 
             PlayerData me = core.PlayerData;
+            d.RecentDamage = recentDamage;
+            foreach (BaseBuilding building in me.BuildingHandler.Buildings)
+            {
+                if (building == null || building.IsCity || building.BuildingData == null || building.CurrentState != BaseBuilding.BuildingState.Normal) continue;
+                d.NonCityBuildings++;
+                if (Value(building.BuildingData.turn_yield_counterintel) > 0) d.OwnCounterintel++;
+            }
             d.War = EconomyDirector.WarPhase(turn, Plugin.WarFromTurn.Value, recentDamage, Plugin.WarDamageTrigger.Value);
             int visibleEnemyWeapons = 0;
             foreach (int n in economy.EnemyWeapons.Values) visibleEnemyWeapons += n;
@@ -144,20 +157,40 @@ namespace InterplanetaryAI
                 DirectorState d = StateOf(core.PlayerData);
                 if (d.Turn != GameManager.CurrentTurn) BeginTurn(core, economy, 0f, GameManager.CurrentTurn);
                 if (!d.Started) StartConstruction(core, d);
-                d.Calls++;
-                if (d.Calls > 400)
+                if (d.Waiting)
                 {
-                    // Safety valve: every call queues something, so this means a loop; end the turn.
+                    // Construction stays open while queued placements resolve, so the cost of an abandoned
+                    // placement (refunded by FinderUpdatePrefix) is spent this turn instead of lost.
+                    if (!d.Reopened)
+                    {
+                        result = !construction.ConstructionQueue.IsReady;
+                        return false;
+                    }
+                    d.Waiting = false;
+                    d.Reopened = false;
+                }
+                d.Steps++;
+                if (d.Steps > 2000)
+                {
+                    // Safety valve: every step queues something, so this many means a loop; end the turn.
                     result = false;
                     return false;
                 }
-                result = Step(construction, core, economy, d);
+                if (Step(construction, core, economy, d))
+                {
+                    result = true;
+                    return false;
+                }
+                d.Waiting = !construction.ConstructionQueue.IsReady;
+                result = d.Waiting;
                 return false;
             }
             catch (Exception e)
             {
                 ReportOnce("director", e);
-                return true; // native for this call
+                // End construction rather than fall back to native, whose need branch can loop on power plants.
+                result = false;
+                return false;
             }
         }
 
@@ -217,7 +250,7 @@ namespace InterplanetaryAI
             if (intel == IntelEvaluationState.BelowMinimum && d.IntelAttempts < 1 && d.SlotsLeft > 0)
             {
                 d.IntelAttempts++;
-                if (TryIntel(construction, core, d)) return true;
+                if (TryIntelBuilding(construction, core, d)) return true;
             }
 
             // 4. Defenses against visible threats.
@@ -225,6 +258,14 @@ namespace InterplanetaryAI
             {
                 if (TryDefense(construction, core, economy, d)) return true;
                 d.FailedThisTurn.Add("defense");
+            }
+
+            // 4b. Counterintel: hides our buildings from enemy intel (the human who won built 18 Data Security Hubs).
+            if (Plugin.CounterintelPerBuildings.Value > 0 && d.Turn >= Plugin.CounterintelFromTurn.Value && d.CounterintelThisTurn < 1 && d.SlotsLeft > 0
+                && d.OwnCounterintel + d.CounterintelThisTurn < d.NonCityBuildings / Plugin.CounterintelPerBuildings.Value && !d.FailedThisTurn.Contains("counterintel"))
+            {
+                if (TryYieldBuilding(construction, core, d, "counterintel")) return true;
+                d.FailedThisTurn.Add("counterintel");
             }
 
             // 5. Weapons, up to this turn's spending share.
@@ -244,7 +285,7 @@ namespace InterplanetaryAI
             if (d.War && intel == IntelEvaluationState.BelowPreferred && d.PreferredIntelAttempts < 1 && d.SlotsLeft > 0)
             {
                 d.PreferredIntelAttempts++;
-                if (TryIntel(construction, core, d)) return true;
+                if (TryIntelBuilding(construction, core, d)) return true;
             }
 
             // 8. Energy left over at war: more weapons (energy does not carry to the next turn).
@@ -268,7 +309,15 @@ namespace InterplanetaryAI
                 economy.NeedSlotForGoal = true; // build a plant; buy next turn
                 return false;
             }
+            // Firing it costs 700-800 energy every turn (reserved by AIResources). Keep usable energy positive.
+            int firing = FiringCost(economy.Goal.Building);
+            if (d.Upkeep + firing > Plugin.SuperweaponUpkeepShare.Value * d.EnergyIncome)
+            {
+                economy.EnergyPush = true; // build power first
+                return false;
+            }
             if (!QueueBuilding(construction, core, d, economy.Goal.Building, "superweapon")) return false;
+            d.Upkeep += firing;
             economy.Bought = true;
             economy.BuyPending = false;
             economy.ReservedEnergy = 0;
@@ -292,34 +341,29 @@ namespace InterplanetaryAI
             return IntelEvaluationState.Enough;
         }
 
-        // The native intel module picks the best intel building or upgrade. A free slot is checked first, so
-        // the module never takes its no-slot path (which only raises PowerSlotNeed).
-        private static bool TryIntel(AIConstruction construction, AICore core, DirectorState d)
+        // A plain intel building (Telescope Array). The native intel module may pick a building-with-upgrades
+        // variant whose upgrades the game drops at placement, so it is not used.
+        private static bool TryIntelBuilding(AIConstruction construction, AICore core, DirectorState d)
         {
-            int before = QueueCount(construction);
-            int energyBefore = core.Resources.Energy, materialBefore = core.Resources.Material;
-            AIIntelConstruction module = (AIIntelConstruction)s_intelModule.GetValue(construction);
-            module.TryConstructIntel();
-            if (QueueCount(construction) <= before) return false;
-            object last = LastQueued(construction);
-            AIQueuedBuildingEntity building = last as AIQueuedBuildingEntity;
-            if (building != null)
+            return TryYieldBuilding(construction, core, d, "intel");
+        }
+
+        // The first available, affordable building that yields intel or counterintel.
+        private static bool TryYieldBuilding(AIConstruction construction, AICore core, DirectorState d, string kind)
+        {
+            BuildingsData buildings = GameDataFileManager.GetDataFile<BuildingsData>();
+            PlayerAvailableBuildings available = core.PlayerData.BuildingHandler.AvailableBuildings;
+            foreach (string id in buildings.GetBuildingIds())
             {
-                d.SlotsLeft--;
-                Record(d, "intel:" + building.Building.id.Value);
+                BuildingData data = buildings.GetBuilding(id);
+                if (data == null || data.weapon_functionality.IsValueSet) continue;
+                int yield = kind == "intel" ? Value(data.turn_yield_intel) : Value(data.turn_yield_counterintel);
+                if (yield <= 0 || !available.IsBuildingAvailable(data) || !Affordable(core, data) || d.FailedThisTurn.Contains(id)) continue;
+                if (!QueueBuilding(construction, core, d, data, kind)) continue;
+                if (kind == "counterintel") d.CounterintelThisTurn++;
+                return true;
             }
-            else
-            {
-                AIQueuedUpgradeEntity upgrade = last as AIQueuedUpgradeEntity;
-                if (upgrade != null)
-                {
-                    // Upgrades are not charged to the decision budget by the native queue.
-                    core.Resources.Energy -= upgrade.EnergyCost;
-                    core.Resources.Material -= upgrade.MaterialCost;
-                    Record(d, "intel:" + upgrade.Upgrade.id.Value);
-                }
-            }
-            return core.Resources.Energy != energyBefore || core.Resources.Material != materialBefore || building != null;
+            return false;
         }
 
         // ---- defense -------------------------------------------------------------------------------
@@ -344,6 +388,21 @@ namespace InterplanetaryAI
                 owned[pair.Key] = n + pair.Value;
             }
             string choice = DefensePlanner.Choose(economy.EnemyWeapons, owned, candidates);
+            if (choice == null && d.RecentDamage > 0f)
+            {
+                // Hit by weapons we cannot see: spread over the defense types, fewest owned first.
+                int fewest = int.MaxValue;
+                foreach (string id in candidates)
+                {
+                    int n;
+                    owned.TryGetValue(id, out n);
+                    if (n < fewest)
+                    {
+                        fewest = n;
+                        choice = id;
+                    }
+                }
+            }
             if (choice == null) return false;
             if (!QueueBuilding(construction, core, d, buildings.GetBuilding(choice), "defense")) return false;
             Increment(economy.DefensesQueued, choice);
@@ -468,12 +527,18 @@ namespace InterplanetaryAI
                 BuildingData data = building.BuildingData;
                 int baseEnergy = Value(data.turn_yield_energy), baseMaterial = Value(data.turn_yield_material);
                 if (baseEnergy <= 0 && baseMaterial <= 0) continue;
-                if (!building.Power.HasPower) continue; // unpowered buildings produce nothing
+                if (!building.Power.HasPotentialPower) continue; // the resource handler counts only (potentially) powered buildings
                 int planned;
                 d.PlannedUpgrades.TryGetValue(building, out planned);
                 if (building.Upgrades.FreeSlots - planned <= 0) continue;
 
                 float energyMultiplier = 1f, materialMultiplier = 1f;
+                float[] plannedMultipliers;
+                if (d.PlannedMultipliers.TryGetValue(building, out plannedMultipliers))
+                {
+                    energyMultiplier *= plannedMultipliers[0];
+                    materialMultiplier *= plannedMultipliers[1];
+                }
                 string installed = "";
                 foreach (UpgradeData current in building.Upgrades.CurrentUpgrades)
                 {
@@ -510,6 +575,8 @@ namespace InterplanetaryAI
         private static void AddProjectOptions(AIConstruction construction, AICore core, DirectorState d, List<EconOption> options)
         {
             PlayerResourceHandler res = core.PlayerData.ResourceHandler;
+            float globalEnergy = core.PlayerData.StatHandler.GetGlobalStatModifier(GlobalStatModifierID.TurnYieldEnergy);
+            float globalMaterial = core.PlayerData.StatHandler.GetGlobalStatModifier(GlobalStatModifierID.TurnYieldMaterial);
             int cities = Math.Max(1, core.PlayerData.BuildingHandler.GetBuildingsByType(BaseBuilding.BuildingFunctionalityType.City).Count);
             HashSet<string> seen = new HashSet<string>();
             List<AIConstructionEntity> entities = new List<AIConstructionEntity>();
@@ -525,9 +592,13 @@ namespace InterplanetaryAI
                 if (!HasCityForProject(construction, core, project)) continue;
 
                 ProjectData p = project.Project;
-                float span = (p.permanent.IsValueSet && p.permanent.Value) ? 1f : Math.Min(10, Math.Max(0, Value(p.duration))) / 10f;
-                float energyGain = Value(p.turn_yield_energy_addition) + res.EnergyProductionPerTurn * (FloatValue(p.turn_yield_energy_multiplier_global, 1f) - 1f);
-                float materialGain = Value(p.turn_yield_material_addition) + res.MaterialProductionPerTurn * (FloatValue(p.turn_yield_material_multiplier_global, 1f) - 1f);
+                // As BuildingProjects.TryInstallProject: no duration means permanent.
+                bool permanent = (p.permanent.IsValueSet && p.permanent.Value) || !p.duration.IsValueSet;
+                float span = permanent ? 1f : Math.Min(10, Math.Max(1, p.duration.Value)) / 10f;
+                float energyGain = Value(p.turn_yield_energy_addition) * globalEnergy - Value(p.turn_cost_energy_addition)
+                    + res.EnergyProductionPerTurn * (FloatValue(p.turn_yield_energy_multiplier_global, 1f) - 1f);
+                float materialGain = Value(p.turn_yield_material_addition) * globalMaterial - Value(p.turn_cost_material_addition)
+                    + res.MaterialProductionPerTurn * (FloatValue(p.turn_yield_material_multiplier_global, 1f) - 1f);
                 float scienceGain = res.ScienceProductionPerTurn / (float)cities * (FloatValue(p.turn_yield_science_multiplier, 1f) - 1f)
                     + res.ScienceProductionPerTurn * (FloatValue(p.turn_yield_science_multiplier_global, 1f) - 1f);
                 if (energyGain * span <= 0f && materialGain * span <= 0f && scienceGain <= 0f) continue;
@@ -633,6 +704,14 @@ namespace InterplanetaryAI
             core.Resources.Energy -= energy;
             core.Resources.Material -= material;
             d.PlannedUpgrades[building] = planned + 1;
+            float[] multipliers;
+            if (!d.PlannedMultipliers.TryGetValue(building, out multipliers))
+            {
+                multipliers = new[] { 1f, 1f };
+                d.PlannedMultipliers[building] = multipliers;
+            }
+            multipliers[0] *= FloatValue(upgrade.turn_yield_energy_multiplier, 1f);
+            multipliers[1] *= FloatValue(upgrade.turn_yield_material_multiplier, 1f);
             d.PlannedUpgradeKeys.Add(building.ObjectId + ":" + upgrade.id.Value);
             Record(d, "upgrade:" + upgrade.id.Value);
             return true;
@@ -649,6 +728,13 @@ namespace InterplanetaryAI
             core.Resources.Material -= project.MaterialCost;
             Record(d, "project:" + project.Project.id.Value);
             return true;
+        }
+
+        private static int FiringCost(BuildingData data)
+        {
+            if (data == null || !data.weapon_functionality.IsValueSet) return 0;
+            WeaponData weapon = GameDataFileManager.GetDataFile<WeaponsData>().GetWeapon(data.weapon_functionality.Value);
+            return weapon != null ? Value(weapon.firing_cost_energy) : 0;
         }
 
         private static bool Affordable(AICore core, BuildingData data)
@@ -696,23 +782,23 @@ namespace InterplanetaryAI
                 AICore core = (AICore)s_searchCore.GetValue(__instance);
                 if (core == null || !core.PlayerData.AIPlayer) return true;
 
-                bool needsPower = __instance.m_needsPowerGrid;
+                if (!__instance.m_needsPowerGrid)
+                {
+                    // A plant needs no power line: any water spot. Random attempts never set a power
+                    // connection, so the plant takes no anchor slot the director counted as free.
+                    s_searchSteps.SetValue(__instance, (int)s_searchSteps.GetValue(__instance) + 1);
+                    s_placeRandom.Invoke(__instance, null);
+                    return false;
+                }
+                // Offshore mine: next to our own water building with a free slot, so it is connected.
                 List<BaseBuilding> anchors = new List<BaseBuilding>();
                 foreach (BaseBuilding building in core.PlayerData.BuildingHandler.Buildings)
                 {
                     if (IsWaterAnchor(core, building, true)) anchors.Add(building);
                 }
-                if (needsPower && anchors.Count == 0) return true; // native: try the land neighbours (coastal luck)
-
+                if (anchors.Count == 0) return true; // native: land neighbours with free slots (coastal luck)
                 s_searchSteps.SetValue(__instance, (int)s_searchSteps.GetValue(__instance) + 1);
-                if (anchors.Count > 0 && (needsPower || Plugin.Rng.NextDouble() < 0.7))
-                {
-                    s_placeNextTo.Invoke(__instance, new object[] { anchors });
-                }
-                else
-                {
-                    s_placeRandom.Invoke(__instance, null);
-                }
+                s_placeNextTo.Invoke(__instance, new object[] { anchors });
                 return false;
             }
             catch (Exception e)
@@ -764,6 +850,24 @@ namespace InterplanetaryAI
             core.Resources.Material += material;
             if (!(data.distribute_power.IsValueSet && data.distribute_power.Value)) d.SlotsLeft++;
             d.Refunds++;
+            d.Reopened = true;
+            Record(d, "abandoned:" + id);
+            // Undo what the purchase was expected to change.
+            PlayerData me = core.PlayerData;
+            d.EnergyIncome -= Value(data.turn_yield_energy) * me.StatHandler.GetGlobalStatModifier(GlobalStatModifierID.TurnYieldEnergy);
+            d.MaterialIncome -= Value(data.turn_yield_material) * me.StatHandler.GetGlobalStatModifier(GlobalStatModifierID.TurnYieldMaterial);
+            if (data.weapon_functionality.IsValueSet)
+            {
+                d.Upkeep -= FiringCost(data);
+                d.WeaponEnergySpent = Math.Max(0, d.WeaponEnergySpent - Value(data.build_cost_energy));
+                EconomyPatches.AiEconomyState economy;
+                if (EconomyPatches.States.TryGetValue(me.PlayerID, out economy) && economy.Bought && economy.Goal != null && economy.Goal.Building.id.Value == id)
+                {
+                    economy.Bought = false; // the savings logic offers it again next turn
+                    d.FailedThisTurn.Add("superweapon");
+                }
+            }
+            if (data.defense_functionality.IsValueSet) d.DefensesThisTurn = Math.Max(0, d.DefensesThisTurn - 1);
         }
 
         // ---- logging -------------------------------------------------------------------------------
@@ -784,7 +888,7 @@ namespace InterplanetaryAI
                 .Int("energyLeft", core.Resources.Energy).Int("materialLeft", core.Resources.Material)
                 .Num("upkeep", d.Upkeep).Int("ownDefenses", d.OwnDefenses).Int("desiredDefenses", d.DesiredDefenses)
                 .Int("upgradesInstalled", upgradesInstalled).Str("weaponTarget", d.TargetName).Map("targetDefenses", d.TargetDefenses)
-                .Int("refunds", d.Refunds).Map("placementFailures", d.PlacementFailures).Int("calls", d.Calls)
+                .Int("refunds", d.Refunds).Map("placementFailures", d.PlacementFailures).Int("steps", d.Steps)
                 .Map("queued", d.Actions).ToString());
         }
 
@@ -799,12 +903,6 @@ namespace InterplanetaryAI
         {
             System.Collections.ICollection list = s_queueList.GetValue(construction.ConstructionQueue) as System.Collections.ICollection;
             return list != null ? list.Count : 0;
-        }
-
-        private static object LastQueued(AIConstruction construction)
-        {
-            System.Collections.IList list = s_queueList.GetValue(construction.ConstructionQueue) as System.Collections.IList;
-            return list != null && list.Count > 0 ? list[list.Count - 1] : null;
         }
 
         private static int Value(GameDataValue<int> value)
