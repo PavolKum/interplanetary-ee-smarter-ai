@@ -34,6 +34,7 @@ namespace InterplanetaryAI
             public int Turn = -1;
             public bool Started;
             public bool War;
+            public bool Defensive;        // v0.10: defense floor and reserve from DefenseFromTurn (before weapons)
             public int SlotsAtStart;
             public int SlotsLeft;
             public int Unpowered;
@@ -186,6 +187,7 @@ namespace InterplanetaryAI
                 if (Value(building.BuildingData.turn_yield_intel) > 0) d.IntelBuildings++;
             }
             d.War = EconomyDirector.WarPhase(turn, Plugin.WarFromTurn.Value, recentDamage, Plugin.WarDamageTrigger.Value);
+            d.Defensive = d.War || EconomyDirector.WarPhase(turn, Plugin.DefenseFromTurn.Value, recentDamage, Plugin.WarDamageTrigger.Value);
             int visibleEnemyWeapons = 0;
             foreach (int n in economy.EnemyWeapons.Values) visibleEnemyWeapons += n;
             d.VisibleEnemyWeapons = visibleEnemyWeapons;
@@ -203,7 +205,7 @@ namespace InterplanetaryAI
             d.LastEnergySpent = last.EnergySpent;
             d.ObservedDefenseNeed = EconomyDirector.ObservedDefenseNeed(last.EnergySpent, last.NoResource, last.Impacts - last.NoEligibleDefense, 100f, Plugin.DefenseObservedMargin.Value);
             d.DesiredDefenses = EconomyDirector.DesiredDefenses(visibleEnemyWeapons, recentDamage, Plugin.DefensePerEnemyWeapon.Value, Plugin.DamagePerDefense.Value, Plugin.MaxDefenses.Value,
-                d.War, d.NonCityBuildings, Plugin.DefenseFloorShare.Value);
+                d.Defensive, d.NonCityBuildings, Plugin.DefenseFloorShare.Value);
             // v0.9 science: value it by how far the research plan is behind schedule.
             try
             {
@@ -359,24 +361,13 @@ namespace InterplanetaryAI
             d.EnergyIncome = res.EnergyProductionPerTurn;
             d.MaterialIncome = res.PlanetMaterial > 0 ? res.MaterialProductionPerTurn : 0;
             d.Upkeep = core.Resources.EnergyUpkeep;
-            // v0.10 hold fire: the game reserved every weapon's firing cost (AIResources.BeginTurn), but nothing fires
-            // this turn (StrategyPatches), so construction gets it. v0.9.1: ~35% of income sat in that reservation.
-            if (StrategyPatches.HoldFire(core.PlayerData.PlayerID))
-            {
-                int energyBack = Math.Max(0, core.Resources.EnergyUpkeep);
-                int materialBack = Math.Max(0, core.Resources.MaterialUpkeep);
-                core.Resources.Energy += energyBack;
-                core.Resources.Material += materialBack;
-                core.Construction.ConstructionQueue.AllottedEnergy += energyBack;
-                core.Construction.ConstructionQueue.AllottedMaterial += materialBack;
-                d.ReleasedEnergy = energyBack;
-                d.HoldingFire = true;
-                d.TurnStartEnergy = core.Resources.Energy;
-                d.TurnStartMaterial = core.Resources.Material;
-            }
+            // v0.10 hold fire: StrategyPatches already gave the reserved firing cost back (Resources include it here).
+            d.HoldingFire = StrategyPatches.HoldFire(core.PlayerData.PlayerID);
+            d.ReleasedEnergy = StrategyPatches.ReleasedEnergy(core.PlayerData.PlayerID);
             // v0.4: at war, keep energy back for our defense rolls (each costs the defender 100-200 energy from
             // what is left that turn; PlayerDefenseHandler.IsHitIntercepted). v0.3 spent it all.
-            if (d.War)
+            // v0.10 (Terra #3): defensive readiness keeps its own, earlier gate (DefenseFromTurn) now that weapons wait.
+            if (d.Defensive)
             {
                 int reserve = EconomyDirector.DefenseReserve(d.OwnDefenses, d.VisibleEnemyWeapons, d.EnemiesAlive, d.RecentDamage,
                     150f, 125f, Plugin.DefenseReserveShare.Value, d.EnergyIncome, 1f, d.ObservedDefenseNeed, Plugin.DefenseHardCapShare.Value);

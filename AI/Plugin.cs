@@ -22,7 +22,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.10.0";
+        public const string VERSION = "0.10.1";
 
         internal static ManualLogSource Log;
 
@@ -56,6 +56,8 @@ namespace InterplanetaryAI
         internal static ConfigEntry<bool> SmartDefense;
         internal static ConfigEntry<bool> DirectorEnabled;
         internal static ConfigEntry<int> WarFromTurn;
+        internal static ConfigEntry<int> DefenseFromTurn;
+        internal static bool HoldHookPatched;
         internal static ConfigEntry<float> WarDamageTrigger;
         internal static ConfigEntry<float> WarUpkeepShare;
         internal static ConfigEntry<float> RetaliationUpkeepShare;
@@ -305,6 +307,8 @@ namespace InterplanetaryAI
                 "v0.3 economy director: replaces the native construction choice. Buys yield upgrades and city projects first, keeps energy income near EnergyToMaterialTarget x material income, places water buildings properly, holds weapons until WarFromTurn, and counters visible enemy weapons with defenses. Off = the v0.2 build planner.");
             WarFromTurn = Config.Bind("Director", "WarFromTurn", 20,
                 "Turn from which the AI builds weapons (v0.9.1: the human built its first at T22). Before it, only retaliation after heavy damage. Firing is decided by [Strategy].");
+            DefenseFromTurn = Config.Bind("Director", "DefenseFromTurn", 15,
+                "v0.10: turn from which the defense floor (DefenseFloorShare) and the defense energy reserve apply, before weapons (WarFromTurn).");
             WarDamageTrigger = Config.Bind("Director", "WarDamageTrigger", 600f,
                 "Recent damage taken that starts retaliation before WarFromTurn.");
             WarUpkeepShare = Config.Bind("Director", "WarUpkeepShare", 0.4f,
@@ -322,7 +326,8 @@ namespace InterplanetaryAI
             MaxDefenses = Config.Bind("Director", "MaxDefenses", 60, "Cap on defenses wanted.");
             ConfigEntry<string> migrated = Config.Bind("General", "ConfigMigratedTo", "",
                 "Last version whose default changes were applied to this file. Do not edit.");
-            if (string.CompareOrdinal(migrated.Value, "0.5") < 0)
+            // Explicit states, not an ordinal compare ("0.10" sorts before "0.5"; Terra v0.10 #5): "" -> "0.5" -> "0.10".
+            if (migrated.Value == "")
             {
                 if (MaxDefenses.Value == 40)
                 {
@@ -331,7 +336,6 @@ namespace InterplanetaryAI
                 }
                 migrated.Value = "0.5";
             }
-            // Ordinal compare puts "0.10" before "0.5", so later migrations chain on equality.
             if (migrated.Value == "0.5")
             {
                 if (WarFromTurn.Value == 15)
@@ -401,7 +405,9 @@ namespace InterplanetaryAI
             patched += TryPatch(typeof(AICore), "Initialize", null, "CoreInitializePostfix");
             patched += TryPatch(typeof(AIWeaponTargeting), "BeginTurn", null, "TargetingBeginTurnPostfix");
             patched += TryPatch(typeof(AIWeaponTargetingGoal), "BeginTurn", null, "GoalBeginTurnPostfix");
-            patched += TryPatch(typeof(AIWeaponTargetingGoal), "TargetWeapons", "GoalTargetWeaponsPrefix", "GoalTargetWeaponsPostfix");
+            int holdHook = TryPatch(typeof(AIWeaponTargetingGoal), "TargetWeapons", "GoalTargetWeaponsPrefix", "GoalTargetWeaponsPostfix");
+            HoldHookPatched = holdHook == 1; // without it the strategy never holds fire (nothing would stop the shots)
+            patched += holdHook;
             patched += TryPatch(typeof(AIWeaponTargeting), "HandleSecondPhaseTargeting", "SecondPhasePrefix", null);
             patched += TryPatch(typeof(PlayerBuildingHandler), "DealDamageToBuilding", "DealDamagePrefix", null);
             patched += TryPatch(typeof(AICore), "BeginTurn", null, "CoreBeginTurnPostfix", typeof(EconomyPatches));

@@ -74,7 +74,7 @@ namespace InterplanetaryAI
             }
             // v0.10: with the strategy on, targets are assigned once it has decided (StrategyPatches.BeginTurn, later in
             // the same AICore.BeginTurn), so a strike commits every weapon to one enemy.
-            if (Plugin.StrategyEnabled.Value) return;
+            if (Plugin.StrategyEnabled.Value && Plugin.DirectorEnabled.Value) return;
             AssignTargets(__instance, -1);
         }
 
@@ -194,7 +194,13 @@ namespace InterplanetaryAI
             return me.IntelHandler.GetBuildingVisibility(building) == BuildingIntelVisibility.Visible;
         }
 
-        private static string WeaponKey(WeaponGameplayData weapon)
+        // v0.10: hold fire empties these lists; without them the strategy never holds (StrategyPatches.HoldAvailable).
+        internal static bool HoldFieldsResolved
+        {
+            get { return s_goalCore != null && s_goalHitting != null && s_goalMissing != null; }
+        }
+
+        internal static string WeaponKey(WeaponGameplayData weapon)
         {
             return weapon.Building != null ? weapon.Building.ObjectId.ToString() : "weapon@" + weapon.GetHashCode();
         }
@@ -327,6 +333,8 @@ namespace InterplanetaryAI
                         Plugin.Reach.Report(WeaponKey(data), weapon.TargetEnemy.Player.PlayerID, turn, weapon.HasFoundPrimaryTargetTrajectory);
                     }
                 }
+                // v0.10: strike history follows what was actually put up for firing (0 on a hold turn).
+                StrategyPatches.ReportFired(core.PlayerData.PlayerID, (hitting != null ? hitting.Count : 0) + (missing != null ? missing.Count : 0));
 
                 Plugin.WriteDecision(new Json()
                     .Str("e", "fire").Int("t", turn).Str("ai", core.PlayerData.UserNickName)

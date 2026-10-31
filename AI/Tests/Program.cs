@@ -70,99 +70,131 @@ namespace InterplanetaryAI.Tests
         {
             return new SalvoTarget
             {
-                PlayerId = id, Name = "p" + id, Score = score, EnergyKnown = energyKnown, EnergyProduction = energy,
+                PlayerId = id, Name = "p" + id, Score = score, EnergyKnown = energyKnown, EnergyProduction = energy, DefensesSeen = true,
                 Defenses = new Dictionary<string, int> { { "bui_KineticDefense", kinetic } },
             };
         }
 
-        private static Dictionary<string, int> Railguns(int n)
+        private static Dictionary<string, float> Railguns(float n)
         {
-            return new Dictionary<string, int> { { "wea_Railgun", n } };
+            return new Dictionary<string, float> { { "wea_Railgun", n } };
+        }
+
+        // The model by hand: k defenses of chance p, CoverHalf h, OverlapDefenses o; shots n; rolls r.
+        private static float ExpectedPassing(float n, int k, float p, float h, float o, float rolls, float maxCover = 0.9f)
+        {
+            float cover = Math.Min(maxCover, k / (k + h));
+            float tries = 1f + k / o;
+            float stop = 1f - (float)Math.Pow(1f - p, tries);
+            float eligible = n * cover;
+            float needed = eligible * stop / p;
+            float paid = Math.Min(1f, rolls / needed);
+            return n - eligible * stop * paid;
         }
 
         private static void SalvoEstimateRules()
         {
-            StrategySettings s = new StrategySettings(); // CoverHalf 12, roll share 0.5 at 150
+            StrategySettings s = new StrategySettings(); // CoverHalf 12, OverlapDefenses 20, roll share 0.5 at 150
             var counters = EnhancedCounters();
 
-            // v0.9.1 T22 shape: 35 Railguns at the human's 19 Kinetic, 6,000 energy. cover 19/31, eligible 21.45,
-            // rolls 20, intercepted 16, through 19.
+            // v0.9.1 T22 shape: 35 Railguns at the human's 19 Kinetic, 6,000 energy -> 20 rolls, which bind.
             SalvoTarget human = Target(0, 1f, 19, true, 6000f);
-            Strategy.EstimateSalvo(Railguns(35), human, counters, s);
+            Strategy.EstimateSalvo(Railguns(35), human, 1f, counters, s);
             Check(Math.Abs(human.Rolls - 20f) < 1e-3, "6000 energy x 0.5 / 150 = 20 rolls; got " + human.Rolls);
             Check(Math.Abs(human.Eligible - 35f * 19f / 31f) < 1e-3, "eligible = shots x cover; got " + human.Eligible);
-            Check(Math.Abs(human.Passing - (35f - 20f * 0.8f)) < 1e-3, "rolls bind: 35 - 20 x 0.8 = 19 through; got " + human.Passing);
+            Check(Math.Abs(human.Passing - ExpectedPassing(35, 19, 0.8f, 12, 20, 20)) < 1e-3, "rolls bind; got " + human.Passing);
+            Check(Math.Abs(human.Passing - (35f - 20f * 0.8f)) < 0.05, "when rolls bind, each paid roll stops p of a shot: ~19 through; got " + human.Passing);
 
-            // Unknown energy: rolls unlimited, only coverage limits.
+            // Unknown energy: every roll paid; several defenses in range try in turn (1 - 0.2^1.95 ~ 0.957 stop).
             SalvoTarget blind = Target(0, 1f, 19, false, 0f);
-            Strategy.EstimateSalvo(Railguns(35), blind, counters, s);
-            Check(Math.Abs(blind.Passing - (35f - 35f * 19f / 31f * 0.8f)) < 1e-3, "unknown energy: only coverage limits; got " + blind.Passing);
-            Check(blind.Passing < human.Passing, "unknown energy is assumed to pay every roll (more conservative)");
+            Strategy.EstimateSalvo(Railguns(35), blind, 1f, counters, s);
+            Check(Math.Abs(blind.Passing - ExpectedPassing(35, 19, 0.8f, 12, 20, float.MaxValue)) < 1e-3, "unknown energy: only coverage limits; got " + blind.Passing);
+            Check(blind.Passing < 35f - 35f * 19f / 31f * 0.8f - 1f, "overlapping defenses stop more than one 80% roll would");
 
             // Saturation: doubling the salvo against the same rolls more than doubles what gets through.
             SalvoTarget small = Target(0, 1f, 19, true, 6000f), big = Target(0, 1f, 19, true, 6000f);
-            Strategy.EstimateSalvo(Railguns(20), small, counters, s);
-            Strategy.EstimateSalvo(Railguns(40), big, counters, s);
+            Strategy.EstimateSalvo(Railguns(20), small, 1f, counters, s);
+            Strategy.EstimateSalvo(Railguns(40), big, 1f, counters, s);
             Check(big.Passing > 2f * small.Passing, "a salvo past the target's rolls saturates; 20 -> " + small.Passing + ", 40 -> " + big.Passing);
 
-            // Defenses that do not stop the weapon do nothing; no defenses, everything through.
-            SalvoTarget ionOnly = new SalvoTarget { PlayerId = 1, Score = 1f, Defenses = new Dictionary<string, int> { { "bui_IonDefense", 30 } } };
-            Strategy.EstimateSalvo(Railguns(10), ionOnly, counters, s);
+            // Defenses that do not stop the weapon do nothing; a planet we have seen with no defenses lets all through;
+            // a planet we never saw is not assumed open.
+            SalvoTarget ionOnly = new SalvoTarget { PlayerId = 1, Score = 1f, DefensesSeen = true, Defenses = new Dictionary<string, int> { { "bui_IonDefense", 30 } } };
+            Strategy.EstimateSalvo(Railguns(10), ionOnly, 1f, counters, s);
             Check(Math.Abs(ionOnly.Passing - 10f) < 1e-3, "Ion defenses do not stop Railguns; got " + ionOnly.Passing);
-            SalvoTarget open = new SalvoTarget { PlayerId = 1, Score = 1f, Defenses = null };
-            Strategy.EstimateSalvo(Railguns(10), open, counters, s);
-            Check(Math.Abs(open.Passing - 10f) < 1e-3, "no known defenses: all through; got " + open.Passing);
+            SalvoTarget open = new SalvoTarget { PlayerId = 1, Score = 1f, DefensesSeen = true };
+            Strategy.EstimateSalvo(Railguns(30), open, 1f, counters, s);
+            Check(Math.Abs(open.Passing - 30f) < 1e-3, "seen and undefended: all through; got " + open.Passing);
+            SalvoTarget unseen = new SalvoTarget { PlayerId = 1, Score = 1f, DefensesSeen = false };
+            Strategy.EstimateSalvo(Railguns(30), unseen, 1f, counters, s);
+            Check(Math.Abs(unseen.Passing - (30f - 30f * s.UnseenCover * s.DefaultChance)) < 1e-3, "never seen: UnseenCover at DefaultChance; got " + unseen.Passing);
 
-            // Our observed shots correct the coverage guess: 40 impacts, 36 intercepted at 0.8 -> cover capped 0.9.
+            // Accuracy: planned misses never arrive. Per-target shots: weapons that cannot reach it are not in its salvo.
+            SalvoTarget half = new SalvoTarget { PlayerId = 1, Score = 1f, DefensesSeen = true };
+            Strategy.EstimateSalvo(Railguns(30), half, 0.5f, counters, s);
+            Check(Math.Abs(half.Arriving - 15f) < 1e-3 && Math.Abs(half.Passing - 15f) < 1e-3, "accuracy 0.5 halves what arrives; got " + half.Arriving);
+            SalvoTarget reach = new SalvoTarget { PlayerId = 1, Score = 1f, DefensesSeen = true, Shots = Railguns(10) };
+            Strategy.EstimateSalvo(Railguns(30), reach, 1f, counters, s);
+            Check(Math.Abs(reach.Arriving - 10f) < 1e-3, "the target's own reachable salvo is used, not the whole arsenal; got " + reach.Arriving);
+
+            // Our observed shots correct coverage per weapon: 40 Railgun impacts, 36 intercepted, at 5 Kinetic.
             SalvoTarget seen = Target(0, 1f, 5, false, 0f);
-            seen.ObservedImpacts = 40;
-            seen.ObservedIntercepted = 36;
-            SalvoTarget unseen = Target(0, 1f, 5, false, 0f);
-            Strategy.EstimateSalvo(Railguns(30), seen, counters, s);
-            Strategy.EstimateSalvo(Railguns(30), unseen, counters, s);
-            float modelCover = 5f / 17f;
-            float blended = (20f * modelCover + 40f * 0.9f) / 60f;
-            Check(Math.Abs(seen.Passing - (30f - 30f * blended * 0.8f)) < 1e-3, "observed interceptions blend into coverage; got " + seen.Passing);
-            Check(seen.Passing < unseen.Passing, "a target that intercepted most of our shots is harder than its visible defenses suggest");
+            seen.Observed = new Dictionary<string, int[]> { { "wea_Railgun", new[] { 40, 36 } } };
+            SalvoTarget model = Target(0, 1f, 5, false, 0f);
+            Strategy.EstimateSalvo(Railguns(30), seen, 1f, counters, s);
+            Strategy.EstimateSalvo(Railguns(30), model, 1f, counters, s);
+            float stop5 = 1f - (float)Math.Pow(0.2, 1f + 5f / 20f);
+            float blended = (20f * (5f / 17f) + 40f * Math.Min(0.9f, 0.9f / stop5)) / 60f;
+            Check(Math.Abs(seen.Passing - (30f - 30f * blended * stop5)) < 1e-3, "observed interceptions blend into coverage; got " + seen.Passing);
+            Check(seen.Passing < model.Passing, "a target that intercepted most of our shots is harder than its visible defenses suggest");
+            SalvoTarget other = Target(0, 1f, 5, false, 0f);
+            other.Observed = new Dictionary<string, int[]> { { "wea_Missile", new[] { 40, 36 } } };
+            Strategy.EstimateSalvo(Railguns(30), other, 1f, counters, s);
+            Check(Math.Abs(other.Passing - model.Passing) < 1e-3, "missile observations do not change a Railgun estimate");
             SalvoTarget few = Target(0, 1f, 5, false, 0f);
-            few.ObservedImpacts = 5;
-            few.ObservedIntercepted = 5;
-            Strategy.EstimateSalvo(Railguns(30), few, counters, s);
-            Check(Math.Abs(few.Passing - unseen.Passing) < 1e-3, "fewer than ObservedMinImpacts shots do not move the estimate");
+            few.Observed = new Dictionary<string, int[]> { { "wea_Railgun", new[] { 5, 5 } } };
+            Strategy.EstimateSalvo(Railguns(30), few, 1f, counters, s);
+            Check(Math.Abs(few.Passing - model.Passing) < 1e-3, "fewer than ObservedMinImpacts shots do not move the estimate");
+        }
+
+        private static StrategyDecision DecideRail(int turn, bool war, int railguns, List<SalvoTarget> targets, int lastStrike, int hold, StrategySettings s)
+        {
+            return Strategy.Decide(turn, war, Railguns(railguns), 1f, targets, EnhancedCounters(), lastStrike, hold, railguns, s);
         }
 
         private static void StrategyFireRules()
         {
             StrategySettings s = new StrategySettings();
-            var counters = EnhancedCounters();
             Func<int, List<SalvoTarget>> human = kinetic => new List<SalvoTarget> { Target(0, 1f, kinetic, true, 6000f) };
 
-            StrategyDecision none = Strategy.Decide(25, true, new Dictionary<string, int>(), human(19), counters, -1000, 0, s);
+            StrategyDecision none = DecideRail(25, true, 0, human(19), -1000, 0, s);
             Check(!none.Fire && none.Reason == "no-weapons", "no weapons, no fire; got " + none.Reason);
-            StrategyDecision peace = Strategy.Decide(10, false, Railguns(40), human(0), counters, -1000, 0, s);
+            StrategyDecision peace = DecideRail(10, false, 40, human(0), -1000, 0, s);
             Check(!peace.Fire && peace.Reason == "peace", "before war, no fire even into an open planet; got " + peace.Reason);
-            StrategyDecision few = Strategy.Decide(25, true, Railguns(5), human(0), counters, -1000, 0, s);
+            StrategyDecision few = DecideRail(25, true, 5, human(0), -1000, 0, s);
             Check(!few.Fire && few.Reason == "building", "under MinWeapons, keep building; got " + few.Reason);
+            StrategyDecision fewLong = DecideRail(25, true, 5, human(0), -1000, s.MaxHoldTurns, s);
+            Check(fewLong.Fire && fewLong.Reason == "max-hold", "a small arsenal held MaxHoldTurns fires too; got " + fewLong.Reason);
 
-            // 20 Railguns at 19 Kinetic, 6k energy: ~10 through (< 12): hold. 35: ~19 through, 54%: strike.
-            StrategyDecision small = Strategy.Decide(25, true, Railguns(20), human(19), counters, -1000, 0, s);
+            // 20 Railguns at 19 Kinetic, 6k energy: ~8 through (< 12): hold. 35: ~19 through, 54%: strike.
+            StrategyDecision small = DecideRail(25, true, 20, human(19), -1000, 0, s);
             Check(!small.Fire && small.Reason == "below-saturation", "a salvo the defenses absorb is held; got " + small.Reason + " " + small.Passing);
-            StrategyDecision big = Strategy.Decide(25, true, Railguns(35), human(19), counters, -1000, 0, s);
+            StrategyDecision big = DecideRail(25, true, 35, human(19), -1000, 0, s);
             Check(big.Fire && big.Reason == "saturated", "a saturating salvo strikes; got " + big.Reason + " " + big.Passing);
             Check(big.CommitTargetId == 0, "commits to the only enemy");
 
             // Pulse: struck last turn -> wait, unless the defenses are broken (>= 70% through).
-            StrategyDecision wait = Strategy.Decide(26, true, Railguns(35), human(19), counters, 25, 0, s);
+            StrategyDecision wait = DecideRail(26, true, 35, human(19), 25, 0, s);
             Check(!wait.Fire && wait.Reason == "pulse-wait", "struck last turn: invest this turn; got " + wait.Reason);
-            StrategyDecision again = Strategy.Decide(27, true, Railguns(35), human(19), counters, 25, 0, s);
+            StrategyDecision again = DecideRail(27, true, 35, human(19), 25, 0, s);
             Check(again.Fire, "two turns after a strike, strike again");
-            StrategyDecision broken = Strategy.Decide(26, true, Railguns(35), human(3), counters, 25, 0, s);
+            StrategyDecision broken = DecideRail(26, true, 35, human(3), 25, 0, s);
             Check(broken.Fire && broken.Reason == "broken", "broken defenses: strike again at once; got " + broken.Reason + " " + broken.PassShare);
 
             // Never hold forever.
-            StrategyDecision stuck = Strategy.Decide(30, true, Railguns(20), human(40), counters, -1000, s.MaxHoldTurns, s);
+            StrategyDecision stuck = DecideRail(30, true, 20, human(40), -1000, s.MaxHoldTurns, s);
             Check(stuck.Fire && stuck.Reason == "max-hold", "after MaxHoldTurns held, fire anyway; got " + stuck.Reason);
-            StrategyDecision notYet = Strategy.Decide(30, true, Railguns(20), human(40), counters, -1000, s.MaxHoldTurns - 1, s);
+            StrategyDecision notYet = DecideRail(30, true, 20, human(40), -1000, s.MaxHoldTurns - 1, s);
             Check(!notYet.Fire, "one turn short of MaxHoldTurns still holds");
         }
 
@@ -171,12 +203,18 @@ namespace InterplanetaryAI.Tests
             StrategySettings s = new StrategySettings();
             // The leader (score 1.0) behind 40 Kinetic vs a weaker rival (0.6) with 2: the open target is worth more.
             List<SalvoTarget> targets = new List<SalvoTarget> { Target(0, 1f, 40, false, 0f), Target(2, 0.6f, 2, false, 0f) };
-            StrategyDecision d = Strategy.Decide(25, true, Railguns(30), targets, EnhancedCounters(), -1000, 0, s);
+            StrategyDecision d = DecideRail(25, true, 30, targets, -1000, 0, s);
             Check(d.CommitTargetId == 2, "commit where score x expected shots through is highest; got " + d.CommitTargetId);
             // Same defenses: the higher score wins.
             targets = new List<SalvoTarget> { Target(0, 1f, 10, false, 0f), Target(2, 0.6f, 10, false, 0f) };
-            d = Strategy.Decide(25, true, Railguns(30), targets, EnhancedCounters(), -1000, 0, s);
+            d = DecideRail(25, true, 30, targets, -1000, 0, s);
             Check(d.CommitTargetId == 0, "equal defenses: the leader; got " + d.CommitTargetId);
+            // The leader is out of reach for most weapons: the reachable salvo decides.
+            SalvoTarget farLeader = Target(0, 1f, 10, false, 0f);
+            farLeader.Shots = Railguns(3);
+            targets = new List<SalvoTarget> { farLeader, Target(2, 0.6f, 10, false, 0f) };
+            d = DecideRail(25, true, 30, targets, -1000, 0, s);
+            Check(d.CommitTargetId == 2, "a leader only 3 weapons can reach is not the commit; got " + d.CommitTargetId);
         }
 
         private static void CommittedAssignmentRules()

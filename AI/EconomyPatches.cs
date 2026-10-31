@@ -149,6 +149,11 @@ namespace InterplanetaryAI
                 state.Weights = BuildPlanner.Weights(situation, Plugin.Build);
                 for (int i = 0; i < 5; i++) { state.Picks[i] = 0; state.PickSuccesses[i] = 0; }
 
+                // v0.10: fire or hold, and at whom. After the ledger roll and the defense memory above; before the
+                // superweapon savings below, so a hold turn's released firing energy counts toward buying it (Terra v0.10 #6).
+                try { StrategyPatches.BeginTurn(core, state, recentDamage, turn); }
+                catch (Exception e) { ReportOnce("strategy-begin-turn", e); }
+
                 // Superweapon goal.
                 state.BuyPending = false;
                 state.BuyAttempts = 0;
@@ -215,9 +220,6 @@ namespace InterplanetaryAI
                 state.ReservedMaterial = reserveMaterial;
 
                 LogEconomy(core, turn, state, stockEnergy, stockMaterial, ownEconomy, maxEnemyEconomy, recentDamage);
-                // v0.10: fire or hold, and at whom; before the director so construction knows whether the firing
-                // reservation is free this turn.
-                StrategyPatches.BeginTurn(core, state, recentDamage, turn);
                 if (Plugin.DirectorEnabled.Value) DirectorPatches.BeginTurn(core, state, recentDamage, turn);
             }
             catch (Exception e)

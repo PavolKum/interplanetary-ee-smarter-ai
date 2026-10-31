@@ -11,12 +11,13 @@ using InterplanetaryAI.Brain;
 
 namespace InterplanetaryAI
 {
-    // v0.10 game adapter for Brain/Strategy: decides once per AI turn (after the defense ledger and the enemy
-    // defense memory are updated in EconomyPatches.CoreBeginTurnPostfix) whether to fire, and at whom.
+    // v0.10 game adapter for Brain/Strategy. Decides once per AI turn inside EconomyPatches.CoreBeginTurnPostfix,
+    // after the defense ledger roll and the enemy defense memory update and before the superweapon savings:
     //  - Targets: every weapon is pointed at the committed enemy (falling back to one it can reach).
-    //  - Hold: DirectorPatches gives the firing energy the game reserved to construction, and AiPatches empties
-    //    the firing lists, so nothing fires and nothing is charged.
-    // No decision (strategy off, or it failed) means v0.9 behaviour: fire every turn, split targets.
+    //  - Hold: the firing energy the game reserved (AIResources.BeginTurn) goes back to Resources and the
+    //    construction queue at once, and AiPatches empties the firing lists, so nothing fires or is charged.
+    // Hold needs the director (it spends the energy) and the firing hook (it stops the shots); without either the
+    // AI fires as v0.9 would, at the committed target. No decision (strategy off or failed) = v0.9 behaviour.
     internal static class StrategyPatches
     {
         private sealed class State
@@ -24,7 +25,10 @@ namespace InterplanetaryAI
             public int Turn = -1;
             public int LastStrikeTurn = -1000;
             public int HoldTurns;
+            public int ReleasedEnergy;
+            public bool Reported;               // this turn's firing has been counted
             public StrategyDecision Decision;
+            public readonly HashSet<int> PlanetsSeen = new HashSet<int>(); // enemies whose buildings our intel has seen
         }
 
         private static readonly Dictionary<int, State> s_states = new Dictionary<int, State>();
@@ -36,21 +40,24 @@ namespace InterplanetaryAI
             s_states.Clear();
         }
 
-        // The AI's latest decision (made at the start of its current turn), or null: behave as v0.9. Read by turn start
-        // (construction) and at firing (AIWeaponTargeting.EndTurn); both must see the same one, so it is not keyed on
-        // GameManager.CurrentTurn, which may already have moved on when the weapons fire.
-        internal static StrategyDecision Latest(int playerId)
+        private static bool Enabled
         {
-            if (!Plugin.Active || !Plugin.StrategyEnabled.Value) return null;
-            State s;
-            return s_states.TryGetValue(playerId, out s) ? s.Decision : null;
+            get { return Plugin.Active && Plugin.StrategyEnabled.Value && Plugin.DirectorEnabled.Value; }
         }
 
-        internal static void ClearDecision(int playerId)
+        // Hold fire is only possible when the hook that empties the firing lists is installed and its fields resolved.
+        internal static bool HoldAvailable
+        {
+            get { return Plugin.HoldHookPatched && AiPatches.HoldFieldsResolved; }
+        }
+
+        // The AI's decision for its current turn, or null. Latched for the whole turn: it is not keyed on
+        // GameManager.CurrentTurn (which may move before the weapons fire) nor on live config toggles (the energy may
+        // already be spent). Cleared at the start of the AI's next turn.
+        internal static StrategyDecision Latest(int playerId)
         {
             State s;
-            // A turn start seen twice keeps the decision already made for that turn (BeginTurn will not redo it).
-            if (s_states.TryGetValue(playerId, out s) && s.Turn != GameManager.CurrentTurn) s.Decision = null;
+            return s_states.TryGetValue(playerId, out s) ? s.Decision : null;
         }
 
         internal static bool HoldFire(int playerId)
@@ -59,9 +66,44 @@ namespace InterplanetaryAI
             return d != null && !d.Fire;
         }
 
+        internal static int ReleasedEnergy(int playerId)
+        {
+            State s;
+            return s_states.TryGetValue(playerId, out s) && s.Decision != null ? s.ReleasedEnergy : 0;
+        }
+
+        internal static void ClearDecision(int playerId)
+        {
+            State s;
+            // A turn start seen twice keeps the decision already made for that turn (BeginTurn will not redo it).
+            if (s_states.TryGetValue(playerId, out s) && s.Turn != GameManager.CurrentTurn)
+            {
+                s.Decision = null;
+                s.ReleasedEnergy = 0;
+            }
+        }
+
+        // From AiPatches.GoalTargetWeaponsPostfix: what actually went into the firing lists this turn. The strike
+        // history follows real shots, not the plan (a strike whose trajectories all failed does not use the pulse).
+        internal static void ReportFired(int playerId, int fired)
+        {
+            State s;
+            if (!s_states.TryGetValue(playerId, out s) || s.Decision == null || s.Reported) return;
+            s.Reported = true;
+            if (fired > 0)
+            {
+                s.LastStrikeTurn = s.Turn;
+                s.HoldTurns = 0;
+            }
+            else if (s.Decision.War && s.Decision.Shots > 0)
+            {
+                s.HoldTurns++;
+            }
+        }
+
         internal static void BeginTurn(AICore core, EconomyPatches.AiEconomyState economy, float recentDamage, int turn)
         {
-            if (!Plugin.Active || !Plugin.StrategyEnabled.Value) return;
+            if (!Enabled) return;
             PlayerData me = core.PlayerData;
             State state;
             if (!s_states.TryGetValue(me.PlayerID, out state))
@@ -73,58 +115,77 @@ namespace InterplanetaryAI
             if (turn < state.Turn) { state.LastStrikeTurn = -1000; state.HoldTurns = 0; } // an earlier save
             state.Turn = turn;
             state.Decision = null;
+            state.ReleasedEnergy = 0;
+            state.Reported = false;
 
             StrategyDecision decision;
-            List<CelestialBody> planets = core.EnemyPlanets;
             try
             {
                 bool war = EconomyDirector.WarPhase(turn, Plugin.WarFromTurn.Value, recentDamage, Plugin.WarDamageTrigger.Value);
-                Dictionary<string, int> shots = new Dictionary<string, int>();
+                List<CelestialBody> planets = core.EnemyPlanets;
+                List<EnemyView> views = new List<EnemyView>();
+                foreach (CelestialBody planet in planets) views.Add(AiPatches.BuildEnemyView(me, planet.Player, turn));
+                TargetPlanner.Score(views, Plugin.Planner);
+
+                // Projectiles per weapon id, overall and per enemy (weapons our reachability memory says cannot reach an
+                // enemy are left out of its salvo). A projectile's fragments are intercepted one by one.
+                Dictionary<string, float> salvo = new Dictionary<string, float>();
+                Dictionary<int, Dictionary<string, float>> perEnemy = new Dictionary<int, Dictionary<string, float>>();
+                foreach (EnemyView view in views) perEnemy[view.PlayerId] = new Dictionary<string, float>();
+                int weapons = 0;
+                HashSet<int> unreachable = new HashSet<int>();
                 foreach (WeaponGameplayData weapon in me.WeaponHandler.Weapons)
                 {
                     if (weapon == null || weapon.IsLaser || weapon.WeaponData == null || weapon.Building == null) continue;
                     if (weapon.Building.CurrentState != BaseBuilding.BuildingState.Normal || !weapon.Building.Power.HasPower) continue;
+                    weapons++;
                     string id = weapon.WeaponData.id.Value;
-                    int n;
-                    shots.TryGetValue(id, out n);
-                    shots[id] = n + 1;
+                    float projectiles = Math.Max(1, weapon.WeaponData.projectile_amount.IsValueSet ? weapon.WeaponData.projectile_amount.Value : 1)
+                        * Math.Max(1, weapon.WeaponData.fragment_amount.IsValueSet ? weapon.WeaponData.fragment_amount.Value : 1);
+                    Add(salvo, id, projectiles);
+                    unreachable.Clear();
+                    Plugin.Reach.FillUnreachable(AiPatches.WeaponKey(weapon), turn, unreachable);
+                    foreach (EnemyView view in views)
+                    {
+                        if (!unreachable.Contains(view.PlayerId)) Add(perEnemy[view.PlayerId], id, projectiles);
+                    }
                 }
 
-                List<EnemyView> views = new List<EnemyView>();
-                foreach (CelestialBody planet in planets) views.Add(AiPatches.BuildEnemyView(me, planet.Player, turn));
-                TargetPlanner.Score(views, Plugin.Planner);
+                float accuracy = Plugin.AccuracyOverride.Value ? AccuracyPlan.ForLevel(Plugin.Accuracy, me.AILevel)
+                    : core.Difficulty != null ? core.Difficulty.Accuracy : 0.75f;
                 List<SalvoTarget> targets = new List<SalvoTarget>();
-                foreach (EnemyView view in views)
+                for (int i = 0; i < views.Count; i++)
                 {
+                    EnemyView view = views[i];
+                    PlayerData enemy = planets[i].Player;
+                    if (!state.PlanetsSeen.Contains(view.PlayerId))
+                    {
+                        foreach (BaseBuilding b in enemy.BuildingHandler.Buildings)
+                        {
+                            if (b != null && !b.IsCity && AiPatches.IsVisibleIntact(me, b)) { state.PlanetsSeen.Add(view.PlayerId); break; }
+                        }
+                    }
                     Dictionary<string, int> known;
                     economy.KnownDefenses.TryGetValue(view.PlayerId, out known);
-                    int impacts = 0, intercepted = 0;
-                    foreach (int[] counts in Plugin.Ledger.ObservedAll(me.PlayerID, view.PlayerId, 1).Values)
-                    {
-                        impacts += counts[0];
-                        intercepted += counts[1];
-                    }
                     targets.Add(new SalvoTarget
                     {
                         PlayerId = view.PlayerId,
                         Name = view.Name,
                         Score = view.Score,
                         Defenses = known != null ? new Dictionary<string, int>(known) : new Dictionary<string, int>(),
+                        DefensesSeen = state.PlanetsSeen.Contains(view.PlayerId),
                         EnergyKnown = view.EnergyKnown,
                         EnergyProduction = view.EnergyProduction,
-                        ObservedImpacts = impacts,
-                        ObservedIntercepted = intercepted,
+                        Shots = perEnemy[view.PlayerId],
+                        Observed = Plugin.Ledger.ObservedAll(me.PlayerID, view.PlayerId, 1),
                     });
                 }
-                decision = Strategy.Decide(turn, war, shots, targets, DefensePlanner.Counters, state.LastStrikeTurn, state.HoldTurns, Plugin.StrategyCfg);
-                if (decision.Fire)
+                decision = Strategy.Decide(turn, war, salvo, accuracy, targets, DefensePlanner.Counters, state.LastStrikeTurn, state.HoldTurns,
+                    weapons, Plugin.StrategyCfg);
+                if (!decision.Fire && !HoldAvailable)
                 {
-                    state.LastStrikeTurn = turn;
-                    state.HoldTurns = 0;
-                }
-                else if (war && decision.Shots >= Plugin.StrategyCfg.MinWeapons)
-                {
-                    state.HoldTurns++;
+                    decision.Fire = true; // cannot stop the shots: do not take their energy either
+                    decision.Reason += "/hold-unavailable";
                 }
                 state.Decision = decision;
             }
@@ -136,9 +197,29 @@ namespace InterplanetaryAI
                 return;
             }
 
+            if (!decision.Fire) Release(core, state);
             // Point the weapons. Native targeting already ran in AICore.BeginTurn; trajectory search starts in Update.
             AssignTargets(core, decision.CommitTargetId);
             Log(me, turn, decision, state);
+        }
+
+        // Nothing fires this turn, so the firing cost the game reserved is free for construction.
+        private static void Release(AICore core, State state)
+        {
+            int energyBack = Math.Max(0, core.Resources.EnergyUpkeep);
+            int materialBack = Math.Max(0, core.Resources.MaterialUpkeep);
+            core.Resources.Energy += energyBack;
+            core.Resources.Material += materialBack;
+            core.Construction.ConstructionQueue.AllottedEnergy += energyBack;
+            core.Construction.ConstructionQueue.AllottedMaterial += materialBack;
+            state.ReleasedEnergy = energyBack;
+        }
+
+        private static void Add(Dictionary<string, float> counts, string key, float n)
+        {
+            float v;
+            counts.TryGetValue(key, out v);
+            counts[key] = v + n;
         }
 
         private static void AssignTargets(AICore core, int commitPlayerId)
@@ -159,6 +240,7 @@ namespace InterplanetaryAI
             try
             {
                 Dictionary<string, int> passing = new Dictionary<string, int>();
+                Dictionary<string, int> arriving = new Dictionary<string, int>();
                 Dictionary<string, int> eligible = new Dictionary<string, int>();
                 Dictionary<string, int> rolls = new Dictionary<string, int>();
                 Dictionary<string, int> defenses = new Dictionary<string, int>();
@@ -168,19 +250,22 @@ namespace InterplanetaryAI
                 {
                     string name = t.Name ?? t.PlayerId.ToString();
                     passing[name] = (int)Math.Round(t.Passing);
+                    arriving[name] = (int)Math.Round(t.Arriving);
                     eligible[name] = (int)Math.Round(t.Eligible);
                     rolls[name] = t.Rolls >= float.MaxValue / 2 ? -1 : (int)Math.Round(t.Rolls);
                     int n = 0;
                     foreach (int c in t.Defenses.Values) n += c;
-                    defenses[name] = n;
+                    defenses[name] = t.DefensesSeen ? n : -1;
                     score[name] = (int)Math.Round(t.Score * 1000f);
                     if (t.PlayerId == d.CommitTargetId) commit = name;
                 }
                 Plugin.WriteDecision(new Json()
-                    .Str("e", "strategy").Int("t", turn).Str("ai", me.UserNickName)
-                    .Bool("fire", d.Fire).Str("reason", d.Reason).Int("shots", d.Shots).Num("passing", d.Passing).Num("passShare", d.PassShare)
-                    .Str("commit", commit).Int("lastStrike", state.LastStrikeTurn).Int("holdTurns", state.HoldTurns)
-                    .Map("passingBy", passing).Map("eligibleBy", eligible).Map("rollsBy", rolls).Map("defensesBy", defenses).Map("scoreBy", score)
+                    .Str("e", "strategy").Int("t", turn).Str("ai", me.UserNickName).Bool("war", d.War)
+                    .Bool("fire", d.Fire).Str("reason", d.Reason).Int("shots", d.Shots).Num("arriving", d.Arriving).Num("passing", d.Passing)
+                    .Num("passShare", d.PassShare).Str("commit", commit).Int("lastStrike", state.LastStrikeTurn).Int("holdTurns", state.HoldTurns)
+                    .Int("releasedEnergy", state.ReleasedEnergy)
+                    .Map("passingBy", passing).Map("arrivingBy", arriving).Map("eligibleBy", eligible).Map("rollsBy", rolls)
+                    .Map("defensesBy", defenses).Map("scoreBy", score)
                     .ToString());
             }
             catch (Exception e)
