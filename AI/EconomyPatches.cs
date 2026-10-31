@@ -27,6 +27,7 @@ namespace InterplanetaryAI
             public bool Bought;
             public bool NeedSlotForGoal;  // goal affordable but no free power slot: build one generator, buy next turn
             public bool SlotAttempted;
+            public bool EnergyPush;       // superweapon material saved but usable energy short: build power
             public float[] Weights;
             public bool Growth;
             public readonly int[] Picks = new int[5];
@@ -113,6 +114,7 @@ namespace InterplanetaryAI
                 state.Bought = false;
                 state.NeedSlotForGoal = false;
                 state.SlotAttempted = false;
+                state.EnergyPush = false;
                 int stockEnergy = core.Resources.Energy, stockMaterial = core.Resources.Material;
                 int reserveEnergy = 0, reserveMaterial = 0;
                 state.Goal = Plugin.SuperweaponSavings.Value ? FindSuperweaponGoal(core) : null;
@@ -151,6 +153,7 @@ namespace InterplanetaryAI
                         if (reserveMaterial >= state.GoalMaterialCost && stockEnergy < state.GoalEnergyCost)
                         {
                             state.Weights[(int)BuildCategory.Energy] *= 3f;
+                            state.EnergyPush = true;
                         }
                     }
                 }
@@ -158,6 +161,7 @@ namespace InterplanetaryAI
                 state.ReservedMaterial = reserveMaterial;
 
                 LogEconomy(core, turn, state, stockEnergy, stockMaterial, ownEconomy, maxEnemyEconomy, recentDamage);
+                if (Plugin.DirectorEnabled.Value) DirectorPatches.BeginTurn(core, state, recentDamage, turn);
             }
             catch (Exception e)
             {
@@ -199,8 +203,9 @@ namespace InterplanetaryAI
                 AICore core = (AICore)s_moduleCore.GetValue(__instance);
                 if (core == null || !core.PlayerData.AIPlayer) return true;
                 AiEconomyState state = StateOf(core.PlayerData);
+                if (Plugin.DirectorEnabled.Value) return DirectorPatches.TryConstruct(__instance, core, state, ref __result);
 
-                // Needs (power slots, energy/material shortfalls) always stay native, exactly as the native branch.
+                // v0.2 path (director off). Needs (power slots, energy/material shortfalls) stay native.
                 if (core.PowerGrid.BuildingsRequiringPowerAmount > 0 || __instance.PowerSlotNeed > 0 || __instance.EnergyNeed > 0 || __instance.MaterialNeed > 0) return true;
 
                 if (state.BuyPending && !state.Bought && state.Goal != null && state.BuyAttempts < 4 && __instance.ConstructionQueue.IsReady)
@@ -434,6 +439,7 @@ namespace InterplanetaryAI
         {
             States.Clear();
             s_refused.Clear();
+            DirectorPatches.Reset();
         }
 
         // ---- logging ----------------------------------------------------------------------------
@@ -446,6 +452,7 @@ namespace InterplanetaryAI
             {
                 AiEconomyState state;
                 if (!States.TryGetValue(__instance.PlayerData.PlayerID, out state)) return;
+                if (Plugin.DirectorEnabled.Value) DirectorPatches.EndTurn(__instance);
                 Plugin.WriteDecision(new Json().Str("e", "build").Int("t", GameManager.CurrentTurn).Str("ai", __instance.PlayerData.UserNickName)
                     .Bool("growth", state.Growth)
                     .Raw("picks", IntArray(state.Picks)).Raw("queued", IntArray(state.PickSuccesses))

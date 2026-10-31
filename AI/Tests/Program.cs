@@ -31,6 +31,12 @@ namespace InterplanetaryAI.Tests
             CategoryPickFollowsWeights();
             ResearchPlanSkipsDoneAndQueued();
             DefenseCountersVisibleThreat();
+            DirectorPrefersYieldUpgrades();
+            DirectorBuildsTheShortResource();
+            DirectorRespectsBudgetAndSlots();
+            DirectorWarAndDefenseRules();
+            WeaponChoiceAvoidsTargetDefenses();
+            PlanetMaterialRunsOut();
 
             Console.WriteLine(s_checks + " checks, " + s_failures + " failed");
             return s_failures == 0 ? 0 : 1;
@@ -111,6 +117,98 @@ namespace InterplanetaryAI.Tests
             Check(ResearchPlan.NextTarget(plan, done.Contains, id => false) == "tec_B", "a dequeued tech comes back");
             done.Add("tec_B");
             Check(ResearchPlan.NextTarget(plan, done.Contains, queued.Contains) == null, "finished plan returns null (native research resumes)");
+        }
+
+        // Costs and yields from docs/ruleset (BuildingsData, UpgradesData, ProjectsData).
+        private static EconOption Solar() { return new EconOption { Id = "bui_SolarPlant", Kind = OptionKind.Plant, Energy = 250, Material = 400, EnergyGain = 100 }; }
+        private static EconOption Mine() { return new EconOption { Id = "bui_Mine", Kind = OptionKind.Producer, Energy = 300, Material = 300, MaterialGain = 100, NeedsSlot = true }; }
+        private static EconOption SolarYield1() { return new EconOption { Id = "upg_SolarPEnergyYield1", Kind = OptionKind.Upgrade, Energy = 50, Material = 200, EnergyGain = 75 }; }
+        private static EconOption MineYield1() { return new EconOption { Id = "upg_MineMaterialYield1", Kind = OptionKind.Upgrade, Energy = 50, Material = 150, MaterialGain = 75 }; }
+
+        private static EconomyBalance Balance(float energyIncome, float materialIncome, int energy, int material)
+        {
+            return new EconomyBalance { EnergyIncome = energyIncome, MaterialIncome = materialIncome, TargetRatio = 0.6f, EnergyBudget = energy, MaterialBudget = material };
+        }
+
+        private static void DirectorPrefersYieldUpgrades()
+        {
+            List<EconOption> options = new List<EconOption> { Solar(), Mine(), SolarYield1() };
+            EconOption pick = EconomyDirector.Best(options, Balance(1000, 2000, 1500, 3000), 5);
+            Check(pick != null && pick.Id == "upg_SolarPEnergyYield1", "energy short: the solar yield upgrade beats a new plant");
+            options.Add(MineYield1());
+            pick = EconomyDirector.Best(options, Balance(2000, 1000, 1500, 3000), 5);
+            Check(pick != null && pick.Id == "upg_MineMaterialYield1", "material short: the mine yield upgrade beats a new mine");
+        }
+
+        private static void DirectorBuildsTheShortResource()
+        {
+            List<EconOption> options = new List<EconOption> { Solar(), Mine() };
+            EconOption pick = EconomyDirector.Best(options, Balance(2000, 1000, 1500, 3000), 5);
+            Check(pick != null && pick.Id == "bui_Mine", "energy 2000 vs material 1000 per turn (target 0.6): build a mine");
+            pick = EconomyDirector.Best(options, Balance(500, 2000, 1500, 3000), 5);
+            Check(pick != null && pick.Id == "bui_SolarPlant", "energy 500 vs material 2000 per turn: build a plant");
+            EconomyBalance push = Balance(2000, 1000, 1500, 3000);
+            push.EnergyPush = true;
+            pick = EconomyDirector.Best(options, push, 5);
+            Check(pick != null && pick.Id == "bui_SolarPlant", "energy push (superweapon waiting on energy) builds power");
+            EconomyBalance upkeep = Balance(1000, 1000, 1500, 3000);
+            upkeep.WeaponUpkeep = 600;
+            pick = EconomyDirector.Best(options, upkeep, 5);
+            Check(pick != null && pick.Id == "bui_SolarPlant", "weapon upkeep counts against energy income");
+        }
+
+        private static void DirectorRespectsBudgetAndSlots()
+        {
+            List<EconOption> options = new List<EconOption> { Solar(), Mine() };
+            EconOption pick = EconomyDirector.Best(options, Balance(2000, 1000, 1500, 3000), 0);
+            Check(pick != null && pick.Id == "bui_SolarPlant", "no free power slot: the mine is skipped, the plant (which adds slots) is not");
+            pick = EconomyDirector.Best(options, Balance(2000, 1000, 280, 3000), 5);
+            Check(pick != null && pick.Id == "bui_SolarPlant", "energy 280: the 300-energy mine is unaffordable");
+            pick = EconomyDirector.Best(options, Balance(2000, 1000, 200, 3000), 5);
+            Check(pick == null, "nothing affordable gives null (construction ends for the turn)");
+            EconOption useless = new EconOption { Id = "x", Kind = OptionKind.Upgrade, Energy = 50, Material = 100 };
+            Check(EconomyDirector.Best(new List<EconOption> { useless }, Balance(1000, 1000, 1500, 3000), 5) == null, "an option with no gain is never bought");
+        }
+
+        private static void DirectorWarAndDefenseRules()
+        {
+            Check(!EconomyDirector.WarPhase(10, 15, 100f, 600f), "turn 10, little damage: still booming");
+            Check(EconomyDirector.WarPhase(10, 15, 700f, 600f), "heavy damage starts retaliation early");
+            Check(EconomyDirector.WarPhase(15, 15, 0f, 600f), "war from WarFromTurn");
+            Check(EconomyDirector.DesiredDefenses(10, 1000f, 0.4f, 500f, 40) == 6, "10 visible weapons x 0.4 + 1000 damage / 500 = 6 defenses");
+            Check(EconomyDirector.DesiredDefenses(200, 0f, 0.4f, 500f, 40) == 40, "defenses are capped");
+            Check(EconomyDirector.DesiredDefenses(0, 0f, 0.4f, 500f, 40) == 0, "no threat, no defenses");
+        }
+
+        private static void WeaponChoiceAvoidsTargetDefenses()
+        {
+            // Damage proxy as the adapter computes it: (building + population damage) x fragments x area x homing.
+            List<WeaponStats> weapons = new List<WeaponStats>
+            {
+                new WeaponStats { BuildingId = "bui_Railgun", WeaponId = "wea_Railgun", BuildEnergy = 200, BuildMaterial = 200, FiringEnergy = 100, Damage = 250f * 1.5f },
+                new WeaponStats { BuildingId = "bui_Coilcannon", WeaponId = "wea_Coilcannon", BuildEnergy = 250, BuildMaterial = 400, FiringEnergy = 200, Damage = 400f * 3 * 1.1f },
+                new WeaponStats { BuildingId = "bui_Missile", WeaponId = "wea_Missile", BuildEnergy = 250, BuildMaterial = 450, FiringEnergy = 300, Damage = 350f * 0.867f * 1.5f },
+            };
+            Random rng = new Random(1);
+            Dictionary<string, int> open = new Dictionary<string, int>();
+            Check(EconomyDirector.PickWeapon(weapons, open, DefensePlanner.Counters, 10f, 4f, 1f, rng).BuildingId == "bui_Coilcannon", "undefended target: the coilcannon (most damage per cost)");
+            Dictionary<string, int> kinetic = new Dictionary<string, int> { { "bui_KineticDefense", 32 } };
+            Check(EconomyDirector.PickWeapon(weapons, kinetic, DefensePlanner.Counters, 10f, 4f, 1f, rng).BuildingId == "bui_Missile", "32 kinetic defenses (the human's T26 count): missiles");
+            float pass = EconomyDirector.PassChance("wea_Railgun", new Dictionary<string, int> { { "bui_KineticDefense", 5 }, { "bui_ShieldDefense", 10 } }, DefensePlanner.Counters, 10f);
+            Check(Math.Abs(pass - (1f - 0.5f * 0.8f) * (1f - 0.15f)) < 1e-4f, "pass chance multiplies half kinetic cover and full shield cover");
+            int coil = 0;
+            for (int i = 0; i < 400; i++)
+            {
+                if (EconomyDirector.PickWeapon(weapons, open, DefensePlanner.Counters, 10f, 4f, 0.3f, rng).BuildingId == "bui_Coilcannon") coil++;
+            }
+            Check(coil > 200 && coil < 400, "a wide band mixes in weaker weapons, the best still most often (" + coil + "/400)");
+        }
+
+        private static void PlanetMaterialRunsOut()
+        {
+            Check(EconomyDirector.PlanetMaterialFactor(100000, 1000f, 10) == 1f, "100 turns of planet material left: full value");
+            Check(Math.Abs(EconomyDirector.PlanetMaterialFactor(5000, 1000f, 10) - 0.5f) < 1e-4f, "5 of 10 horizon turns left: half value");
+            Check(EconomyDirector.PlanetMaterialFactor(0, 1000f, 10) == 0f, "depleted planet: mines are worthless");
         }
 
         private static void Check(bool condition, string what)

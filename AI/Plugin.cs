@@ -9,6 +9,7 @@ using BepInEx.Configuration;
 using BepInEx.Logging;
 using HarmonyLib;
 using Interplanetary.AI;
+using Interplanetary.AI.Construction;
 using Interplanetary.GameEngine;
 using Interplanetary.GameSession;
 using Interplanetary.PlayerDataManagement;
@@ -21,7 +22,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.2.2";
+        public const string VERSION = "0.3.0";
 
         internal static ManualLogSource Log;
 
@@ -53,13 +54,39 @@ namespace InterplanetaryAI
         internal static ConfigEntry<string> ResearchPlan;
         internal static ConfigEntry<bool> EnableLasers;
         internal static ConfigEntry<bool> SmartDefense;
+        internal static ConfigEntry<bool> DirectorEnabled;
+        internal static ConfigEntry<int> WarFromTurn;
+        internal static ConfigEntry<float> WarDamageTrigger;
+        internal static ConfigEntry<float> WarUpkeepShare;
+        internal static ConfigEntry<float> RetaliationUpkeepShare;
+        internal static ConfigEntry<float> WarSpendShare;
+        internal static ConfigEntry<float> EnergyToMaterialTarget;
+        internal static ConfigEntry<float> DefensePerEnemyWeapon;
+        internal static ConfigEntry<float> DamagePerDefense;
+        internal static ConfigEntry<int> MaxDefenses;
+        internal static ConfigEntry<int> DefensesPerTurn;
+        internal static ConfigEntry<float> DefensesForFullCover;
+        internal static ConfigEntry<int> PlacementStepCap;
 
         internal static readonly BuildWeights Build = new BuildWeights();
         internal static List<string> SuperweaponIds = new List<string>();
         internal static List<string> ResearchPlanIds = new List<string>();
 
-        // Human consensus opening (first 10), Nuclear Missile line, rest of the human order, Asteroid Diversion line.
+        // v0.3: the human's tech order from the 31 Oct 2026 win (economy first: material project and mine
+        // yield, Offshore Mine, Floating Plant, yield upgrades, energy projects), then the Nuclear Missile line,
+        // then the rest of the old plan.
         private const string DefaultResearchPlan =
+            "tec_MassBiochemicalProcessing,tec_MolecularRecycling,tec_SuperTensileMaterials,tec_QuantumComputing,tec_SmartGrids,"
+            + "tec_ExperimentalMatterControl,tec_2ndGenComposites,tec_MaglevServos,tec_EarlyWarningAI,tec_Nanostructuring,"
+            + "tec_MicrowaveEnergyTranmission,tec_RoboticMining,tec_SelfAdjustingOptics,tec_AdvancedSignalProcessing,tec_MagneticRadiationShielding,"
+            + "tec_Metamaterials,tec_DesignerNanomaterials,tec_ThermonuclearWarheads,tec_VerticalFarming,tec_QuantumCommunications,"
+            + "tec_PlasmaChannelInduction,tec_AtmosphericInterferenceMitigation,tec_4thGenNuclearReactors,tec_LosslessEnergyTransfer,tec_Ultracapacitors,"
+            + "tec_CompositeHeatCells,tec_OrbitalAssembly,tec_EmDrives,tec_Octaazacubane,tec_UraniumAlloys,tec_AdvancedGenetics,"
+            + "tec_SelfHealingMaterials,tec_AITargetTracking,tec_MultiChainedStages,tec_GammaRayLasers,"
+            + "tec_InductionCoils,tec_ZeroReluctanceEngineering,tec_MassDrivers";
+
+        // v0.2 default, replaced on load if the config still holds it unchanged.
+        private const string V02ResearchPlan =
             "tec_MassBiochemicalProcessing,tec_MolecularRecycling,tec_SuperTensileMaterials,tec_QuantumComputing,tec_SmartGrids,"
             + "tec_2ndGenComposites,tec_MaglevServos,tec_MagneticRadiationShielding,tec_EarlyWarningAI,tec_Metamaterials,"
             + "tec_SelfAdjustingOptics,tec_AdvancedSignalProcessing,tec_OrbitalAssembly,tec_EmDrives,tec_ThermonuclearWarheads,"
@@ -139,7 +166,37 @@ namespace InterplanetaryAI
             ResearchPlanEnabled = Config.Bind("Research", "UsePlan", true,
                 "Research the Plan list in order (prerequisites are queued automatically) instead of the native random focus. Native research resumes when the plan is done.");
             ResearchPlan = Config.Bind("Research", "Plan", DefaultResearchPlan,
-                "Tech IDs in order. Default: the human's consensus opening from 6 recorded wins (AI/tools/human_research_order.py), then the Nuclear Missile line pulled forward (the AIs make ~40% of the human's science and would never reach it at position 33), then the rest of the human's order, then the Asteroid Diversion line.");
+                "Tech IDs in order. Default (v0.3): the human's order from the 31 Oct 2026 win, economy first (material and energy projects, yield upgrades, Offshore Mine, Floating Plant), then the Nuclear Missile line, then the rest.");
+            if (ResearchPlan.Value == V02ResearchPlan)
+            {
+                ResearchPlan.Value = DefaultResearchPlan;
+                Log.LogInfo("Research plan: replaced the unchanged v0.2 default with the v0.3 default.");
+            }
+
+            DirectorEnabled = Config.Bind("Director", "Enabled", true,
+                "v0.3 economy director: replaces the native construction choice. Buys yield upgrades and city projects first, keeps energy income near EnergyToMaterialTarget x material income, places water buildings properly, holds weapons until WarFromTurn, and counters visible enemy weapons with defenses. Off = the v0.2 build planner.");
+            WarFromTurn = Config.Bind("Director", "WarFromTurn", 15,
+                "Turn from which the AI builds weapons (the human who won built none until ~25). Before it, only retaliation after heavy damage.");
+            WarDamageTrigger = Config.Bind("Director", "WarDamageTrigger", 600f,
+                "Recent damage taken that starts retaliation before WarFromTurn.");
+            WarUpkeepShare = Config.Bind("Director", "WarUpkeepShare", 0.4f,
+                "Cap on weapon firing cost per turn as a share of energy income, from WarFromTurn.");
+            RetaliationUpkeepShare = Config.Bind("Director", "RetaliationUpkeepShare", 0.15f,
+                "Same cap while retaliating before WarFromTurn.");
+            WarSpendShare = Config.Bind("Director", "WarSpendShare", 0.4f,
+                "Share of a turn's energy spent on new weapons before the economy gets the rest. Energy left over after the economy also goes to weapons (it does not carry over).");
+            EnergyToMaterialTarget = Config.Bind("Director", "EnergyToMaterialTarget", 0.6f,
+                "Wanted energy income as a share of material income (plus weapon upkeep). The human who won kept ~0.5-0.65 while booming.");
+            DefensePerEnemyWeapon = Config.Bind("Director", "DefensePerEnemyWeapon", 0.4f,
+                "Defenses wanted per visible enemy weapon building.");
+            DamagePerDefense = Config.Bind("Director", "DamagePerDefense", 500f,
+                "One more defense wanted per this much recent damage taken.");
+            MaxDefenses = Config.Bind("Director", "MaxDefenses", 40, "Cap on defenses wanted.");
+            DefensesPerTurn = Config.Bind("Director", "DefensesPerTurn", 3, "Most defenses queued in one turn.");
+            DefensesForFullCover = Config.Bind("Director", "DefensesForFullCover", 10f,
+                "Defenses of one type taken to cover a whole planet, for picking weapons the target's defenses stop least.");
+            PlacementStepCap = Config.Bind("Director", "PlacementStepCap", 1500,
+                "Placement attempts before a building search gives up and its cost is returned (native searches never give up).");
 
             EnableLasers = Config.Bind("Lasers", "EnableLasers", false,
                 "EXPERIMENTAL. Let the AI build and fire Laser / EMP Laser / Solar Laser. The game's own AI laser code was switched off by its developers and has bugs (crash on no target, wrong building aimed); this installs fixes for both plus a bypass at end of turn. Needs a game restart. Try it in a throwaway match first.");
@@ -166,8 +223,11 @@ namespace InterplanetaryAI
             patched += TryPatch(typeof(AIConstruction), "tryConstructNewBuilding", "TryConstructPrefix", null, typeof(EconomyPatches));
             patched += TryPatch(typeof(AITechQueue), "BeginTurn", "TechQueueBeginTurnPrefix", null, typeof(EconomyPatches));
             patched += TryPatch(typeof(AIDefenseConstruction), "TryConstructDefense", "TryConstructDefensePrefix", null, typeof(EconomyPatches));
+            patched += TryPatch(typeof(AIBuildingPlacementSearch), "step", "SearchStepPrefix", null, typeof(DirectorPatches));
+            patched += TryPatch(typeof(AIBuildingPlacementFinder), "Update", "FinderUpdatePrefix", null, typeof(DirectorPatches));
             int laserPatches = EnableLasers.Value ? LaserPatches.Install(new Harmony(GUID + ".lasers")) : 0;
-            Log.LogInfo(NAME + " " + VERSION + " loaded; " + patched + " of 11 hooks patched. Accuracy by level: " + AccuracyByLevel.Value
+            Log.LogInfo(NAME + " " + VERSION + " loaded; " + patched + " of 13 hooks patched. Director " + (DirectorEnabled.Value ? "on" : "off")
+                + ", war from turn " + WarFromTurn.Value + ". Accuracy by level: " + AccuracyByLevel.Value
                 + "; research plan " + ResearchPlanIds.Count + " techs; superweapons " + Superweapons.Value
                 + "; lasers " + (EnableLasers.Value ? laserPatches + " of 5 patches" : "off"));
         }

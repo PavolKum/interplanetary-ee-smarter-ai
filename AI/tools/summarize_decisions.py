@@ -132,6 +132,35 @@ def summarize_economy(rows):
         if defenses:
             print("smart defense queued: " + ", ".join(f"{k.replace('bui_', '')} {v}" for k, v in defenses.most_common()))
 
+    summarize_director(rows)
+
+
+def summarize_director(rows):
+    director = [r for r in rows if r["e"] == "director"]
+    if not director:
+        return
+    print("\ndirector (v0.3) per AI:")
+    by_ai = defaultdict(list)
+    for r in director:
+        by_ai[r["ai"]].append(r)
+    for ai in sorted(by_ai):
+        series = by_ai[ai]
+        totals = Counter()
+        failures = Counter()
+        for r in series:
+            totals.update(r.get("queued", {}))
+            failures.update(r.get("placementFailures", {}))
+        war_from = next((r["t"] for r in series if r["war"]), None)
+        last = series[-1]
+        unspent = [r["energyLeft"] for r in series]
+        print(f"  {ai:<8} turns {series[0]['t']}-{last['t']}, war from T{war_from}, upgrades installed at end {last['upgradesInstalled']}, "
+              f"refunds {sum(r['refunds'] for r in series)}, mean energy left unspent {sum(unspent) // max(1, len(unspent))}")
+        print("           queued: " + ", ".join(f"{k.split(':', 1)[1].split('_', 1)[-1]}({k.split(':')[0]}) {v}" for k, v in totals.most_common(14)))
+        if failures:
+            print("           placement gave up: " + ", ".join(f"{k.replace('bui_', '')} {v}" for k, v in failures.most_common()))
+        slots = [f"T{r['t']}:{r['slotsAtStart']}->{r['slotsLeft']}" for r in series if r["t"] % 5 == 0]
+        print("           power slots start->left: " + " ".join(slots))
+
 
 if __name__ == "__main__":
     main()
