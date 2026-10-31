@@ -1,0 +1,544 @@
+diff --git a/AI/Brain/Coverage.cs b/AI/Brain/Coverage.cs
+new file mode 100644
+index 0000000..60ff388
+--- /dev/null
++++ b/AI/Brain/Coverage.cs
+@@ -0,0 +1,111 @@
++using System;
++using System.Collections.Generic;
++
++namespace InterplanetaryAI.Brain
++{
++    // Where to put the next defense. The native AI puts every defense within the defense radius of a random city
++    // (or of a random building after 100 failed steps) with no memory of what is already covered. 31 Oct v0.6:
++    // 21-40 Kinetic Defenses stood, yet 53-85% of the shots landing on the AI's planet found no eligible defense in range.
++    //
++    // A defense covers what lies within `radius` of it (PlayerDefenseHandler.getDefenses: building-centre distance
++    // strictly less than the radius). The value of a building is what losing it costs: cities hold the population that
++    // decides the game, the rest is production.
++    public struct Point
++    {
++        public float X, Y, Z;
++
++        public Point(float x, float y, float z)
++        {
++            X = x;
++            Y = y;
++            Z = z;
++        }
++
++        public float DistanceSquared(Point other)
++        {
++            float dx = X - other.X, dy = Y - other.Y, dz = Z - other.Z;
++            return dx * dx + dy * dy + dz * dz;
++        }
++    }
++
++    public static class DefenseCoverage
++    {
++        // For each target, is it within `radius` of at least one of the defenses?
++        public static bool[] Covered(IList<Point> targets, IList<Point> defenses, float radius)
++        {
++            bool[] covered = new bool[targets.Count];
++            float r2 = radius * radius;
++            for (int i = 0; i < targets.Count; i++)
++            {
++                for (int j = 0; j < defenses.Count; j++)
++                {
++                    if (targets[i].DistanceSquared(defenses[j]) < r2)
++                    {
++                        covered[i] = true;
++                        break;
++                    }
++                }
++            }
++            return covered;
++        }
++
++        // Value of the targets within `radius` of `center` that no defense covers yet.
++        public static float UncoveredValue(Point center, IList<Point> targets, IList<float> values, bool[] covered, float radius)
++        {
++            float r2 = radius * radius;
++            float total = 0f;
++            for (int i = 0; i < targets.Count; i++)
++            {
++                if (!covered[i] && center.DistanceSquared(targets[i]) < r2) total += values[i];
++            }
++            return total;
++        }
++
++        // Pick the anchor building whose neighbourhood (within the defense radius) holds the most uncovered value: the
++        // defense is then placed within its radius of that anchor. Among anchors scoring at least `band` of the best,
++        // pick weighted by score squared, so repeated picks spread out instead of stacking. -1 when no anchor has
++        // anything uncovered near it.
++        public static int PickAnchor(IList<Point> anchors, IList<Point> targets, IList<float> values, bool[] covered, float radius,
++            float band, Random rng, ICollection<int> excluded)
++        {
++            float[] scores = new float[anchors.Count];
++            float best = 0f;
++            for (int i = 0; i < anchors.Count; i++)
++            {
++                if (excluded != null && excluded.Contains(i)) continue;
++                scores[i] = UncoveredValue(anchors[i], targets, values, covered, radius);
++                best = Math.Max(best, scores[i]);
++            }
++            if (best <= 0f) return -1;
++            float total = 0f;
++            for (int i = 0; i < scores.Length; i++)
++            {
++                scores[i] = scores[i] >= band * best ? scores[i] * scores[i] : 0f;
++                total += scores[i];
++            }
++            double roll = rng.NextDouble() * total;
++            for (int i = 0; i < scores.Length; i++)
++            {
++                roll -= scores[i];
++                if (roll <= 0 && scores[i] > 0f) return i;
++            }
++            for (int i = scores.Length - 1; i >= 0; i--)
++            {
++                if (scores[i] > 0f) return i;
++            }
++            return -1;
++        }
++
++        // Share of the total value that is covered (for the decision log).
++        public static float CoveredShare(IList<float> values, bool[] covered)
++        {
++            float total = 0f, inside = 0f;
++            for (int i = 0; i < values.Count; i++)
++            {
++                total += values[i];
++                if (covered[i]) inside += values[i];
++            }
++            return total > 0f ? inside / total : 1f;
++        }
++    }
++}
+diff --git a/AI/Brain/DefenseLedger.cs b/AI/Brain/DefenseLedger.cs
+index 1d1869a..9dce5ef 100644
+--- a/AI/Brain/DefenseLedger.cs
++++ b/AI/Brain/DefenseLedger.cs
+@@ -14,6 +14,8 @@ namespace InterplanetaryAI.Brain
+     {
+         public int Impacts;            // shots reaching this planet
+         public int NoEligibleDefense;  // no normal, matching defense in range: nothing could be rolled
++        public int NearCity;           // impact within a short distance of one of our cities
++        public int NoDefenseNearby;    // impact with no defense of any kind close by (the planet is simply not covered there)
+         public int Intercepted;
+         public int ProbabilityFails;
+         public int NoResource;         // a defense in range could not roll: not enough energy OR material
+@@ -44,7 +46,7 @@ namespace InterplanetaryAI.Brain
+         }
+ 
+         public void Record(int defenderId, int shooterId, string weaponId, bool intercepted, int probabilityFails, int noResource, int disconnected,
+-            int energySpent, bool eligibleDefenseInRange)
++            int energySpent, bool eligibleDefenseInRange, bool nearCity = false, bool anyDefenseNearby = true)
+         {
+             DefenderStats d;
+             if (!m_pendingDefender.TryGetValue(defenderId, out d))
+@@ -54,6 +56,8 @@ namespace InterplanetaryAI.Brain
+             }
+             d.Impacts++;
+             if (!eligibleDefenseInRange) d.NoEligibleDefense++;
++            if (nearCity) d.NearCity++;
++            if (!anyDefenseNearby) d.NoDefenseNearby++;
+             if (intercepted) d.Intercepted++;
+             d.ProbabilityFails += probabilityFails;
+             d.NoResource += noResource;
+diff --git a/AI/DirectorPatches.cs b/AI/DirectorPatches.cs
+index c11bd00..b26bf68 100644
+--- a/AI/DirectorPatches.cs
++++ b/AI/DirectorPatches.cs
+@@ -11,6 +11,7 @@ using Interplanetary.PlayerDataManagement;
+ using Interplanetary.Prefabs;
+ using InterplanetaryAI.Brain;
+ using TJR_Engine.FileManagement;
++using UnityEngine;
+ 
+ namespace InterplanetaryAI
+ {
+@@ -49,7 +50,9 @@ namespace InterplanetaryAI
+             public int DesiredDefenses;
+             public int DefenseTurnCap;
+             public float ObservedDefenseNeed;   // v0.6: energy our defenses needed in the last action phase (x margin)
+-            public int LastImpacts, LastIntercepted, LastNoEligible, LastUnpaid, LastEnergySpent;
++            public int LastImpacts, LastIntercepted, LastNoEligible, LastUnpaid, LastEnergySpent, LastNearCity, LastNoDefenseNearby;
++            public float CoverageShare;
++            public int CitiesCovered, CitiesTotal;
+             public Dictionary<string, float> ObservedPass = new Dictionary<string, float>();
+             public string TargetName = "";
+             public readonly Dictionary<string, int> TargetDefenses = new Dictionary<string, int>();
+@@ -97,6 +100,7 @@ namespace InterplanetaryAI
+         internal static void Reset()
+         {
+             s_states.Clear();
++            s_coverage.Clear();
+             LoadDefenseCounters();
+         }
+ 
+@@ -177,6 +181,10 @@ namespace InterplanetaryAI
+             d.LastIntercepted = last.Intercepted;
+             d.LastNoEligible = last.NoEligibleDefense;
+             d.LastUnpaid = last.NoResource;
++            d.LastNearCity = last.NearCity;
++            d.LastNoDefenseNearby = last.NoDefenseNearby;
++            try { CoverageShares(core, out d.CoverageShare, out d.CitiesCovered, out d.CitiesTotal); }
++            catch (Exception e) { Plugin.Log.LogError("Coverage log failed: " + e.Message); }
+             d.LastEnergySpent = last.EnergySpent;
+             d.ObservedDefenseNeed = EconomyDirector.ObservedDefenseNeed(last.EnergySpent, last.NoResource, last.Impacts - last.NoEligibleDefense, 100f, Plugin.DefenseObservedMargin.Value);
+             d.DesiredDefenses = EconomyDirector.DesiredDefenses(visibleEnemyWeapons, recentDamage, Plugin.DefensePerEnemyWeapon.Value, Plugin.DamagePerDefense.Value, Plugin.MaxDefenses.Value,
+@@ -921,12 +929,146 @@ namespace InterplanetaryAI
+         // Prefix on AIBuildingPlacementSearch.step for water-only buildings: place next to our own water
+         // buildings, or (plants only, which need no power line) anywhere on the planet. Native picks a random
+         // land neighbour, which almost never has water within reach.
++        // ---- coverage-aware defense placement (v0.7) --------------------------------------------------
++        // The game puts every defense within its radius of a random city and never looks at what is already covered
++        // (31 Oct v0.6: 53-85% of shots met no eligible defense). Here a defense is anchored to the building whose
++        // neighbourhood holds the most uncovered value; the game's own placement then runs around that anchor, with the
++        // step count raised to its defense timeout so it places within the defense radius of the anchor and skips the
++        // "near a city" rule. Any failure or nothing-to-cover falls back to the game's own step.
++
++        private sealed class CoverageState
++        {
++            public List<BaseBuilding> Bases;
++            public BaseBuilding Anchor;
++            public int AnchorIndex = -1;
++            public int Steps;
++            public bool GaveUp;
++            public readonly HashSet<int> Excluded = new HashSet<int>();
++        }
++
++        private static readonly Dictionary<AIBuildingPlacementSearch, CoverageState> s_coverage = new Dictionary<AIBuildingPlacementSearch, CoverageState>();
++        private const int NativeDefenseStepTimeout = 100;
++
++        private static float DefenseRadius(BuildingData data)
++        {
++            DefensesData defenses = GameDataFileManager.GetDataFile<DefensesData>();
++            DefenseData defense = defenses != null ? defenses.GetDefense(data.defense_functionality.Value) : null;
++            if (defense == null || !defense.defense_radius.IsValueSet) return 0f;
++            return defense.defense_radius.Value * (defense.defense_scale.IsValueSet ? defense.defense_scale.Value : 1f);
++        }
++
++        private static bool CoverageStep(AIBuildingPlacementSearch search, BuildingData data, AICore core)
++        {
++            if (s_coverage.Count > 300) s_coverage.Clear(); // finished searches are never removed otherwise
++            CoverageState st;
++            if (!s_coverage.TryGetValue(search, out st))
++            {
++                st = new CoverageState();
++                s_coverage[search] = st;
++            }
++            if (st.GaveUp) return false;
++            bool usable = st.Anchor != null && st.Anchor.CurrentState == BaseBuilding.BuildingState.Normal && core.PowerGrid.HasBuildingAvailableSlots(st.Anchor);
++            if (!usable || st.Steps >= Plugin.CoverageAnchorSteps.Value)
++            {
++                if (st.AnchorIndex >= 0) st.Excluded.Add(st.AnchorIndex);
++                if (!PickCoverageAnchor(core, data, st))
++                {
++                    st.GaveUp = true;
++                    return false;
++                }
++            }
++            st.Steps++;
++            int steps = (int)s_searchSteps.GetValue(search);
++            s_searchSteps.SetValue(search, Math.Max(steps, NativeDefenseStepTimeout) + 1);
++            s_placeNextTo.Invoke(search, new object[] { new List<BaseBuilding> { st.Anchor } });
++            return true;
++        }
++
++        private static bool PickCoverageAnchor(AICore core, BuildingData data, CoverageState st)
++        {
++            float radius = DefenseRadius(data);
++            if (radius <= 0f) return false;
++            List<BaseBuilding> all = core.PlayerData.BuildingHandler.Buildings;
++            if (st.Bases == null)
++            {
++                st.Bases = new List<BaseBuilding>();
++                foreach (BaseBuilding b in all)
++                {
++                    if (b == null || b.CurrentState == BaseBuilding.BuildingState.Ruins || b.CurrentState == BaseBuilding.BuildingState.Destroyed) continue;
++                    if (b.Power.IsPotentiallyDistributingPower && core.PowerGrid.HasBuildingAvailableSlots(b)) st.Bases.Add(b);
++                }
++            }
++            if (st.Bases.Count == 0) return false;
++            List<Point> targets = new List<Point>(), sameDefenses = new List<Point>(), anchors = new List<Point>();
++            List<float> values = new List<float>();
++            string id = data.id.Value;
++            foreach (BaseBuilding b in all)
++            {
++                if (b == null || b.CurrentState == BaseBuilding.BuildingState.Ruins || b.CurrentState == BaseBuilding.BuildingState.Destroyed) continue;
++                Vector3 p = b.transform.position;
++                targets.Add(new Point(p.x, p.y, p.z));
++                bool defense = b.BuildingData != null && b.BuildingData.defense_functionality.IsValueSet;
++                values.Add(b.IsCity ? Plugin.CoverageCityValue.Value : (defense ? 0.25f : 1f));
++                if (b.BuildingData != null && b.BuildingData.id.Value == id) sameDefenses.Add(new Point(p.x, p.y, p.z));
++            }
++            foreach (BaseBuilding b in st.Bases)
++            {
++                Vector3 p = b.transform.position;
++                anchors.Add(new Point(p.x, p.y, p.z));
++            }
++            bool[] covered = DefenseCoverage.Covered(targets, sameDefenses, radius);
++            int pick = DefenseCoverage.PickAnchor(anchors, targets, values, covered, radius, Plugin.CoverageBand.Value, Plugin.Rng, st.Excluded);
++            if (pick < 0) return false;
++            st.Anchor = st.Bases[pick];
++            st.AnchorIndex = pick;
++            st.Steps = 0;
++            return true;
++        }
++
++        // Share of our buildings (by value) and number of our cities inside a Kinetic Defense's radius, for the decision log.
++        private static void CoverageShares(AICore core, out float share, out int citiesCovered, out int cities)
++        {
++            share = 0f;
++            citiesCovered = 0;
++            cities = 0;
++            BuildingsData buildings = GameDataFileManager.GetDataFile<BuildingsData>();
++            BuildingData kinetic = buildings.HasBuilding("bui_KineticDefense") ? buildings.GetBuilding("bui_KineticDefense") : null;
++            if (kinetic == null || !kinetic.defense_functionality.IsValueSet) return;
++            float radius = DefenseRadius(kinetic);
++            List<Point> targets = new List<Point>(), defenses = new List<Point>();
++            List<float> values = new List<float>();
++            List<bool> isCity = new List<bool>();
++            foreach (BaseBuilding b in core.PlayerData.BuildingHandler.Buildings)
++            {
++                if (b == null || b.CurrentState == BaseBuilding.BuildingState.Ruins || b.CurrentState == BaseBuilding.BuildingState.Destroyed) continue;
++                Vector3 p = b.transform.position;
++                targets.Add(new Point(p.x, p.y, p.z));
++                values.Add(b.IsCity ? Plugin.CoverageCityValue.Value : 1f);
++                isCity.Add(b.IsCity);
++                if (b.BuildingData != null && b.BuildingData.id.Value == "bui_KineticDefense" && b.CurrentState == BaseBuilding.BuildingState.Normal) defenses.Add(new Point(p.x, p.y, p.z));
++            }
++            bool[] covered = DefenseCoverage.Covered(targets, defenses, radius);
++            share = DefenseCoverage.CoveredShare(values, covered);
++            for (int i = 0; i < isCity.Count; i++)
++            {
++                if (!isCity[i]) continue;
++                cities++;
++                if (covered[i]) citiesCovered++;
++            }
++        }
++
+         private static bool SearchStepPrefix(AIBuildingPlacementSearch __instance)
+         {
+             if (!Plugin.Active || !Plugin.DirectorEnabled.Value) return true;
+             try
+             {
+                 BuildingData data = (BuildingData)s_searchBuilding.GetValue(__instance);
++                if (data != null && Plugin.CoveragePlacement.Value && data.defense_functionality.IsValueSet)
++                {
++                    AICore defenseCore = (AICore)s_searchCore.GetValue(__instance);
++                    if (defenseCore != null && defenseCore.PlayerData.AIPlayer && CoverageStep(__instance, data, defenseCore)) return false;
++                    return true;
++                }
+                 if (data == null || !IsWaterOnly(data)) return true;
+                 AICore core = (AICore)s_searchCore.GetValue(__instance);
+                 if (core == null || !core.PlayerData.AIPlayer) return true;
+@@ -1048,7 +1190,8 @@ namespace InterplanetaryAI
+                 .Int("energyStart", d.TurnStartEnergy).Int("materialStart", d.TurnStartMaterial)
+                 .Int("energyLeft", core.Resources.Energy).Int("materialLeft", core.Resources.Material)
+                 .Num("upkeep", d.Upkeep).Int("ownDefenses", d.OwnDefenses).Int("desiredDefenses", d.DesiredDefenses).Int("defenseTurnCap", d.DefenseTurnCap)
+-                .Int("lastImpacts", d.LastImpacts).Int("lastIntercepted", d.LastIntercepted).Int("lastNoEligibleDefense", d.LastNoEligible)
++                .Int("lastImpacts", d.LastImpacts).Int("lastIntercepted", d.LastIntercepted).Int("lastNoEligibleDefense", d.LastNoEligible).Int("lastNearCity", d.LastNearCity).Int("lastNoDefenseNearby", d.LastNoDefenseNearby)
++                .Num("coverageKinetic", d.CoverageShare).Int("citiesCovered", d.CitiesCovered).Int("cities", d.CitiesTotal)
+                 .Int("lastUnpaidRolls", d.LastUnpaid).Int("lastDefenseEnergy", d.LastEnergySpent).Int("observedNeed", (int)d.ObservedDefenseNeed)
+                 .Str("observedPass", ObservedPassText(d.ObservedPass))
+                 .Int("upgradesInstalled", upgradesInstalled).Str("weaponTarget", d.TargetName).Map("targetDefenses", d.TargetDefenses)
+diff --git a/AI/LedgerPatches.cs b/AI/LedgerPatches.cs
+index 0dfe32b..a88afd2 100644
+--- a/AI/LedgerPatches.cs
++++ b/AI/LedgerPatches.cs
+@@ -2,9 +2,11 @@ using System;
+ using System.Collections.Generic;
+ using System.Reflection;
+ using HarmonyLib;
++using UnityEngine;
+ using Interplanetary.GameEngine.Actionphase;
+ using Interplanetary.GameDataFiles;
+ using Interplanetary.PlayerDataManagement;
++using Interplanetary.Prefabs;
+ 
+ namespace InterplanetaryAI
+ {
+@@ -22,7 +24,7 @@ namespace InterplanetaryAI
+             __state = events != null ? events.Count : 0;
+         }
+ 
+-        private static void AfterIntercept(PlayerDefenseHandler __instance, int shooterID, WeaponData weaponData, List<ActionphaseBaseEvent> events, bool __result, int __state)
++        private static void AfterIntercept(PlayerDefenseHandler __instance, int shooterID, Vector3 worldPositionHit, WeaponData weaponData, List<ActionphaseBaseEvent> events, bool __result, int __state)
+         {
+             if (!Plugin.Active || events == null || weaponData == null) return;
+             try
+@@ -45,7 +47,16 @@ namespace InterplanetaryAI
+                 // No event means no normal defense registered against this weapon was in range (a defense that cannot
+                 // counter this weapon is not listed): "no eligible defense", not "no defense nearby".
+                 bool eligibleInRange = events.Count > __state;
+-                Plugin.Ledger.Record(defender.PlayerID, shooterID, weaponData.id.Value, __result, probabilityFails, noResource, disconnected, energySpent, eligibleInRange);
++                // Where did it land: near one of our cities, and is any defense of ours close by?
++                bool nearCity = false, anyDefenseNearby = false;
++                foreach (BaseBuilding b in defender.BuildingHandler.Buildings)
++                {
++                    if (b == null || b.CurrentState != BaseBuilding.BuildingState.Normal) continue;
++                    float d = (b.transform.position - worldPositionHit).magnitude;
++                    if (b.IsCity) { if (d < b.Radius + 2f) nearCity = true; }
++                    else if (b.BuildingData != null && b.BuildingData.defense_functionality.IsValueSet && d < 6.5f) anyDefenseNearby = true;
++                }
++                Plugin.Ledger.Record(defender.PlayerID, shooterID, weaponData.id.Value, __result, probabilityFails, noResource, disconnected, energySpent, eligibleInRange, nearCity, anyDefenseNearby);
+             }
+             catch (Exception e)
+             {
+diff --git a/AI/Plugin.cs b/AI/Plugin.cs
+index bf30745..c60480c 100644
+--- a/AI/Plugin.cs
++++ b/AI/Plugin.cs
+@@ -22,7 +22,7 @@ namespace InterplanetaryAI
+     {
+         public const string GUID = "pavol.interplanetary.ai";
+         public const string NAME = "Interplanetary EE: Smarter AI";
+-        public const string VERSION = "0.6.1";
++        public const string VERSION = "0.7.0";
+ 
+         internal static ManualLogSource Log;
+ 
+@@ -130,6 +130,10 @@ namespace InterplanetaryAI
+         internal static ConfigEntry<float> DefenseHardCapShare;
+         internal static ConfigEntry<int> ObservedMinImpacts;
+         internal static ConfigEntry<float> DefenseRecoveryShare;
++        internal static ConfigEntry<bool> CoveragePlacement;
++        internal static ConfigEntry<float> CoverageCityValue;
++        internal static ConfigEntry<float> CoverageBand;
++        internal static ConfigEntry<int> CoverageAnchorSteps;
+         internal static ConfigEntry<float> ObservedPriorWeight;
+         internal static ReachabilityMemory Reach;
+         internal static readonly Dictionary<int, float> AccuracyCarry = new Dictionary<int, float>();
+@@ -270,6 +274,11 @@ namespace InterplanetaryAI
+                 "The defense reserve leaves construction at least this share of energy income, so a collapsing AI can still rebuild power. 0 = no floor (v0.6.0 behaviour).");
+             ObservedPriorWeight = Config.Bind("Director", "ObservedPriorWeight", 6f,
+                 "Observed interception is blended with the estimate from remembered defenses as if this many shots had matched the estimate: few shots barely move it.");
++            CoveragePlacement = Config.Bind("Director", "CoveragePlacement", true,
++                "Place each new defense next to the building whose neighbourhood holds the most value no defense of that type covers yet (cities weigh CoverageCityValue). Off = the game's own placement: random city, no memory.");
++            CoverageCityValue = Config.Bind("Director", "CoverageCityValue", 4f, "Weight of a city when judging what a defense covers (an ordinary building is 1).");
++            CoverageBand = Config.Bind("Director", "CoverageBand", 0.6f, "Anchors scoring at least this share of the best are all candidates, picked weighted by score squared, so defenses spread.");
++            CoverageAnchorSteps = Config.Bind("Director", "CoverageAnchorSteps", 25, "Placement attempts near one anchor before another is tried.");
+             WeaponMemoryDecay = Config.Bind("Director", "WeaponMemoryDecay", 0.95f,
+                 "Enemy weapons once seen are remembered while hidden by counterintel, shrinking by this factor per turn. 0 = forget at once (v0.4 behaviour).");
+             DefensesForFullCover = Config.Bind("Director", "DefensesForFullCover", 10f,
+diff --git a/AI/README.md b/AI/README.md
+index 32bdef0..f977095 100644
+--- a/AI/README.md
++++ b/AI/README.md
+@@ -123,6 +123,26 @@ Diagnosis checked by Terra (`docs/reviews/terra-ai-v0.5-diagnosis*.md`), code re
+ | Every own defense gets energy for at least one roll, even before the first attack | `DefenseReserveShare` caps it |
+ | Defense cap 40 -> 60 (migrated once) | `MaxDefenses` |
+ 
++## v0.6 - measure what the defenses do
++
++The v0.5.0 1v1 lost although 21 Kinetic Defenses stood; the logs held no interception outcomes. A hook on
++`PlayerDefenseHandler.IsHitIntercepted` now counts, per action phase, the shots reaching each planet (intercepted, no
++eligible defense in range, unpaid rolls, energy spent) and, per shooter, defender and weapon, how many of its own shots
++were intercepted. It drives: the defense energy reserve (what the defenses really used last turn, up to 80% of income, but
++construction keeps 20% for recovery), the weapon pick (observed pass vs the current target, blended with the estimate from
++remembered defenses), remembered enemy defenses (per enemy, x0.95 a turn), and a Floating Plant when land plants cannot
++be placed. First result (`docs/playtests/2026-10-31-v0.6.0.md`): 53-85% of shots met no eligible defense; when one was in
++range it stopped ~90%. Terra's review: `docs/reviews/terra-ai-v0.6*.md`.
++
++## v0.7 - put the defenses where the buildings are
++
++The game puts every defense within its radius of a random city and never checks what is covered. Now each new defense
++is anchored to the building (with a free power slot) whose neighbourhood holds the most value no defense of that type covers
++yet (cities weigh 4, defenses 0.25, others 1), picked weighted by score squared among the near-best so they spread. The game's
++own placement then runs around that anchor. Falls back to the game's step on any failure. Off with
++`[Director] CoveragePlacement = false`. New log fields: `coverageKinetic`, `citiesCovered`, `cities`, `lastNearCity`,
++`lastNoDefenseNearby`.
++
+ ## Next
+ 
+ - Instrument real outcomes: shot type, interception and damage on both sides (Terra v0.5 #3); why powered weapons fell 57 -> 31 at T26-29.
+diff --git a/AI/Tests/Program.cs b/AI/Tests/Program.cs
+index a07bfd3..b5b529b 100644
+--- a/AI/Tests/Program.cs
++++ b/AI/Tests/Program.cs
+@@ -37,6 +37,7 @@ namespace InterplanetaryAI.Tests
+             DirectorWarAndDefenseRules();
+             DefenseMemoryAndBlindChoice();
+             LedgerAndObservedRules();
++            CoverageRules();
+             WeaponChoiceAvoidsTargetDefenses();
+             PlanetMaterialRunsOut();
+             BlindAiSpreadsFire();
+@@ -293,6 +294,74 @@ namespace InterplanetaryAI.Tests
+             Check(after == 0, "Railguns observed 90% intercepted: Missiles only (" + after + " Railgun picks of 200)");
+         }
+ 
++        private static void CoverageRules()
++        {
++            Point P(float x) { return new Point(x, 0f, 0f); }
++            float r = 5.9f;
++
++            // A defense covers what is strictly inside its radius.
++            var line = new List<Point> { P(0f), P(3f), P(5.9f), P(7f) };
++            bool[] c = DefenseCoverage.Covered(line, new List<Point> { P(0f) }, r);
++            Check(c[0] && c[1] && !c[2] && !c[3], "radius 5.9: 0 and 3 covered, 5.9 (not strictly inside) and 7 not");
++
++            var values = new List<float> { 4f, 1f, 1f, 1f };
++            Check(Math.Abs(DefenseCoverage.UncoveredValue(P(2f), line, values, new[] { false, false, false, false }, r) - 7f) < 1e-4f, "everything within 5.9 of 2 and uncovered: 4+1+1+1 = 7");
++            Check(Math.Abs(DefenseCoverage.UncoveredValue(P(2f), line, values, new[] { true, false, false, false }, r) - 3f) < 1e-4f, "the covered city is not counted again");
++            Check(Math.Abs(DefenseCoverage.CoveredShare(values, new[] { true, false, false, false }) - 4f / 7f) < 1e-4f, "covered share by value: 4 of 7");
++
++            // Two clusters: A (x 0-4, 6 buildings) already covered, B (x 30-34, 4 buildings) not. The anchor is in B.
++            var targets = new List<Point>();
++            var tv = new List<float>();
++            for (int i = 0; i < 6; i++) { targets.Add(P(i * 0.8f)); tv.Add(1f); }
++            for (int i = 0; i < 4; i++) { targets.Add(P(30f + i)); tv.Add(1f); }
++            var anchors = new List<Point> { P(1f), P(2f), P(31f), P(32f) };
++            bool[] covered = DefenseCoverage.Covered(targets, new List<Point> { P(2f) }, r);
++            var rng = new Random(3);
++            int pick = DefenseCoverage.PickAnchor(anchors, targets, tv, covered, r, 0.6f, rng, null);
++            Check(pick == 2 || pick == 3, "anchor next to the uncovered cluster, not the covered one (picked " + pick + ")");
++
++            // A city (value 4) beats three ordinary buildings.
++            var t2 = new List<Point> { P(0f), P(20f), P(21f), P(22f) };
++            var v2 = new List<float> { 4f, 1f, 1f, 1f };
++            Check(DefenseCoverage.PickAnchor(new List<Point> { P(0.5f), P(21f) }, t2, v2, new[] { false, false, false, false }, r, 1.0f, rng, null) == 0,
++                "city 4 > 3 buildings: the city anchor wins with band 1.0");
++
++            Check(DefenseCoverage.PickAnchor(anchors, targets, tv, DefenseCoverage.Covered(targets, new List<Point> { P(2f), P(31f) }, r), r, 0.6f, rng, null) == -1,
++                "everything covered: no anchor");
++            var excluded = new HashSet<int> { 2, 3 };
++            Check(DefenseCoverage.PickAnchor(anchors, targets, tv, covered, r, 0.6f, rng, excluded) == -1, "excluded anchors are skipped (the others cover nothing uncovered)");
++
++            // Greedy over three clusters: three defenses cover all three, one each (native random picks stack).
++            var cl = new List<Point>();
++            var cv = new List<float>();
++            foreach (float x0 in new[] { 0f, 40f, 80f })
++            {
++                for (int i = 0; i < 5; i++) { cl.Add(P(x0 + i)); cv.Add(1f); }
++            }
++            var all = new List<Point>(cl);
++            var defenses = new List<Point>();
++            var used = new HashSet<int>();
++            for (int step = 0; step < 3; step++)
++            {
++                bool[] now = DefenseCoverage.Covered(cl, defenses, r);
++                int a = DefenseCoverage.PickAnchor(all, cl, cv, now, r, 0.9f, rng, null);
++                Check(a >= 0, "step " + step + ": an anchor is found");
++                if (a < 0) break;
++                used.Add((int)(cl[a].X / 40f + 0.5f));
++                defenses.Add(cl[a]);
++            }
++            Check(used.Count == 3, "three defenses went to three different clusters (" + used.Count + ")");
++            Check(DefenseCoverage.CoveredShare(cv, DefenseCoverage.Covered(cl, defenses, r)) > 0.99f, "all three clusters covered after three defenses");
++
++            // Impact geometry counters.
++            var ledger = new DefenseLedger(2);
++            ledger.Record(1, 2, "wea_Railgun", false, 0, 0, 0, 0, false, true, false);
++            ledger.Record(1, 2, "wea_Railgun", true, 0, 0, 0, 100, true, false, true);
++            ledger.Roll(1);
++            DefenderStats d = ledger.LastDefender(1);
++            Check(d.NearCity == 1 && d.NoDefenseNearby == 1 && d.NoEligibleDefense == 1, "impact geometry: 1 near a city, 1 with no defense nearby, 1 with none eligible");
++        }
++
+         private static Dictionary<int, Dictionary<string, int>> Seen(int enemy, string weapon, int count)
+         {
+             var seen = new Dictionary<string, int>();
