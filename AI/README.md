@@ -123,6 +123,26 @@ Diagnosis checked by Terra (`docs/reviews/terra-ai-v0.5-diagnosis*.md`), code re
 | Every own defense gets energy for at least one roll, even before the first attack | `DefenseReserveShare` caps it |
 | Defense cap 40 -> 60 (migrated once) | `MaxDefenses` |
 
+## v0.6 - measure what the defenses do
+
+The v0.5.0 1v1 lost although 21 Kinetic Defenses stood; the logs held no interception outcomes. A hook on
+`PlayerDefenseHandler.IsHitIntercepted` now counts, per action phase, the shots reaching each planet (intercepted, no
+eligible defense in range, unpaid rolls, energy spent) and, per shooter, defender and weapon, how many of its own shots
+were intercepted. It drives: the defense energy reserve (what the defenses really used last turn, up to 80% of income, but
+construction keeps 20% for recovery), the weapon pick (observed pass vs the current target, blended with the estimate from
+remembered defenses), remembered enemy defenses (per enemy, x0.95 a turn), and a Floating Plant when land plants cannot
+be placed. First result (`docs/playtests/2026-10-31-v0.6.0.md`): 53-85% of shots met no eligible defense; when one was in
+range it stopped ~90%. Terra's review: `docs/reviews/terra-ai-v0.6*.md`.
+
+## v0.7 - put the defenses where the buildings are
+
+The game puts every defense within its radius of a random city and never checks what is covered. Now each new defense
+is anchored to the building (with a free power slot) whose neighbourhood holds the most value no defense of that type covers
+yet (cities weigh 4, defenses 0.25, others 1), picked weighted by score squared among the near-best so they spread. The game's
+own placement then runs around that anchor. Falls back to the game's step on any failure. Off with
+`[Director] CoveragePlacement = false`. New log fields: `coverageKinetic`, `citiesCovered`, `cities`, `lastNearCity`,
+`lastNoDefenseNearby`.
+
 ## Next
 
 - Instrument real outcomes: shot type, interception and damage on both sides (Terra v0.5 #3); why powered weapons fell 57 -> 31 at T26-29.

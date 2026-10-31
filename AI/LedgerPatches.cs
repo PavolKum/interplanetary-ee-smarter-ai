@@ -2,9 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using HarmonyLib;
+using UnityEngine;
 using Interplanetary.GameEngine.Actionphase;
 using Interplanetary.GameDataFiles;
 using Interplanetary.PlayerDataManagement;
+using Interplanetary.Prefabs;
 
 namespace InterplanetaryAI
 {
@@ -22,7 +24,7 @@ namespace InterplanetaryAI
             __state = events != null ? events.Count : 0;
         }
 
-        private static void AfterIntercept(PlayerDefenseHandler __instance, int shooterID, WeaponData weaponData, List<ActionphaseBaseEvent> events, bool __result, int __state)
+        private static void AfterIntercept(PlayerDefenseHandler __instance, int shooterID, Vector3 worldPositionHit, WeaponData weaponData, List<ActionphaseBaseEvent> events, bool __result, int __state)
         {
             if (!Plugin.Active || events == null || weaponData == null) return;
             try
@@ -45,7 +47,16 @@ namespace InterplanetaryAI
                 // No event means no normal defense registered against this weapon was in range (a defense that cannot
                 // counter this weapon is not listed): "no eligible defense", not "no defense nearby".
                 bool eligibleInRange = events.Count > __state;
-                Plugin.Ledger.Record(defender.PlayerID, shooterID, weaponData.id.Value, __result, probabilityFails, noResource, disconnected, energySpent, eligibleInRange);
+                // Where did it land: near one of our cities, and is any defense of ours close by?
+                bool nearCity = false, anyDefenseNearby = false;
+                foreach (BaseBuilding b in defender.BuildingHandler.Buildings)
+                {
+                    if (b == null || b.CurrentState != BaseBuilding.BuildingState.Normal) continue;
+                    float d = (b.transform.position - worldPositionHit).magnitude;
+                    if (b.IsCity) { if (d < b.Radius + 2f) nearCity = true; }
+                    else if (b.BuildingData != null && b.BuildingData.defense_functionality.IsValueSet && d < 6.5f) anyDefenseNearby = true;
+                }
+                Plugin.Ledger.Record(defender.PlayerID, shooterID, weaponData.id.Value, __result, probabilityFails, noResource, disconnected, energySpent, eligibleInRange, nearCity, anyDefenseNearby);
             }
             catch (Exception e)
             {

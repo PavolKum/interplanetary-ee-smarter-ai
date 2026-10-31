@@ -11,6 +11,7 @@ using Interplanetary.PlayerDataManagement;
 using Interplanetary.Prefabs;
 using InterplanetaryAI.Brain;
 using TJR_Engine.FileManagement;
+using UnityEngine;
 
 namespace InterplanetaryAI
 {
@@ -49,7 +50,9 @@ namespace InterplanetaryAI
             public int DesiredDefenses;
             public int DefenseTurnCap;
             public float ObservedDefenseNeed;   // v0.6: energy our defenses needed in the last action phase (x margin)
-            public int LastImpacts, LastIntercepted, LastNoEligible, LastUnpaid, LastEnergySpent;
+            public int LastImpacts, LastIntercepted, LastNoEligible, LastUnpaid, LastEnergySpent, LastNearCity, LastNoDefenseNearby;
+            public float CoverageShare;
+            public int CitiesCovered, CitiesTotal;
             public Dictionary<string, float> ObservedPass = new Dictionary<string, float>();
             public string TargetName = "";
             public readonly Dictionary<string, int> TargetDefenses = new Dictionary<string, int>();
@@ -97,6 +100,7 @@ namespace InterplanetaryAI
         internal static void Reset()
         {
             s_states.Clear();
+            s_coverage.Clear();
             LoadDefenseCounters();
         }
 
@@ -177,6 +181,10 @@ namespace InterplanetaryAI
             d.LastIntercepted = last.Intercepted;
             d.LastNoEligible = last.NoEligibleDefense;
             d.LastUnpaid = last.NoResource;
+            d.LastNearCity = last.NearCity;
+            d.LastNoDefenseNearby = last.NoDefenseNearby;
+            try { CoverageShares(core, out d.CoverageShare, out d.CitiesCovered, out d.CitiesTotal); }
+            catch (Exception e) { Plugin.Log.LogError("Coverage log failed: " + e.Message); }
             d.LastEnergySpent = last.EnergySpent;
             d.ObservedDefenseNeed = EconomyDirector.ObservedDefenseNeed(last.EnergySpent, last.NoResource, last.Impacts - last.NoEligibleDefense, 100f, Plugin.DefenseObservedMargin.Value);
             d.DesiredDefenses = EconomyDirector.DesiredDefenses(visibleEnemyWeapons, recentDamage, Plugin.DefensePerEnemyWeapon.Value, Plugin.DamagePerDefense.Value, Plugin.MaxDefenses.Value,
@@ -921,12 +929,146 @@ namespace InterplanetaryAI
         // Prefix on AIBuildingPlacementSearch.step for water-only buildings: place next to our own water
         // buildings, or (plants only, which need no power line) anywhere on the planet. Native picks a random
         // land neighbour, which almost never has water within reach.
+        // ---- coverage-aware defense placement (v0.7) --------------------------------------------------
+        // The game puts every defense within its radius of a random city and never looks at what is already covered
+        // (31 Oct v0.6: 53-85% of shots met no eligible defense). Here a defense is anchored to the building whose
+        // neighbourhood holds the most uncovered value; the game's own placement then runs around that anchor, with the
+        // step count raised to its defense timeout so it places within the defense radius of the anchor and skips the
+        // "near a city" rule. Any failure or nothing-to-cover falls back to the game's own step.
+
+        private sealed class CoverageState
+        {
+            public List<BaseBuilding> Bases;
+            public BaseBuilding Anchor;
+            public int AnchorIndex = -1;
+            public int Steps;
+            public bool GaveUp;
+            public readonly HashSet<int> Excluded = new HashSet<int>();
+        }
+
+        private static readonly Dictionary<AIBuildingPlacementSearch, CoverageState> s_coverage = new Dictionary<AIBuildingPlacementSearch, CoverageState>();
+        private const int NativeDefenseStepTimeout = 100;
+
+        private static float DefenseRadius(BuildingData data)
+        {
+            DefensesData defenses = GameDataFileManager.GetDataFile<DefensesData>();
+            DefenseData defense = defenses != null ? defenses.GetDefense(data.defense_functionality.Value) : null;
+            if (defense == null || !defense.defense_radius.IsValueSet) return 0f;
+            return defense.defense_radius.Value * (defense.defense_scale.IsValueSet ? defense.defense_scale.Value : 1f);
+        }
+
+        private static bool CoverageStep(AIBuildingPlacementSearch search, BuildingData data, AICore core)
+        {
+            if (s_coverage.Count > 300) s_coverage.Clear(); // finished searches are never removed otherwise
+            CoverageState st;
+            if (!s_coverage.TryGetValue(search, out st))
+            {
+                st = new CoverageState();
+                s_coverage[search] = st;
+            }
+            if (st.GaveUp) return false;
+            bool usable = st.Anchor != null && st.Anchor.CurrentState == BaseBuilding.BuildingState.Normal && core.PowerGrid.HasBuildingAvailableSlots(st.Anchor);
+            if (!usable || st.Steps >= Plugin.CoverageAnchorSteps.Value)
+            {
+                if (st.AnchorIndex >= 0) st.Excluded.Add(st.AnchorIndex);
+                if (!PickCoverageAnchor(core, data, st))
+                {
+                    st.GaveUp = true;
+                    return false;
+                }
+            }
+            st.Steps++;
+            int steps = (int)s_searchSteps.GetValue(search);
+            s_searchSteps.SetValue(search, Math.Max(steps, NativeDefenseStepTimeout) + 1);
+            s_placeNextTo.Invoke(search, new object[] { new List<BaseBuilding> { st.Anchor } });
+            return true;
+        }
+
+        private static bool PickCoverageAnchor(AICore core, BuildingData data, CoverageState st)
+        {
+            float radius = DefenseRadius(data);
+            if (radius <= 0f) return false;
+            List<BaseBuilding> all = core.PlayerData.BuildingHandler.Buildings;
+            if (st.Bases == null)
+            {
+                st.Bases = new List<BaseBuilding>();
+                foreach (BaseBuilding b in all)
+                {
+                    if (b == null || b.CurrentState == BaseBuilding.BuildingState.Ruins || b.CurrentState == BaseBuilding.BuildingState.Destroyed) continue;
+                    if (b.Power.IsPotentiallyDistributingPower && core.PowerGrid.HasBuildingAvailableSlots(b)) st.Bases.Add(b);
+                }
+            }
+            if (st.Bases.Count == 0) return false;
+            List<Point> targets = new List<Point>(), sameDefenses = new List<Point>(), anchors = new List<Point>();
+            List<float> values = new List<float>();
+            string id = data.id.Value;
+            foreach (BaseBuilding b in all)
+            {
+                if (b == null || b.CurrentState == BaseBuilding.BuildingState.Ruins || b.CurrentState == BaseBuilding.BuildingState.Destroyed) continue;
+                Vector3 p = b.transform.position;
+                targets.Add(new Point(p.x, p.y, p.z));
+                bool defense = b.BuildingData != null && b.BuildingData.defense_functionality.IsValueSet;
+                values.Add(b.IsCity ? Plugin.CoverageCityValue.Value : (defense ? 0.25f : 1f));
+                if (b.BuildingData != null && b.BuildingData.id.Value == id) sameDefenses.Add(new Point(p.x, p.y, p.z));
+            }
+            foreach (BaseBuilding b in st.Bases)
+            {
+                Vector3 p = b.transform.position;
+                anchors.Add(new Point(p.x, p.y, p.z));
+            }
+            bool[] covered = DefenseCoverage.Covered(targets, sameDefenses, radius);
+            int pick = DefenseCoverage.PickAnchor(anchors, targets, values, covered, radius, Plugin.CoverageBand.Value, Plugin.Rng, st.Excluded);
+            if (pick < 0) return false;
+            st.Anchor = st.Bases[pick];
+            st.AnchorIndex = pick;
+            st.Steps = 0;
+            return true;
+        }
+
+        // Share of our buildings (by value) and number of our cities inside a Kinetic Defense's radius, for the decision log.
+        private static void CoverageShares(AICore core, out float share, out int citiesCovered, out int cities)
+        {
+            share = 0f;
+            citiesCovered = 0;
+            cities = 0;
+            BuildingsData buildings = GameDataFileManager.GetDataFile<BuildingsData>();
+            BuildingData kinetic = buildings.HasBuilding("bui_KineticDefense") ? buildings.GetBuilding("bui_KineticDefense") : null;
+            if (kinetic == null || !kinetic.defense_functionality.IsValueSet) return;
+            float radius = DefenseRadius(kinetic);
+            List<Point> targets = new List<Point>(), defenses = new List<Point>();
+            List<float> values = new List<float>();
+            List<bool> isCity = new List<bool>();
+            foreach (BaseBuilding b in core.PlayerData.BuildingHandler.Buildings)
+            {
+                if (b == null || b.CurrentState == BaseBuilding.BuildingState.Ruins || b.CurrentState == BaseBuilding.BuildingState.Destroyed) continue;
+                Vector3 p = b.transform.position;
+                targets.Add(new Point(p.x, p.y, p.z));
+                values.Add(b.IsCity ? Plugin.CoverageCityValue.Value : 1f);
+                isCity.Add(b.IsCity);
+                if (b.BuildingData != null && b.BuildingData.id.Value == "bui_KineticDefense" && b.CurrentState == BaseBuilding.BuildingState.Normal) defenses.Add(new Point(p.x, p.y, p.z));
+            }
+            bool[] covered = DefenseCoverage.Covered(targets, defenses, radius);
+            share = DefenseCoverage.CoveredShare(values, covered);
+            for (int i = 0; i < isCity.Count; i++)
+            {
+                if (!isCity[i]) continue;
+                cities++;
+                if (covered[i]) citiesCovered++;
+            }
+        }
+
         private static bool SearchStepPrefix(AIBuildingPlacementSearch __instance)
         {
             if (!Plugin.Active || !Plugin.DirectorEnabled.Value) return true;
             try
             {
                 BuildingData data = (BuildingData)s_searchBuilding.GetValue(__instance);
+                if (data != null && Plugin.CoveragePlacement.Value && data.defense_functionality.IsValueSet)
+                {
+                    AICore defenseCore = (AICore)s_searchCore.GetValue(__instance);
+                    if (defenseCore != null && defenseCore.PlayerData.AIPlayer && CoverageStep(__instance, data, defenseCore)) return false;
+                    return true;
+                }
                 if (data == null || !IsWaterOnly(data)) return true;
                 AICore core = (AICore)s_searchCore.GetValue(__instance);
                 if (core == null || !core.PlayerData.AIPlayer) return true;
@@ -1048,7 +1190,8 @@ namespace InterplanetaryAI
                 .Int("energyStart", d.TurnStartEnergy).Int("materialStart", d.TurnStartMaterial)
                 .Int("energyLeft", core.Resources.Energy).Int("materialLeft", core.Resources.Material)
                 .Num("upkeep", d.Upkeep).Int("ownDefenses", d.OwnDefenses).Int("desiredDefenses", d.DesiredDefenses).Int("defenseTurnCap", d.DefenseTurnCap)
-                .Int("lastImpacts", d.LastImpacts).Int("lastIntercepted", d.LastIntercepted).Int("lastNoEligibleDefense", d.LastNoEligible)
+                .Int("lastImpacts", d.LastImpacts).Int("lastIntercepted", d.LastIntercepted).Int("lastNoEligibleDefense", d.LastNoEligible).Int("lastNearCity", d.LastNearCity).Int("lastNoDefenseNearby", d.LastNoDefenseNearby)
+                .Num("coverageKinetic", d.CoverageShare).Int("citiesCovered", d.CitiesCovered).Int("cities", d.CitiesTotal)
                 .Int("lastUnpaidRolls", d.LastUnpaid).Int("lastDefenseEnergy", d.LastEnergySpent).Int("observedNeed", (int)d.ObservedDefenseNeed)
                 .Str("observedPass", ObservedPassText(d.ObservedPass))
                 .Int("upgradesInstalled", upgradesInstalled).Str("weaponTarget", d.TargetName).Map("targetDefenses", d.TargetDefenses)

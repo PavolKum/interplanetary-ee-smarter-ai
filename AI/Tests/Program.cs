@@ -37,6 +37,7 @@ namespace InterplanetaryAI.Tests
             DirectorWarAndDefenseRules();
             DefenseMemoryAndBlindChoice();
             LedgerAndObservedRules();
+            CoverageRules();
             WeaponChoiceAvoidsTargetDefenses();
             PlanetMaterialRunsOut();
             BlindAiSpreadsFire();
@@ -291,6 +292,74 @@ namespace InterplanetaryAI.Tests
                 if (EconomyDirector.PickWeapon(options, new Dictionary<string, int>(), counters, 10f, 4f, 0.6f, rng, railgunStopped).WeaponId == "wea_Railgun") after++;
             }
             Check(after == 0, "Railguns observed 90% intercepted: Missiles only (" + after + " Railgun picks of 200)");
+        }
+
+        private static void CoverageRules()
+        {
+            Point P(float x) { return new Point(x, 0f, 0f); }
+            float r = 5.9f;
+
+            // A defense covers what is strictly inside its radius.
+            var line = new List<Point> { P(0f), P(3f), P(5.9f), P(7f) };
+            bool[] c = DefenseCoverage.Covered(line, new List<Point> { P(0f) }, r);
+            Check(c[0] && c[1] && !c[2] && !c[3], "radius 5.9: 0 and 3 covered, 5.9 (not strictly inside) and 7 not");
+
+            var values = new List<float> { 4f, 1f, 1f, 1f };
+            Check(Math.Abs(DefenseCoverage.UncoveredValue(P(2f), line, values, new[] { false, false, false, false }, r) - 7f) < 1e-4f, "everything within 5.9 of 2 and uncovered: 4+1+1+1 = 7");
+            Check(Math.Abs(DefenseCoverage.UncoveredValue(P(2f), line, values, new[] { true, false, false, false }, r) - 3f) < 1e-4f, "the covered city is not counted again");
+            Check(Math.Abs(DefenseCoverage.CoveredShare(values, new[] { true, false, false, false }) - 4f / 7f) < 1e-4f, "covered share by value: 4 of 7");
+
+            // Two clusters: A (x 0-4, 6 buildings) already covered, B (x 30-34, 4 buildings) not. The anchor is in B.
+            var targets = new List<Point>();
+            var tv = new List<float>();
+            for (int i = 0; i < 6; i++) { targets.Add(P(i * 0.8f)); tv.Add(1f); }
+            for (int i = 0; i < 4; i++) { targets.Add(P(30f + i)); tv.Add(1f); }
+            var anchors = new List<Point> { P(1f), P(2f), P(31f), P(32f) };
+            bool[] covered = DefenseCoverage.Covered(targets, new List<Point> { P(2f) }, r);
+            var rng = new Random(3);
+            int pick = DefenseCoverage.PickAnchor(anchors, targets, tv, covered, r, 0.6f, rng, null);
+            Check(pick == 2 || pick == 3, "anchor next to the uncovered cluster, not the covered one (picked " + pick + ")");
+
+            // A city (value 4) beats three ordinary buildings.
+            var t2 = new List<Point> { P(0f), P(20f), P(21f), P(22f) };
+            var v2 = new List<float> { 4f, 1f, 1f, 1f };
+            Check(DefenseCoverage.PickAnchor(new List<Point> { P(0.5f), P(21f) }, t2, v2, new[] { false, false, false, false }, r, 1.0f, rng, null) == 0,
+                "city 4 > 3 buildings: the city anchor wins with band 1.0");
+
+            Check(DefenseCoverage.PickAnchor(anchors, targets, tv, DefenseCoverage.Covered(targets, new List<Point> { P(2f), P(31f) }, r), r, 0.6f, rng, null) == -1,
+                "everything covered: no anchor");
+            var excluded = new HashSet<int> { 2, 3 };
+            Check(DefenseCoverage.PickAnchor(anchors, targets, tv, covered, r, 0.6f, rng, excluded) == -1, "excluded anchors are skipped (the others cover nothing uncovered)");
+
+            // Greedy over three clusters: three defenses cover all three, one each (native random picks stack).
+            var cl = new List<Point>();
+            var cv = new List<float>();
+            foreach (float x0 in new[] { 0f, 40f, 80f })
+            {
+                for (int i = 0; i < 5; i++) { cl.Add(P(x0 + i)); cv.Add(1f); }
+            }
+            var all = new List<Point>(cl);
+            var defenses = new List<Point>();
+            var used = new HashSet<int>();
+            for (int step = 0; step < 3; step++)
+            {
+                bool[] now = DefenseCoverage.Covered(cl, defenses, r);
+                int a = DefenseCoverage.PickAnchor(all, cl, cv, now, r, 0.9f, rng, null);
+                Check(a >= 0, "step " + step + ": an anchor is found");
+                if (a < 0) break;
+                used.Add((int)(cl[a].X / 40f + 0.5f));
+                defenses.Add(cl[a]);
+            }
+            Check(used.Count == 3, "three defenses went to three different clusters (" + used.Count + ")");
+            Check(DefenseCoverage.CoveredShare(cv, DefenseCoverage.Covered(cl, defenses, r)) > 0.99f, "all three clusters covered after three defenses");
+
+            // Impact geometry counters.
+            var ledger = new DefenseLedger(2);
+            ledger.Record(1, 2, "wea_Railgun", false, 0, 0, 0, 0, false, true, false);
+            ledger.Record(1, 2, "wea_Railgun", true, 0, 0, 0, 100, true, false, true);
+            ledger.Roll(1);
+            DefenderStats d = ledger.LastDefender(1);
+            Check(d.NearCity == 1 && d.NoDefenseNearby == 1 && d.NoEligibleDefense == 1, "impact geometry: 1 near a city, 1 with no defense nearby, 1 with none eligible");
         }
 
         private static Dictionary<int, Dictionary<string, int>> Seen(int enemy, string weapon, int count)

@@ -14,6 +14,8 @@ namespace InterplanetaryAI.Brain
     {
         public int Impacts;            // shots reaching this planet
         public int NoEligibleDefense;  // no normal, matching defense in range: nothing could be rolled
+        public int NearCity;           // impact within a short distance of one of our cities
+        public int NoDefenseNearby;    // impact with no defense of any kind close by (the planet is simply not covered there)
         public int Intercepted;
         public int ProbabilityFails;
         public int NoResource;         // a defense in range could not roll: not enough energy OR material
@@ -44,7 +46,7 @@ namespace InterplanetaryAI.Brain
         }
 
         public void Record(int defenderId, int shooterId, string weaponId, bool intercepted, int probabilityFails, int noResource, int disconnected,
-            int energySpent, bool eligibleDefenseInRange)
+            int energySpent, bool eligibleDefenseInRange, bool nearCity = false, bool anyDefenseNearby = true)
         {
             DefenderStats d;
             if (!m_pendingDefender.TryGetValue(defenderId, out d))
@@ -54,6 +56,8 @@ namespace InterplanetaryAI.Brain
             }
             d.Impacts++;
             if (!eligibleDefenseInRange) d.NoEligibleDefense++;
+            if (nearCity) d.NearCity++;
+            if (!anyDefenseNearby) d.NoDefenseNearby++;
             if (intercepted) d.Intercepted++;
             d.ProbabilityFails += probabilityFails;
             d.NoResource += noResource;

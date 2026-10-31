@@ -22,7 +22,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.6.1";
+        public const string VERSION = "0.7.0";
 
         internal static ManualLogSource Log;
 
@@ -130,6 +130,10 @@ namespace InterplanetaryAI
         internal static ConfigEntry<float> DefenseHardCapShare;
         internal static ConfigEntry<int> ObservedMinImpacts;
         internal static ConfigEntry<float> DefenseRecoveryShare;
+        internal static ConfigEntry<bool> CoveragePlacement;
+        internal static ConfigEntry<float> CoverageCityValue;
+        internal static ConfigEntry<float> CoverageBand;
+        internal static ConfigEntry<int> CoverageAnchorSteps;
         internal static ConfigEntry<float> ObservedPriorWeight;
         internal static ReachabilityMemory Reach;
         internal static readonly Dictionary<int, float> AccuracyCarry = new Dictionary<int, float>();
@@ -270,6 +274,11 @@ namespace InterplanetaryAI
                 "The defense reserve leaves construction at least this share of energy income, so a collapsing AI can still rebuild power. 0 = no floor (v0.6.0 behaviour).");
             ObservedPriorWeight = Config.Bind("Director", "ObservedPriorWeight", 6f,
                 "Observed interception is blended with the estimate from remembered defenses as if this many shots had matched the estimate: few shots barely move it.");
+            CoveragePlacement = Config.Bind("Director", "CoveragePlacement", true,
+                "Place each new defense next to the building whose neighbourhood holds the most value no defense of that type covers yet (cities weigh CoverageCityValue). Off = the game's own placement: random city, no memory.");
+            CoverageCityValue = Config.Bind("Director", "CoverageCityValue", 4f, "Weight of a city when judging what a defense covers (an ordinary building is 1).");
+            CoverageBand = Config.Bind("Director", "CoverageBand", 0.6f, "Anchors scoring at least this share of the best are all candidates, picked weighted by score squared, so defenses spread.");
+            CoverageAnchorSteps = Config.Bind("Director", "CoverageAnchorSteps", 25, "Placement attempts near one anchor before another is tried.");
             WeaponMemoryDecay = Config.Bind("Director", "WeaponMemoryDecay", 0.95f,
                 "Enemy weapons once seen are remembered while hidden by counterintel, shrinking by this factor per turn. 0 = forget at once (v0.4 behaviour).");
             DefensesForFullCover = Config.Bind("Director", "DefensesForFullCover", 10f,
