@@ -138,8 +138,14 @@ namespace InterplanetaryAI.Brain
         public static int AntiNukeDefenses(int cities, bool nukeSeen, int turn, int priorTurn, int perCitySeen, int perCityPrior)
         {
             if (cities <= 0) return 0;
-            if (nukeSeen) return cities * Math.Max(0, perCitySeen);
-            return priorTurn > 0 && turn >= priorTurn ? cities * Math.Max(0, perCityPrior) : 0;
+            return cities * AntiNukePerCity(nukeSeen, turn, priorTurn, perCitySeen, perCityPrior);
+        }
+
+        // Anti-nuke defenses wanted over each city.
+        public static int AntiNukePerCity(bool nukeSeen, int turn, int priorTurn, int perCitySeen, int perCityPrior)
+        {
+            if (nukeSeen) return Math.Max(0, perCitySeen);
+            return priorTurn > 0 && turn >= priorTurn ? Math.Max(0, perCityPrior) : 0;
         }
 
         // Defenses queued per turn: the base rate, or faster to close a gap within catchUpTurns. v0.4.1 built

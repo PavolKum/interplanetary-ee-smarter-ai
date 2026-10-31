@@ -22,7 +22,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.8.0";
+        public const string VERSION = "0.8.1";
 
         internal static ManualLogSource Log;
 
@@ -283,7 +283,7 @@ namespace InterplanetaryAI
             AntiNukePerCity = Config.Bind("Director", "AntiNukePerCity", 2,
                 "Once an enemy Nuclear Missile is seen or lands on us: this many defenses that stop it (Ion in Enhanced) per city, placed over the cities. 0 = off.");
             AntiNukePriorPerCity = Config.Bind("Director", "AntiNukePriorPerCity", 1, "Before any nuke is seen, from AntiNukePriorTurn: this many per city.");
-            AntiNukePriorTurn = Config.Bind("Director", "AntiNukePriorTurn", 28, "Turn from which nukes are expected without having seen one (0 = never).");
+            AntiNukePriorTurn = Config.Bind("Director", "AntiNukePriorTurn", 24, "Turn from which nukes are expected without having seen one (0 = never).");
             AntiNukeCityValue = Config.Bind("Director", "AntiNukeCityValue", 20f, "Weight of a city when placing an anti-nuke defense (an ordinary building is 1).");
             NukeMemoryTurns = Config.Bind("Director", "NukeMemoryTurns", 12, "A Nuclear Missile that hit us keeps the threat on for this many turns.");
             CoverageCityValue = Config.Bind("Director", "CoverageCityValue", 4f, "Weight of a city when judging what a defense covers (an ordinary building is 1).");
