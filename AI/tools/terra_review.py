@@ -79,6 +79,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("name", help="review name, e.g. terra-ai-v0.7 (docs/reviews/<name>.prompt.txt)")
     ap.add_argument("--dir", default="docs/reviews")
+    ap.add_argument("--model", default=MODEL, help="opencode model id, e.g. openai/gpt-6.1-sol")
     ap.add_argument("--retries", type=int, default=1)
     ap.add_argument("--stall", type=int, default=180, help="seconds without any trace before killing")
     ap.add_argument("--timeout", type=int, default=2400)
@@ -99,7 +100,7 @@ def main():
         if not exe:
             print("FAIL: opencode not on PATH")
             return 2
-        cmd = [exe, "run", "-m", MODEL, "--variant", "xhigh", "--agent", "plan", "--dir", ".", prompt]
+        cmd = [exe, "run", "-m", args.model, "--variant", "xhigh", "--agent", "plan", "--dir", ".", prompt]
 
     out_path = os.path.join(args.dir, args.name + ".md")
     err_path = os.path.join(args.dir, args.name + ".err")
