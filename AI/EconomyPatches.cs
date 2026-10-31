@@ -129,6 +129,8 @@ namespace InterplanetaryAI
                     DefensePlanner.Remember(defenseMemory, new Dictionary<int, Dictionary<string, int>> { { enemyId, seenDefenses } }, new List<int> { enemyId },
                         Math.Max(0f, Math.Min(1f, Plugin.WeaponMemoryDecay.Value)), knownDefenses);
                 }
+                // Defense memory of enemies that are gone (eliminated) is dropped.
+                foreach (int goneId in new List<int>(state.DefenseMemory.Keys)) if (!alive.Contains(goneId)) { state.DefenseMemory.Remove(goneId); state.KnownDefenses.Remove(goneId); }
                 // Known weapons = visible now or remembered from earlier sight, per living enemy (fair: our own
                 // past observations; eliminations are public).
                 DefensePlanner.Remember(state.WeaponMemory, state.VisibleByEnemy, alive, Math.Max(0f, Math.Min(1f, Plugin.WeaponMemoryDecay.Value)), state.EnemyWeapons);

@@ -49,7 +49,7 @@ namespace InterplanetaryAI
             public int DesiredDefenses;
             public int DefenseTurnCap;
             public float ObservedDefenseNeed;   // v0.6: energy our defenses needed in the last action phase (x margin)
-            public int LastImpacts, LastIntercepted, LastUncovered, LastNoEnergy, LastEnergySpent;
+            public int LastImpacts, LastIntercepted, LastNoEligible, LastUnpaid, LastEnergySpent;
             public Dictionary<string, float> ObservedPass = new Dictionary<string, float>();
             public string TargetName = "";
             public readonly Dictionary<string, int> TargetDefenses = new Dictionary<string, int>();
@@ -175,11 +175,10 @@ namespace InterplanetaryAI
             DefenderStats last = Plugin.Ledger.LastDefender(me.PlayerID);
             d.LastImpacts = last.Impacts;
             d.LastIntercepted = last.Intercepted;
-            d.LastUncovered = last.Uncovered;
-            d.LastNoEnergy = last.NoEnergy;
+            d.LastNoEligible = last.NoEligibleDefense;
+            d.LastUnpaid = last.NoResource;
             d.LastEnergySpent = last.EnergySpent;
-            d.ObservedDefenseNeed = EconomyDirector.ObservedDefenseNeed(last.EnergySpent, last.NoEnergy, 100f, Plugin.DefenseObservedMargin.Value);
-            d.ObservedPass = Plugin.ObservedMinImpacts.Value > 0 ? Plugin.Ledger.ObservedPassAll(me.PlayerID, Plugin.ObservedMinImpacts.Value) : new Dictionary<string, float>();
+            d.ObservedDefenseNeed = EconomyDirector.ObservedDefenseNeed(last.EnergySpent, last.NoResource, last.Impacts - last.NoEligibleDefense, 100f, Plugin.DefenseObservedMargin.Value);
             d.DesiredDefenses = EconomyDirector.DesiredDefenses(visibleEnemyWeapons, recentDamage, Plugin.DefensePerEnemyWeapon.Value, Plugin.DamagePerDefense.Value, Plugin.MaxDefenses.Value,
                 d.War, d.NonCityBuildings, Plugin.DefenseFloorShare.Value);
 
@@ -204,6 +203,16 @@ namespace InterplanetaryAI
                 if (economy.KnownDefenses.TryGetValue(target.PlayerID, out known))
                 {
                     foreach (KeyValuePair<string, int> pair in known) d.TargetDefenses[pair.Key] = pair.Value;
+                }
+                // Our own shots at THIS target (shots at other opponents say nothing about its defenses), blended with the
+                // estimate from the defenses we remember so a handful of shots do not decide.
+                if (Plugin.ObservedMinImpacts.Value > 0)
+                {
+                    foreach (KeyValuePair<string, int[]> seen in Plugin.Ledger.ObservedAll(me.PlayerID, target.PlayerID, Plugin.ObservedMinImpacts.Value))
+                    {
+                        float prior = EconomyDirector.PassChance(seen.Key, d.TargetDefenses, DefensePlanner.Counters, Plugin.DefensesForFullCover.Value);
+                        d.ObservedPass[seen.Key] = EconomyDirector.BlendedPass(seen.Value[0], seen.Value[1], prior, Plugin.ObservedPriorWeight.Value);
+                    }
                 }
             }
         }
@@ -276,6 +285,7 @@ namespace InterplanetaryAI
                 int reserve = EconomyDirector.DefenseReserve(d.OwnDefenses, d.VisibleEnemyWeapons, d.EnemiesAlive, d.RecentDamage,
                     150f, 125f, Plugin.DefenseReserveShare.Value, d.EnergyIncome, 1f, d.ObservedDefenseNeed, Plugin.DefenseHardCapShare.Value);
                 reserve = Math.Max(0, Math.Min(reserve, core.Resources.Energy));
+                reserve = EconomyDirector.CapReserveForRecovery(reserve, core.Resources.Energy, d.EnergyIncome, Plugin.DefenseRecoveryShare.Value);
                 if (economy.BuyPending && !economy.Bought) reserve = Math.Min(reserve, Math.Max(0, core.Resources.Energy - economy.GoalEnergyCost));
                 core.Resources.Energy -= reserve;
                 core.Construction.ConstructionQueue.AllottedEnergy -= reserve;
@@ -979,6 +989,7 @@ namespace InterplanetaryAI
             string id = data != null ? data.id.Value : "?";
             Increment(d.PlacementFailures, id);
             d.FailedThisTurn.Add(id);
+            if ((id == "bui_SolarPlant" || id == "bui_NuclearPlant") && d.PlantsForUnpowered > 0) d.PlantsForUnpowered--; // v0.6.1: lets the water-plant fallback run
             if (data != null && IsWaterOnly(data)) d.WaterCooldownUntil = GameManager.CurrentTurn + 3;
             // Only the construction queue's own searches were paid for from its allotment.
             if (data == null || s_queueFinder.GetValue(core.Construction.ConstructionQueue) != finder) return;
@@ -1037,8 +1048,8 @@ namespace InterplanetaryAI
                 .Int("energyStart", d.TurnStartEnergy).Int("materialStart", d.TurnStartMaterial)
                 .Int("energyLeft", core.Resources.Energy).Int("materialLeft", core.Resources.Material)
                 .Num("upkeep", d.Upkeep).Int("ownDefenses", d.OwnDefenses).Int("desiredDefenses", d.DesiredDefenses).Int("defenseTurnCap", d.DefenseTurnCap)
-                .Int("lastImpacts", d.LastImpacts).Int("lastIntercepted", d.LastIntercepted).Int("lastUncovered", d.LastUncovered)
-                .Int("lastNoEnergy", d.LastNoEnergy).Int("lastDefenseEnergy", d.LastEnergySpent).Int("observedNeed", (int)d.ObservedDefenseNeed)
+                .Int("lastImpacts", d.LastImpacts).Int("lastIntercepted", d.LastIntercepted).Int("lastNoEligibleDefense", d.LastNoEligible)
+                .Int("lastUnpaidRolls", d.LastUnpaid).Int("lastDefenseEnergy", d.LastEnergySpent).Int("observedNeed", (int)d.ObservedDefenseNeed)
                 .Str("observedPass", ObservedPassText(d.ObservedPass))
                 .Int("upgradesInstalled", upgradesInstalled).Str("weaponTarget", d.TargetName).Map("targetDefenses", d.TargetDefenses)
                 .Int("intelBuildings", d.IntelBuildings + d.IntelThisTurn).Int("blindEnemies", d.BlindEnemies).Int("defenseReserve", d.DefenseReserve)

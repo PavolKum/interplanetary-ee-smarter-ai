@@ -22,7 +22,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.6.0";
+        public const string VERSION = "0.6.1";
 
         internal static ManualLogSource Log;
 
@@ -129,6 +129,8 @@ namespace InterplanetaryAI
         internal static ConfigEntry<float> DefenseObservedMargin;
         internal static ConfigEntry<float> DefenseHardCapShare;
         internal static ConfigEntry<int> ObservedMinImpacts;
+        internal static ConfigEntry<float> DefenseRecoveryShare;
+        internal static ConfigEntry<float> ObservedPriorWeight;
         internal static ReachabilityMemory Reach;
         internal static readonly Dictionary<int, float> AccuracyCarry = new Dictionary<int, float>();
         internal static readonly System.Random Rng = new System.Random();
@@ -264,6 +266,10 @@ namespace InterplanetaryAI
                 "Most of the energy income the observed defense need may reserve. 0 = ignore observed spending (v0.5 behaviour).");
             ObservedMinImpacts = Config.Bind("Director", "ObservedMinImpacts", 12,
                 "Weapon choice trusts the interception rate seen over the last 3 turns once at least this many shots of that weapon reached the target. 0 = never (v0.5 behaviour).");
+            DefenseRecoveryShare = Config.Bind("Director", "DefenseRecoveryShare", 0.2f,
+                "The defense reserve leaves construction at least this share of energy income, so a collapsing AI can still rebuild power. 0 = no floor (v0.6.0 behaviour).");
+            ObservedPriorWeight = Config.Bind("Director", "ObservedPriorWeight", 6f,
+                "Observed interception is blended with the estimate from remembered defenses as if this many shots had matched the estimate: few shots barely move it.");
             WeaponMemoryDecay = Config.Bind("Director", "WeaponMemoryDecay", 0.95f,
                 "Enemy weapons once seen are remembered while hidden by counterintel, shrinking by this factor per turn. 0 = forget at once (v0.4 behaviour).");
             DefensesForFullCover = Config.Bind("Director", "DefensesForFullCover", 10f,

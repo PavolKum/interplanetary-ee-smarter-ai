@@ -29,7 +29,7 @@ namespace InterplanetaryAI
             {
                 PlayerData defender = s_defensePlayer != null ? s_defensePlayer.GetValue(__instance) as PlayerData : null;
                 if (defender == null) return;
-                int probabilityFails = 0, noEnergy = 0, disconnected = 0, energySpent = 0;
+                int probabilityFails = 0, noResource = 0, disconnected = 0, energySpent = 0;
                 for (int i = __state; i < events.Count; i++)
                 {
                     ActionphaseDefenseActivationEvent e = events[i] as ActionphaseDefenseActivationEvent;
@@ -38,12 +38,14 @@ namespace InterplanetaryAI
                     {
                         case ActionphaseDefenseActivationEvent.DefenseStatus.FailedProbality: probabilityFails++; energySpent += e.Energy; break;
                         case ActionphaseDefenseActivationEvent.DefenseStatus.Success: energySpent += e.Energy; break;
-                        case ActionphaseDefenseActivationEvent.DefenseStatus.FailedNoEnergy: noEnergy++; break;
+                        case ActionphaseDefenseActivationEvent.DefenseStatus.FailedNoEnergy: noResource++; break; // energy or material
                         case ActionphaseDefenseActivationEvent.DefenseStatus.FailedDisconneted: disconnected++; break;
                     }
                 }
-                bool covered = events.Count > __state;
-                Plugin.Ledger.Record(defender.PlayerID, shooterID, weaponData.id.Value, __result, probabilityFails, noEnergy, disconnected, energySpent, covered);
+                // No event means no normal defense registered against this weapon was in range (a defense that cannot
+                // counter this weapon is not listed): "no eligible defense", not "no defense nearby".
+                bool eligibleInRange = events.Count > __state;
+                Plugin.Ledger.Record(defender.PlayerID, shooterID, weaponData.id.Value, __result, probabilityFails, noResource, disconnected, energySpent, eligibleInRange);
             }
             catch (Exception e)
             {

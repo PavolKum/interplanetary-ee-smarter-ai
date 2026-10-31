@@ -4,20 +4,20 @@ using System.Collections.Generic;
 namespace InterplanetaryAI.Brain
 {
     // What a player observes about shots reaching a planet: as the defender (its own defense rolls, energy spent,
-    // uncovered impacts) and as the shooter (how many of its shots at a planet were intercepted, per weapon).
-    // Both are events the game shows the player involved. v0.5 could not tell if its 21 Kinetic Defenses were
-    // stopping anything; the 31 Oct 1v1 logs recorded the human's shots but no interception outcomes.
+    // impacts no matching defense could answer) and as the shooter (how many of its shots at one particular
+    // opponent were intercepted, per weapon). v0.5 could not tell if its 21 Kinetic Defenses were stopping anything;
+    // the 31 Oct 1v1 logs recorded the human's shots but no interception outcomes.
     //
     // Counting is per action phase: Roll(player) is called at that player's turn start and turns the shots since
     // its previous turn start (the action phase in between) into "last turn" figures.
     public sealed class DefenderStats
     {
-        public int Impacts;       // shots reaching this planet
-        public int Uncovered;     // no defense in range: nothing could be rolled
+        public int Impacts;            // shots reaching this planet
+        public int NoEligibleDefense;  // no normal, matching defense in range: nothing could be rolled
         public int Intercepted;
         public int ProbabilityFails;
-        public int NoEnergy;      // a defense in range could not roll: not enough energy
-        public int Disconnected;  // a defense in range had no power
+        public int NoResource;         // a defense in range could not roll: not enough energy OR material
+        public int Disconnected;       // a defense in range had no power
         public int EnergySpent;
     }
 
@@ -25,7 +25,7 @@ namespace InterplanetaryAI.Brain
     {
         private readonly Dictionary<int, DefenderStats> m_pendingDefender = new Dictionary<int, DefenderStats>();
         private readonly Dictionary<int, DefenderStats> m_lastDefender = new Dictionary<int, DefenderStats>();
-        // shooter -> weapon -> [impacts, intercepted]
+        // shooter -> "defenderId|weapon" -> [impacts, intercepted]
         private readonly Dictionary<int, Dictionary<string, int[]>> m_pendingShooter = new Dictionary<int, Dictionary<string, int[]>>();
         private readonly Dictionary<int, List<Dictionary<string, int[]>>> m_shooterHistory = new Dictionary<int, List<Dictionary<string, int[]>>>();
         private readonly int m_historyTurns;
@@ -43,8 +43,8 @@ namespace InterplanetaryAI.Brain
             m_shooterHistory.Clear();
         }
 
-        public void Record(int defenderId, int shooterId, string weaponId, bool intercepted, int probabilityFails, int noEnergy, int disconnected,
-            int energySpent, bool covered)
+        public void Record(int defenderId, int shooterId, string weaponId, bool intercepted, int probabilityFails, int noResource, int disconnected,
+            int energySpent, bool eligibleDefenseInRange)
         {
             DefenderStats d;
             if (!m_pendingDefender.TryGetValue(defenderId, out d))
@@ -53,24 +53,26 @@ namespace InterplanetaryAI.Brain
                 m_pendingDefender[defenderId] = d;
             }
             d.Impacts++;
-            if (!covered) d.Uncovered++;
+            if (!eligibleDefenseInRange) d.NoEligibleDefense++;
             if (intercepted) d.Intercepted++;
             d.ProbabilityFails += probabilityFails;
-            d.NoEnergy += noEnergy;
+            d.NoResource += noResource;
             d.Disconnected += disconnected;
             d.EnergySpent += energySpent;
 
+            if (defenderId == shooterId) return; // shots at one's own planet say nothing about an opponent's defenses
             Dictionary<string, int[]> weapons;
             if (!m_pendingShooter.TryGetValue(shooterId, out weapons))
             {
                 weapons = new Dictionary<string, int[]>();
                 m_pendingShooter[shooterId] = weapons;
             }
+            string key = defenderId + "|" + (weaponId ?? "?");
             int[] counts;
-            if (!weapons.TryGetValue(weaponId ?? "?", out counts))
+            if (!weapons.TryGetValue(key, out counts))
             {
                 counts = new int[2];
-                weapons[weaponId ?? "?"] = counts;
+                weapons[key] = counts;
             }
             counts[0]++;
             if (intercepted) counts[1]++;
@@ -103,40 +105,54 @@ namespace InterplanetaryAI.Brain
             return m_lastDefender.TryGetValue(playerId, out d) ? d : new DefenderStats();
         }
 
-        // Share of this shooter's recent shots of one weapon that got through (not intercepted) over the history
-        // window; false when fewer than minImpacts were seen (too little evidence).
-        public bool ObservedPass(int shooterId, string weaponId, int minImpacts, out float pass)
+        // This shooter's recent shots of one weapon at one defender over the history window: [impacts, intercepted].
+        public int[] ObservedCounts(int shooterId, int defenderId, string weaponId)
         {
-            pass = 1f;
+            int[] total = new int[2];
             List<Dictionary<string, int[]>> history;
-            if (!m_shooterHistory.TryGetValue(shooterId, out history)) return false;
-            int impacts = 0, intercepted = 0;
+            if (!m_shooterHistory.TryGetValue(shooterId, out history)) return total;
+            string key = defenderId + "|" + weaponId;
             foreach (Dictionary<string, int[]> turn in history)
             {
                 int[] counts;
-                if (turn.TryGetValue(weaponId, out counts))
+                if (turn.TryGetValue(key, out counts))
                 {
-                    impacts += counts[0];
-                    intercepted += counts[1];
+                    total[0] += counts[0];
+                    total[1] += counts[1];
                 }
             }
-            if (impacts < minImpacts) return false;
-            pass = 1f - intercepted / (float)impacts;
+            return total;
+        }
+
+        // Share of the shots that got through, false when fewer than minImpacts were seen (too little evidence).
+        public bool ObservedPass(int shooterId, int defenderId, string weaponId, int minImpacts, out float pass)
+        {
+            pass = 1f;
+            int[] counts = ObservedCounts(shooterId, defenderId, weaponId);
+            if (counts[0] < Math.Max(1, minImpacts)) return false;
+            pass = 1f - counts[1] / (float)counts[0];
             return true;
         }
 
-        // Observed pass for every weapon id with enough evidence.
-        public Dictionary<string, float> ObservedPassAll(int shooterId, int minImpacts)
+        // Every weapon id this shooter has used on this defender within the window, with its counts.
+        public Dictionary<string, int[]> ObservedAll(int shooterId, int defenderId, int minImpacts)
         {
-            Dictionary<string, float> result = new Dictionary<string, float>();
+            Dictionary<string, int[]> result = new Dictionary<string, int[]>();
             List<Dictionary<string, int[]>> history;
             if (!m_shooterHistory.TryGetValue(shooterId, out history)) return result;
-            HashSet<string> ids = new HashSet<string>();
-            foreach (Dictionary<string, int[]> turn in history) foreach (string id in turn.Keys) ids.Add(id);
-            foreach (string id in ids)
+            string prefix = defenderId + "|";
+            HashSet<string> weapons = new HashSet<string>();
+            foreach (Dictionary<string, int[]> turn in history)
             {
-                float pass;
-                if (ObservedPass(shooterId, id, minImpacts, out pass)) result[id] = pass;
+                foreach (string key in turn.Keys)
+                {
+                    if (key.StartsWith(prefix, StringComparison.Ordinal)) weapons.Add(key.Substring(prefix.Length));
+                }
+            }
+            foreach (string weapon in weapons)
+            {
+                int[] counts = ObservedCounts(shooterId, defenderId, weapon);
+                if (counts[0] >= Math.Max(1, minImpacts)) result[weapon] = counts;
             }
             return result;
         }

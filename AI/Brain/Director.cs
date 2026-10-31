@@ -215,18 +215,41 @@ namespace InterplanetaryAI.Brain
             float energyPerRoll, float damagePerHit, float capShare, float energyIncome, float minRollsPerDefense,
             float observedNeed = 0f, float hardCapShare = 0f)
         {
-            if (ownDefenses <= 0) return 0;
-            float shots = visibleEnemyWeapons / (float)Math.Max(1, enemiesAlive) + (damagePerHit > 0f ? recentDamage / damagePerHit : 0f);
-            shots = Math.Max(shots, minRollsPerDefense * ownDefenses);
-            float planned = Math.Min(shots * energyPerRoll, capShare * energyIncome);
+            // Observed spending can fund a reserve with no defense buildings: city barriers also roll (250 energy each).
+            if (ownDefenses <= 0 && observedNeed <= 0f) return 0;
+            float planned = 0f;
+            if (ownDefenses > 0)
+            {
+                float shots = visibleEnemyWeapons / (float)Math.Max(1, enemiesAlive) + (damagePerHit > 0f ? recentDamage / damagePerHit : 0f);
+                shots = Math.Max(shots, minRollsPerDefense * ownDefenses);
+                planned = Math.Min(shots * energyPerRoll, capShare * energyIncome);
+            }
             float seen = Math.Min(Math.Max(0f, observedNeed), Math.Max(0f, hardCapShare) * energyIncome);
             return (int)Math.Max(0f, Math.Max(planned, seen));
         }
 
-        // Energy our defenses needed last action phase: spent on rolls plus rolls that found no energy.
-        public static float ObservedDefenseNeed(int energySpent, int rollsWithoutEnergy, float energyPerRoll, float margin)
+        // Energy our defenses may have needed last action phase: spent on rolls, plus the rolls that could not be
+        // paid (energy OR material, and every overlapping defense reports one for the same impact), so unpaid rolls
+        // are counted at most once per impact that had an eligible defense. A bounded estimate, not a measurement.
+        public static float ObservedDefenseNeed(int energySpent, int unpaidRolls, int impactsWithEligibleDefense, float energyPerRoll, float margin)
         {
-            return Math.Max(0f, (energySpent + rollsWithoutEnergy * energyPerRoll) * margin);
+            int unpaid = Math.Max(0, Math.Min(unpaidRolls, impactsWithEligibleDefense));
+            return Math.Max(0f, (energySpent + unpaid * energyPerRoll) * margin);
+        }
+
+        // The defense reserve may not eat the budget that lets the AI recover: construction keeps at least
+        // recoveryShare of income (31 Oct v0.6: Turing T33 and X T36 had 0 energy to build with and queued nothing).
+        public static int CapReserveForRecovery(int reserve, int energyAvailable, float energyIncome, float recoveryShare)
+        {
+            float room = energyAvailable - Math.Max(0f, recoveryShare) * energyIncome;
+            return (int)Math.Max(0f, Math.Min(reserve, room));
+        }
+
+        // Observed pass blended with the estimate from remembered defenses: a few shots barely move the prior.
+        public static float BlendedPass(int impacts, int intercepted, float prior, float priorWeight)
+        {
+            float w = Math.Max(0f, priorWeight);
+            return ((impacts - intercepted) + prior * w) / Math.Max(1f, impacts + w);
         }
 
         // Material to keep banked when the planet will run dry soon: enough for the superweapons we plan.
