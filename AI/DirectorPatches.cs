@@ -56,6 +56,7 @@ namespace InterplanetaryAI
             public float ScienceWeight = 1.5f; // v0.9: raised while the research plan is behind schedule
             public float RemainingPlanScience;
             public int WeaponUpgradesThisTurn, WeaponUpgradeMaterial;
+            public readonly Dictionary<BaseBuilding, List<UpgradeEffect>> PlannedWeaponEffects = new Dictionary<BaseBuilding, List<UpgradeEffect>>();
             public bool NukeThreat;          // v0.8: an enemy Nuclear Missile seen/remembered or recently landed
             public int AntiNukeWanted;       // v0.8.1: defenses still missing over the cities (per-city deficit)
             public int AntiNukeOwned;        // working (normal, powered) anti-nuke defenses
@@ -205,7 +206,7 @@ namespace InterplanetaryAI
             {
                 PlayerTechnologyHandler tech = me.TechnologyHandler;
                 float remaining = 0f;
-                foreach (string id in Plugin.ResearchPlanIds)
+                foreach (string id in Plugin.ResearchPlanEnabled.Value ? Plugin.ResearchPlanIds : new List<string>())
                 {
                     GameData_TechData t = tech.GetTechnologyById(id);
                     if (t == null || !t.science_cost.IsValueSet || tech.GetTechnologyCompletionById(id)) continue;
@@ -477,7 +478,7 @@ namespace InterplanetaryAI
             if (d.War && Plugin.WeaponUpgradesEnabled.Value && d.WeaponUpgradesThisTurn < Plugin.WeaponUpgradesPerTurn.Value
                 && d.WeaponUpgradeMaterial < Plugin.WeaponUpgradeShare.Value * d.TurnStartMaterial && !d.FailedThisTurn.Contains("weapon-upgrade"))
             {
-                if (TryWeaponUpgrade(construction, core, d)) return true;
+                if (TryWeaponUpgrade(construction, core, d, upkeepCap)) return true;
                 d.FailedThisTurn.Add("weapon-upgrade");
             }
 
@@ -857,6 +858,47 @@ namespace InterplanetaryAI
             List<AIConstructionEntity> entities = new List<AIConstructionEntity>();
             entities.AddRange(core.ConstructionEvaluation.EnergyGenerationEvaluation.AvailableEnergyGenerationEntitiesByEfficiency);
             entities.AddRange(core.ConstructionEvaluation.MaterialGenerationEvaluation.AvailableMaterialGenerationEntitiesByEfficiency);
+            // v0.9.1 (Terra v0.9 #1): the native evaluations list only projects that raise energy or material, so science
+            // projects (Science Institute etc.) never reached the director. List them from the city data directly.
+            Dictionary<string, float> cityScience = new Dictionary<string, float>(); // city type -> average science per city
+            try
+            {
+                ProjectsData projectsData = GameDataFileManager.GetDataFile<ProjectsData>();
+                PlayerAvailableBuildings availableNow = core.PlayerData.BuildingHandler.AvailableBuildings;
+                float globalScience = core.PlayerData.StatHandler.GetGlobalStatModifier(GlobalStatModifierID.TurnYieldScience);
+                Dictionary<string, int[]> populations = new Dictionary<string, int[]>();
+                Dictionary<string, CityData> types = new Dictionary<string, CityData>();
+                foreach (BaseBuilding city in core.PlayerData.BuildingHandler.GetRemainingCities())
+                {
+                    CityData cd = city.CityData;
+                    if (cd == null) continue;
+                    int[] pop;
+                    if (!populations.TryGetValue(cd.id.Value, out pop))
+                    {
+                        pop = new int[2];
+                        populations[cd.id.Value] = pop;
+                        types[cd.id.Value] = cd;
+                    }
+                    pop[0] += city.Stats.CurrentPopulation;
+                    pop[1]++;
+                }
+                foreach (KeyValuePair<string, CityData> type in types)
+                {
+                    int[] pop = populations[type.Key];
+                    cityScience[type.Key] = pop[0] / (float)Math.Max(1, pop[1]) * FloatValue(type.Value.science_yield_per_population, 0f) * globalScience;
+                    foreach (ProjectData p in projectsData.GetAvailableCityProjects(type.Key))
+                    {
+                        if (p == null || !availableNow.IsProjectAvailable(p)) continue;
+                        if (FloatValue(p.turn_yield_science_multiplier, 1f) <= 1f && FloatValue(p.turn_yield_science_multiplier_global, 1f) <= 1f) continue;
+                        if (AIProjectEntity.IsValidForEnergyGeneration(p) || AIProjectEntity.IsValidForMaterialGeneration(p)) continue; // listed natively
+                        entities.Add(new AIProjectEntity(core, AIConstructionEntityValueType.EnergyGeneration, p, type.Value));
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                ReportOnce("science-projects", e);
+            }
             foreach (AIConstructionEntity entity in entities)
             {
                 AIProjectEntity project = entity as AIProjectEntity;
@@ -874,7 +916,10 @@ namespace InterplanetaryAI
                     + res.EnergyProductionPerTurn * (FloatValue(p.turn_yield_energy_multiplier_global, 1f) - 1f);
                 float materialGain = Value(p.turn_yield_material_addition) * globalMaterial - Value(p.turn_cost_material_addition)
                     + res.MaterialProductionPerTurn * (FloatValue(p.turn_yield_material_multiplier_global, 1f) - 1f);
-                float scienceGain = res.ScienceProductionPerTurn / (float)cities * (FloatValue(p.turn_yield_science_multiplier, 1f) - 1f)
+                // Local multiplier: that city's science (population x its rate, Terra v0.9 #5); global: all science.
+                float thisCityScience;
+                if (!cityScience.TryGetValue(project.City.id.Value, out thisCityScience)) thisCityScience = res.ScienceProductionPerTurn / (float)cities;
+                float scienceGain = thisCityScience * (FloatValue(p.turn_yield_science_multiplier, 1f) - 1f)
                     + res.ScienceProductionPerTurn * (FloatValue(p.turn_yield_science_multiplier_global, 1f) - 1f);
                 if (energyGain * span <= 0f && materialGain * span <= 0f && scienceGain <= 0f) continue;
                 options.Add(new EconOption
@@ -1031,17 +1076,21 @@ namespace InterplanetaryAI
             };
         }
 
-        private static bool TryWeaponUpgrade(AIConstruction construction, AICore core, DirectorState d)
+        // Weapon upgrades (v0.9.1, Terra v0.9): candidates are filtered by budget, the 30% material share and the upkeep
+        // cap before ranking; installed AND this turn's queued upgrades shape the weapon; an upgrade that lowers damage
+        // right away (EnergyCostDown) is taken only when firing energy is what limits the AI; ranked by gain in damage
+        // per firing energy; the next candidate is tried if queueing fails.
+        private static bool TryWeaponUpgrade(AIConstruction construction, AICore core, DirectorState d, float upkeepCap)
         {
             PlayerData me = core.PlayerData;
             UpgradesData upgrades = GameDataFileManager.GetDataFile<UpgradesData>();
             WeaponsData weapons = GameDataFileManager.GetDataFile<WeaponsData>();
             PlayerAvailableBuildings available = me.BuildingHandler.AvailableBuildings;
             float popWeight = Plugin.PopulationDamageWeight.Value;
-            float bestGain = Plugin.WeaponUpgradeMinGain.Value;
-            BaseBuilding bestBuilding = null;
-            UpgradeData bestUpgrade = null;
-            WeaponProfile bestProfile = new WeaponProfile();
+            float globalFiring = me.StatHandler.GetGlobalStatModifier(GlobalStatModifierID.EnergyFiringCost);
+            float materialCap = Plugin.WeaponUpgradeShare.Value * d.TurnStartMaterial;
+            bool upkeepBound = d.Upkeep >= 0.85f * upkeepCap;
+            List<KeyValuePair<float, object[]>> ranked = new List<KeyValuePair<float, object[]>>();
             foreach (BaseBuilding building in me.BuildingHandler.Buildings)
             {
                 if (building == null || building.IsCity || building.CurrentState != BaseBuilding.BuildingState.Normal || building.BuildingData == null) continue;
@@ -1066,32 +1115,55 @@ namespace InterplanetaryAI
                 {
                     if (current != null) profile = WeaponUpgrades.Apply(profile, EffectOf(current));
                 }
+                List<UpgradeEffect> queued;
+                if (d.PlannedWeaponEffects.TryGetValue(building, out queued))
+                {
+                    foreach (UpgradeEffect e in queued) profile = WeaponUpgrades.Apply(profile, e);
+                }
                 foreach (UpgradeData upgrade in upgrades.GetAvailableBuildingUpgrades(data.id.Value))
                 {
                     if (upgrade == null || !available.IsUpgradeAvailable(upgrade) || building.Upgrades.HasUpgrade(upgrade)) continue;
                     string key = building.ObjectId + ":" + upgrade.id.Value;
                     if (d.PlannedUpgradeKeys.Contains(key) || d.FailedThisTurn.Contains("upg:" + key)) continue;
-                    float gain = WeaponUpgrades.Gain(profile, EffectOf(upgrade), popWeight);
-                    if (gain > bestGain)
-                    {
-                        bestGain = gain;
-                        bestBuilding = building;
-                        bestUpgrade = upgrade;
-                        bestProfile = profile;
-                    }
+                    int energy = Value(upgrade.build_cost_energy), material = Value(upgrade.build_cost_material);
+                    if (energy > core.Resources.Energy || material > core.Resources.Material) continue;
+                    if (d.WeaponUpgradeMaterial + material > materialCap) continue;
+                    UpgradeEffect effect = EffectOf(upgrade);
+                    float firingDelta = profile.FiringEnergy * globalFiring * (effect.FiringMul - 1f);
+                    if (firingDelta > 0f && d.Upkeep + firingDelta > upkeepCap) continue;
+                    if (!upkeepBound && WeaponUpgrades.ImmediateDamageRatio(profile, effect, popWeight) < 1f) continue;
+                    float gain = WeaponUpgrades.Gain(profile, effect, popWeight);
+                    if (gain < Plugin.WeaponUpgradeMinGain.Value) continue;
+                    ranked.Add(new KeyValuePair<float, object[]>(gain, new object[] { building, upgrade, effect, firingDelta }));
                 }
             }
-            if (bestUpgrade == null) return false;
-            if (!QueueUpgrade(construction, core, d, bestBuilding, bestUpgrade))
+            ranked.Sort((a, b) => b.Key.CompareTo(a.Key));
+            foreach (KeyValuePair<float, object[]> candidate in ranked)
             {
-                d.FailedThisTurn.Add("upg:" + bestBuilding.ObjectId + ":" + bestUpgrade.id.Value);
-                return false;
+                BaseBuilding building = (BaseBuilding)candidate.Value[0];
+                UpgradeData upgrade = (UpgradeData)candidate.Value[1];
+                UpgradeEffect effect = (UpgradeEffect)candidate.Value[2];
+                float firingDelta = (float)candidate.Value[3];
+                if (!QueueUpgrade(construction, core, d, building, upgrade))
+                {
+                    d.FailedThisTurn.Add("upg:" + building.ObjectId + ":" + upgrade.id.Value);
+                    continue;
+                }
+                List<UpgradeEffect> list;
+                if (!d.PlannedWeaponEffects.TryGetValue(building, out list))
+                {
+                    list = new List<UpgradeEffect>();
+                    d.PlannedWeaponEffects[building] = list;
+                }
+                list.Add(effect);
+                d.WeaponUpgradesThisTurn++;
+                d.WeaponUpgradeMaterial += Value(upgrade.build_cost_material);
+                d.Upkeep += firingDelta;
+                if (firingDelta < 0f) d.FailedThisTurn.Remove("weapon"); // freed upkeep: step 5 may build again
+                Record(d, "weaponupgrade:" + upgrade.id.Value);
+                return true;
             }
-            d.WeaponUpgradesThisTurn++;
-            d.WeaponUpgradeMaterial += Value(bestUpgrade.build_cost_material);
-            d.Upkeep += bestProfile.FiringEnergy * (FloatValue(bestUpgrade.firing_cost_energy_multiplier, 1f) - 1f);
-            Record(d, "weaponupgrade:" + bestUpgrade.id.Value);
-            return true;
+            return false;
         }
 
         private static int FiringCost(BuildingData data)

@@ -48,6 +48,16 @@ namespace InterplanetaryAI.Brain
             };
         }
 
+        // Damage per shot after / before (ignores firing cost): below 1 means the upgrade loses damage right away and only
+        // pays if the freed firing energy buys more weapons (Terra v0.9: EnergyCostDown cuts damage to 0.8).
+        public static float ImmediateDamageRatio(WeaponProfile current, UpgradeEffect u, float populationWeight)
+        {
+            WeaponProfile after = Apply(current, u);
+            float before = Efficiency(current, populationWeight) * Math.Max(1f, current.FiringEnergy);
+            if (before <= 0f) return 1f;
+            return Efficiency(after, populationWeight) * Math.Max(1f, after.FiringEnergy) / before;
+        }
+
         // Relative gain in damage per firing energy (0.6 = +60%).
         public static float Gain(WeaponProfile current, UpgradeEffect u, float populationWeight)
         {

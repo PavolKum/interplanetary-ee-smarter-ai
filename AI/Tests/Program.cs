@@ -450,6 +450,9 @@ namespace InterplanetaryAI.Tests
             var coil = new WeaponProfile { BuildingDamage = 200f, PopulationDamage = 200f, Aoe = 3.6f, FiringEnergy = 200f, Fragments = 3, Projectiles = 1 };
             var coilDown = UpgradeEffect.None(); coilDown.BuildingDamageMul = 0.75f; coilDown.PopulationDamageMul = 0.75f; coilDown.FiringMul = 0.3f; coilDown.FragmentAdd = -1;
             Check(Math.Abs(WeaponUpgrades.Gain(coil, coilDown, 1.5f) - (0.75f * 2f / 3f / 0.3f - 1f)) < 1e-3f, "Coilcannon EnergyCostDown: +67% per energy");
+            Check(Math.Abs(WeaponUpgrades.ImmediateDamageRatio(railgun, costDown, 1.5f) - 0.8f) < 1e-3f, "EnergyCostDown loses 20% damage right away (taken only when upkeep-bound)");
+            Check(Math.Abs(WeaponUpgrades.ImmediateDamageRatio(railgun, popDmg, 1.5f) - 1.4f) < 1e-3f, "PopulationDamage: +40% right away");
+            Check(Math.Abs(WeaponUpgrades.ImmediateDamageRatio(railgun, projectile, 1.5f) - 2f) < 1e-3f, "ProjectileAmount1: 2x damage per shot right away (and 1.8x firing)");
             var single = new WeaponProfile { BuildingDamage = 100f, PopulationDamage = 100f, Aoe = 0f, FiringEnergy = 100f, Fragments = 1, Projectiles = 1 };
             var minus = UpgradeEffect.None(); minus.FragmentAdd = -1;
             Check(WeaponUpgrades.Apply(single, minus).Fragments == 1, "fragments never fall below 1");
