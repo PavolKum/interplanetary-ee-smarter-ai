@@ -24,7 +24,13 @@ then the latest `docs/playtests/` note and `docs/reviews/*-disposition.md`.
 
 Command (read-only, from the repo root; save the prompt under `docs/reviews/` first):
 
-    opencode run -m openai/gpt-6.1-terra --variant xhigh --agent plan --dir . "$(cat docs/reviews/<name>.prompt.txt)" > docs/reviews/<name>.md 2> docs/reviews/<name>.err
+    python AI/tools/terra_review.py <name>
+
+It wraps `opencode run -m openai/gpt-6.1-terra --variant xhigh --agent plan --dir .` with guards, because Terra fails
+silently (31 Oct 2026: two runs hung with nothing written; two exited 0 after two progress notes when a read outside the
+repo was auto-rejected). It kills a run whose trace stays empty for 3 minutes, accepts only a report with a "verdict" line,
+retries once, keeps failed attempts as `<name>.attemptN.*`, and exits non-zero without an accepted report. Put "Stay
+inside this repository" in every prompt, and describe any external file it would want (e.g. the telemetry recorder).
 
 Then verify each finding against `decompiled/`, fix, and write `docs/reviews/<name>-disposition.md`.
 Track record (Oct 2026): every finding held up when checked; it misses domain assumptions it is not told about (v0.2 missed
