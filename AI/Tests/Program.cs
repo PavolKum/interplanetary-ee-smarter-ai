@@ -356,6 +356,15 @@ namespace InterplanetaryAI.Tests
             Check(used.Count == 3, "three defenses went to three different clusters (" + used.Count + ")");
             Check(DefenseCoverage.CoveredShare(cv, DefenseCoverage.Covered(cl, defenses, r)) > 0.99f, "all three clusters covered after three defenses");
 
+            // PickAnchors: one scoring pass, many draws; same band rule; empty when nothing is uncovered.
+            var draws = DefenseCoverage.PickAnchors(anchors, targets, tv, covered, r, 0.6f, rng, 12);
+            Check(draws.Count == 12 && draws.TrueForAll(i => i == 2 || i == 3), "12 draws, all next to the uncovered cluster");
+            var t3 = new List<Point> { P(0f), P(20f), P(21f), P(22f) };
+            var only = DefenseCoverage.PickAnchors(new List<Point> { P(0.5f), P(21f) }, t3, new List<float> { 4f, 1f, 1f, 1f }, new[] { false, false, false, false }, r, 1.0f, rng, 20);
+            Check(only.Count == 20 && only.TrueForAll(i => i == 0), "band 1.0: only the best anchor (the city) is drawn");
+            Check(DefenseCoverage.PickAnchors(anchors, targets, tv, DefenseCoverage.Covered(targets, new List<Point> { P(2f), P(31f) }, r), r, 0.6f, rng, 12).Count == 0,
+                "everything covered: no draws (the adapter then places anywhere safe)");
+
             // Impact geometry counters.
             var ledger = new DefenseLedger(2);
             ledger.Record(1, 2, "wea_Railgun", false, 0, 0, 0, 0, false, true, false);

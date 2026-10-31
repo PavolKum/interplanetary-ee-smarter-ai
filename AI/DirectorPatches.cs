@@ -940,14 +940,13 @@ namespace InterplanetaryAI
         private sealed class CoverageState
         {
             public int Steps;
-            public bool GaveUp;
+            public bool GaveUp;   // only for a building without a defense radius
         }
 
         private static readonly Dictionary<AIBuildingPlacementSearch, CoverageState> s_coverage = new Dictionary<AIBuildingPlacementSearch, CoverageState>();
         private static readonly FieldInfo s_searchResult = AccessTools.Field(typeof(AIBuildingPlacementSearch), "m_result");
         private static readonly MethodInfo s_setSearchComplete = AccessTools.PropertySetter(typeof(AIBuildingPlacementSearch), "IsComplete");
         private const int CoverageCandidatesPerStep = 12;
-        private const int CoverageMaxSteps = 60;
 
         private static float DefenseRadius(BuildingData data)
         {
@@ -972,6 +971,7 @@ namespace InterplanetaryAI
         {
             CoverageModel m = new CoverageModel { Radius = DefenseRadius(data) };
             if (m.Radius <= 0f) return null;
+            BuildingsData buildings = GameDataFileManager.GetDataFile<BuildingsData>();
             string id = data.id.Value;
             List<Point> defenses = new List<Point>();
             List<float> radii = new List<float>();
@@ -994,7 +994,8 @@ namespace InterplanetaryAI
                 Vector3 p = action.BuildingPlacementResult.Result.BuildingWorldPosition;
                 Point point = new Point(p.x, p.y, p.z);
                 m.Targets.Add(point);
-                m.Values.Add(1f);
+                BuildingData queued = buildings.HasBuilding(action.BuildingID) ? buildings.GetBuilding(action.BuildingID) : null;
+                m.Values.Add(queued != null && queued.defense_functionality.IsValueSet ? 0.25f : 1f);
                 if (action.BuildingID == id)
                 {
                     defenses.Add(point);
@@ -1005,10 +1006,13 @@ namespace InterplanetaryAI
             return m;
         }
 
-        // One placement step for a defense: sample candidate spots around buildings with a free power slot, keep the
-        // ones the game accepts, score each by the value it would newly cover, and place at the best. The sampling ring
-        // is the game's own for that anchor, capped at the defense radius AND the power-line reach, so the building
-        // gets connected (Terra v0.7: the native defense branch samples up to the defense radius, beyond line reach).
+        // One placement step for a defense. Candidate spots are sampled around our buildings with a free power slot
+        // (the game's connector ring, capped at the defense radius). Every candidate goes through the game's own full
+        // placement check (TryPlaceBuilding: terrain, collisions, fallout; it places nothing) and the game's exact
+        // power-line rule (PlayerPowerGridHandler: centre distance <= both radii + the longer connector range); the legal
+        // one covering the most uncovered value wins. With nothing left to cover the same safe path places it anywhere
+        // legal and connected: we never hand a defense back to the game's search, which samples past line reach
+        // (Terra v0.7.1). No legal spot this step -> try again next step; the abandon valve refunds a hopeless search.
         private static bool CoverageStep(AIBuildingPlacementSearch search, BuildingData data, AICore core)
         {
             if (s_coverage.Count > 300) s_coverage.Clear(); // finished searches are never removed otherwise
@@ -1019,19 +1023,15 @@ namespace InterplanetaryAI
                 s_coverage[search] = st;
             }
             if (st.GaveUp) return false;
-            if (++st.Steps > CoverageMaxSteps)
-            {
-                st.GaveUp = true; // the game's own search takes over
-                return false;
-            }
-            s_searchSteps.SetValue(search, (int)s_searchSteps.GetValue(search) + 1); // the abandon valve counts every step
-
             CoverageModel model = BuildCoverageModel(core, data);
             if (model == null)
             {
-                st.GaveUp = true;
+                st.GaveUp = true; // not a defense with a radius: nothing to plan
                 return false;
             }
+            st.Steps++;
+            s_searchSteps.SetValue(search, (int)s_searchSteps.GetValue(search) + 1); // the abandon valve counts every step
+
             List<BaseBuilding> bases = new List<BaseBuilding>();
             List<Point> anchors = new List<Point>();
             foreach (BaseBuilding b in core.PlayerData.BuildingHandler.Buildings)
@@ -1042,30 +1042,28 @@ namespace InterplanetaryAI
                 Vector3 p = b.transform.position;
                 anchors.Add(new Point(p.x, p.y, p.z));
             }
-            if (bases.Count == 0)
+            if (bases.Count == 0) return true; // nothing to connect to yet
+
+            List<int> picks = DefenseCoverage.PickAnchors(anchors, model.Targets, model.Values, model.Covered, model.Radius,
+                Plugin.CoverageBand.Value, Plugin.Rng, CoverageCandidatesPerStep);
+            if (picks.Count == 0)
             {
-                st.GaveUp = true;
-                return false;
+                for (int n = 0; n < CoverageCandidatesPerStep; n++) picks.Add(Plugin.Rng.Next(bases.Count)); // all covered: any safe spot
             }
 
             float scale = data.building_scale.IsValueSet ? data.building_scale.Value : 1f;
             float ownRadius = (data.building_radius.IsValueSet ? data.building_radius.Value : 1f) * scale;
-            float ownReach = data.power_connector_range.IsValueSet ? data.power_connector_range.Value : 1000f;
+            float ownReach = data.power_connector_range.IsValueSet ? data.power_connector_range.Value : 0f;
             Vector3 planetCentre = core.Planet.transform.position;
-            float bestScore = 0f;
-            Ray bestRay = new Ray();
+            float bestScore = -1f;
+            BuildingPlacementResult bestResult = null;
             BaseBuilding bestAnchor = null;
-            for (int c = 0; c < CoverageCandidatesPerStep; c++)
+            foreach (int a in picks)
             {
-                int a = DefenseCoverage.PickAnchor(anchors, model.Targets, model.Values, model.Covered, model.Radius, Plugin.CoverageBand.Value, Plugin.Rng, null);
-                if (a < 0)
-                {
-                    st.GaveUp = true; // nothing left to cover near any anchor: let the game place it
-                    return false;
-                }
                 BaseBuilding anchor = bases[a];
+                float lineLimit = ownRadius + anchor.Radius + Math.Max(ownReach, anchor.Power.PowerConnectorRange);
                 float inner = ownRadius + anchor.Radius;
-                float outer = Math.Min((inner + Math.Max(ownReach, anchor.Power.PowerConnectorRange)) * 0.9f, model.Radius);
+                float outer = Math.Min(lineLimit * 0.9f, model.Radius);
                 if (outer < inner) outer = inner;
                 float distance = inner + (float)Plugin.Rng.NextDouble() * (outer - inner);
                 float angle = (float)(Plugin.Rng.NextDouble() * Math.PI * 2.0);
@@ -1073,22 +1071,23 @@ namespace InterplanetaryAI
                 Vector3 down = (planetCentre - world).normalized;
                 world += -down * 2f;
                 Ray ray = new Ray(world, down);
-                if (!core.Construction.IsBuildingPlacementValid(data, core.Planet, ray)) continue;
-                RaycastHit hit;
-                if (!Physics.Raycast(ray, out hit, 1000f, 256)) continue;
-                float score = DefenseCoverage.UncoveredValue(new Point(hit.point.x, hit.point.y, hit.point.z), model.Targets, model.Values, model.Covered, model.Radius);
+                if (!core.Construction.IsBuildingPlacementValid(data, core.Planet, ray)) continue; // overlaps a queued building
+                BuildingPlacementResult placed = core.PlayerData.BuildingHandler.TryPlaceBuilding(data, ray, core.Planet, null);
+                if (placed == null || !placed.IsSuccessful) continue;
+                if (Vector3.Distance(placed.BuildingWorldPosition, anchor.transform.position) > lineLimit) continue; // line would be refused
+                Vector3 at = placed.BuildingWorldPosition;
+                float score = DefenseCoverage.UncoveredValue(new Point(at.x, at.y, at.z), model.Targets, model.Values, model.Covered, model.Radius);
                 if (score > bestScore)
                 {
                     bestScore = score;
-                    bestRay = ray;
+                    bestResult = placed;
                     bestAnchor = anchor;
                 }
             }
-            if (bestAnchor == null) return true; // no acceptable spot this step: try again next step
+            if (bestResult == null) return true; // no legal, connected spot this step: try again next step
 
             AIBuildingPlacementResult result = (AIBuildingPlacementResult)s_searchResult.GetValue(search);
-            result.Result = core.PlayerData.BuildingHandler.TryPlaceBuilding(data, bestRay, core.Planet, result.Result);
-            if (result.Result == null || !result.Result.IsSuccessful) return true;
+            result.Result = bestResult;
             result.PowerGridConnection = bestAnchor.Power;
             s_setSearchComplete.Invoke(search, new object[] { true });
             return true;

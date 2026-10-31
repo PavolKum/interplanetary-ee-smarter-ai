@@ -15,3 +15,15 @@ the unguarded run before it had hung). Fixed in v0.7.1.
 Untested in-game: the placement step (reflection on `m_result`, `IsComplete` setter, `TryPlaceBuilding`). It gives up to the
 game's own step after 60 steps, when nothing uncovered is near any anchor, or on any exception.
 171 checks pass.
+
+## Focused re-review of v0.7.1 (`terra-ai-v0.7.1.md`, fix first) - fixed in v0.7.2
+
+| # | Finding | Disposition |
+|---|---|---|
+| High 1 | Fallback to the game's own defense search reintroduces unconnected defenses | **Fixed**: no fallback for defenses; with nothing left to cover the same safe path places anywhere legal and connected; a hopeless search is refunded by the abandon valve |
+| High 2 | Best-scoring candidate may not be placeable (IsBuildingPlacementValid checks only queued overlaps) | **Fixed**: every candidate runs the game's full TryPlaceBuilding check (places nothing; allocates a collision object only); best legal one wins |
+| Medium 3 | Ring is a margin, not a guarantee of the line | **Fixed**: the game's exact rule is checked on the result (world centre distance <= both radii + longer connector range) |
+| Medium 4 | 12 anchor scorings per step | **Fixed**: `PickAnchors` scores once and draws 12. Frame cost still unmeasured |
+| Low 5 | Queued defenses weighted 1 | **Fixed**: 0.25 like existing defenses |
+
+174 checks. Surviving mutant (removing the early return in PickAnchors) is output-equivalent (all weights zero -> no draws); it only advances the RNG.

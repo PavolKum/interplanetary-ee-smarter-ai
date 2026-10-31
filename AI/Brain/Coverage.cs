@@ -114,6 +114,43 @@ namespace InterplanetaryAI.Brain
             return -1;
         }
 
+        // `count` anchor draws from one scoring pass (Terra v0.7.1: scoring per draw was 12x the work). Same rule as
+        // PickAnchor: anchors scoring at least `band` of the best, weighted by score squared. Empty when no anchor has
+        // anything uncovered near it.
+        public static List<int> PickAnchors(IList<Point> anchors, IList<Point> targets, IList<float> values, bool[] covered, float radius,
+            float band, Random rng, int count)
+        {
+            List<int> picks = new List<int>();
+            float[] weights = new float[anchors.Count];
+            float best = 0f;
+            for (int i = 0; i < anchors.Count; i++)
+            {
+                weights[i] = UncoveredValue(anchors[i], targets, values, covered, radius);
+                best = Math.Max(best, weights[i]);
+            }
+            if (best <= 0f) return picks;
+            float total = 0f;
+            for (int i = 0; i < weights.Length; i++)
+            {
+                weights[i] = weights[i] >= band * best ? weights[i] * weights[i] : 0f;
+                total += weights[i];
+            }
+            for (int n = 0; n < count; n++)
+            {
+                double roll = rng.NextDouble() * total;
+                int chosen = -1;
+                for (int i = 0; i < weights.Length; i++)
+                {
+                    if (weights[i] <= 0f) continue;
+                    chosen = i;
+                    roll -= weights[i];
+                    if (roll <= 0) break;
+                }
+                if (chosen >= 0) picks.Add(chosen);
+            }
+            return picks;
+        }
+
         // Share of the total value that is covered (for the decision log).
         public static float CoveredShare(IList<float> values, bool[] covered)
         {
