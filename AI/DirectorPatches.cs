@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using HarmonyLib;
 using Interplanetary.AI;
+using Interplanetary.AI.Actions;
 using Interplanetary.AI.Construction;
 using Interplanetary.GameDataFiles;
 using Interplanetary.GameEngine;
@@ -938,16 +939,15 @@ namespace InterplanetaryAI
 
         private sealed class CoverageState
         {
-            public List<BaseBuilding> Bases;
-            public BaseBuilding Anchor;
-            public int AnchorIndex = -1;
             public int Steps;
             public bool GaveUp;
-            public readonly HashSet<int> Excluded = new HashSet<int>();
         }
 
         private static readonly Dictionary<AIBuildingPlacementSearch, CoverageState> s_coverage = new Dictionary<AIBuildingPlacementSearch, CoverageState>();
-        private const int NativeDefenseStepTimeout = 100;
+        private static readonly FieldInfo s_searchResult = AccessTools.Field(typeof(AIBuildingPlacementSearch), "m_result");
+        private static readonly MethodInfo s_setSearchComplete = AccessTools.PropertySetter(typeof(AIBuildingPlacementSearch), "IsComplete");
+        private const int CoverageCandidatesPerStep = 12;
+        private const int CoverageMaxSteps = 60;
 
         private static float DefenseRadius(BuildingData data)
         {
@@ -957,6 +957,58 @@ namespace InterplanetaryAI
             return defense.defense_radius.Value * (defense.defense_scale.IsValueSet ? defense.defense_scale.Value : 1f);
         }
 
+        // What a new defense of this id would protect: our buildings plus this turn's queued placements as targets; as
+        // coverage, our working (normal, powered) defenses of the same id with their current radius, plus this turn's
+        // queued ones of that id (Terra v0.7: same-turn placements did not see each other).
+        private sealed class CoverageModel
+        {
+            public readonly List<Point> Targets = new List<Point>();
+            public readonly List<float> Values = new List<float>();
+            public bool[] Covered;
+            public float Radius;
+        }
+
+        private static CoverageModel BuildCoverageModel(AICore core, BuildingData data)
+        {
+            CoverageModel m = new CoverageModel { Radius = DefenseRadius(data) };
+            if (m.Radius <= 0f) return null;
+            string id = data.id.Value;
+            List<Point> defenses = new List<Point>();
+            List<float> radii = new List<float>();
+            foreach (BaseBuilding b in core.PlayerData.BuildingHandler.Buildings)
+            {
+                if (b == null || b.CurrentState == BaseBuilding.BuildingState.Ruins || b.CurrentState == BaseBuilding.BuildingState.Destroyed) continue;
+                Vector3 p = b.transform.position;
+                m.Targets.Add(new Point(p.x, p.y, p.z));
+                bool defense = b.BuildingData != null && b.BuildingData.defense_functionality.IsValueSet;
+                m.Values.Add(b.IsCity ? Plugin.CoverageCityValue.Value : (defense ? 0.25f : 1f));
+                if (b.BuildingData != null && b.BuildingData.id.Value == id && b.CurrentState == BaseBuilding.BuildingState.Normal && b.Power.HasPower)
+                {
+                    defenses.Add(new Point(p.x, p.y, p.z));
+                    radii.Add(b.Stats.Defenses.Radius);
+                }
+            }
+            foreach (AIConstructBuildingAction action in core.Actions.ConstructedBuildings)
+            {
+                if (action == null || action.BuildingPlacementResult == null || action.BuildingPlacementResult.Result == null) continue;
+                Vector3 p = action.BuildingPlacementResult.Result.BuildingWorldPosition;
+                Point point = new Point(p.x, p.y, p.z);
+                m.Targets.Add(point);
+                m.Values.Add(1f);
+                if (action.BuildingID == id)
+                {
+                    defenses.Add(point);
+                    radii.Add(m.Radius);
+                }
+            }
+            m.Covered = DefenseCoverage.Covered(m.Targets, defenses, radii);
+            return m;
+        }
+
+        // One placement step for a defense: sample candidate spots around buildings with a free power slot, keep the
+        // ones the game accepts, score each by the value it would newly cover, and place at the best. The sampling ring
+        // is the game's own for that anchor, capped at the defense radius AND the power-line reach, so the building
+        // gets connected (Terra v0.7: the native defense branch samples up to the defense radius, beyond line reach).
         private static bool CoverageStep(AIBuildingPlacementSearch search, BuildingData data, AICore core)
         {
             if (s_coverage.Count > 300) s_coverage.Clear(); // finished searches are never removed otherwise
@@ -967,61 +1019,78 @@ namespace InterplanetaryAI
                 s_coverage[search] = st;
             }
             if (st.GaveUp) return false;
-            bool usable = st.Anchor != null && st.Anchor.CurrentState == BaseBuilding.BuildingState.Normal && core.PowerGrid.HasBuildingAvailableSlots(st.Anchor);
-            if (!usable || st.Steps >= Plugin.CoverageAnchorSteps.Value)
+            if (++st.Steps > CoverageMaxSteps)
             {
-                if (st.AnchorIndex >= 0) st.Excluded.Add(st.AnchorIndex);
-                if (!PickCoverageAnchor(core, data, st))
-                {
-                    st.GaveUp = true;
-                    return false;
-                }
+                st.GaveUp = true; // the game's own search takes over
+                return false;
             }
-            st.Steps++;
-            int steps = (int)s_searchSteps.GetValue(search);
-            s_searchSteps.SetValue(search, Math.Max(steps, NativeDefenseStepTimeout) + 1);
-            s_placeNextTo.Invoke(search, new object[] { new List<BaseBuilding> { st.Anchor } });
-            return true;
-        }
+            s_searchSteps.SetValue(search, (int)s_searchSteps.GetValue(search) + 1); // the abandon valve counts every step
 
-        private static bool PickCoverageAnchor(AICore core, BuildingData data, CoverageState st)
-        {
-            float radius = DefenseRadius(data);
-            if (radius <= 0f) return false;
-            List<BaseBuilding> all = core.PlayerData.BuildingHandler.Buildings;
-            if (st.Bases == null)
+            CoverageModel model = BuildCoverageModel(core, data);
+            if (model == null)
             {
-                st.Bases = new List<BaseBuilding>();
-                foreach (BaseBuilding b in all)
-                {
-                    if (b == null || b.CurrentState == BaseBuilding.BuildingState.Ruins || b.CurrentState == BaseBuilding.BuildingState.Destroyed) continue;
-                    if (b.Power.IsPotentiallyDistributingPower && core.PowerGrid.HasBuildingAvailableSlots(b)) st.Bases.Add(b);
-                }
+                st.GaveUp = true;
+                return false;
             }
-            if (st.Bases.Count == 0) return false;
-            List<Point> targets = new List<Point>(), sameDefenses = new List<Point>(), anchors = new List<Point>();
-            List<float> values = new List<float>();
-            string id = data.id.Value;
-            foreach (BaseBuilding b in all)
+            List<BaseBuilding> bases = new List<BaseBuilding>();
+            List<Point> anchors = new List<Point>();
+            foreach (BaseBuilding b in core.PlayerData.BuildingHandler.Buildings)
             {
-                if (b == null || b.CurrentState == BaseBuilding.BuildingState.Ruins || b.CurrentState == BaseBuilding.BuildingState.Destroyed) continue;
-                Vector3 p = b.transform.position;
-                targets.Add(new Point(p.x, p.y, p.z));
-                bool defense = b.BuildingData != null && b.BuildingData.defense_functionality.IsValueSet;
-                values.Add(b.IsCity ? Plugin.CoverageCityValue.Value : (defense ? 0.25f : 1f));
-                if (b.BuildingData != null && b.BuildingData.id.Value == id) sameDefenses.Add(new Point(p.x, p.y, p.z));
-            }
-            foreach (BaseBuilding b in st.Bases)
-            {
+                if (b == null || b.CurrentState != BaseBuilding.BuildingState.Normal) continue;
+                if (!b.Power.IsPotentiallyDistributingPower || !core.PowerGrid.HasBuildingAvailableSlots(b)) continue;
+                bases.Add(b);
                 Vector3 p = b.transform.position;
                 anchors.Add(new Point(p.x, p.y, p.z));
             }
-            bool[] covered = DefenseCoverage.Covered(targets, sameDefenses, radius);
-            int pick = DefenseCoverage.PickAnchor(anchors, targets, values, covered, radius, Plugin.CoverageBand.Value, Plugin.Rng, st.Excluded);
-            if (pick < 0) return false;
-            st.Anchor = st.Bases[pick];
-            st.AnchorIndex = pick;
-            st.Steps = 0;
+            if (bases.Count == 0)
+            {
+                st.GaveUp = true;
+                return false;
+            }
+
+            float scale = data.building_scale.IsValueSet ? data.building_scale.Value : 1f;
+            float ownRadius = (data.building_radius.IsValueSet ? data.building_radius.Value : 1f) * scale;
+            float ownReach = data.power_connector_range.IsValueSet ? data.power_connector_range.Value : 1000f;
+            Vector3 planetCentre = core.Planet.transform.position;
+            float bestScore = 0f;
+            Ray bestRay = new Ray();
+            BaseBuilding bestAnchor = null;
+            for (int c = 0; c < CoverageCandidatesPerStep; c++)
+            {
+                int a = DefenseCoverage.PickAnchor(anchors, model.Targets, model.Values, model.Covered, model.Radius, Plugin.CoverageBand.Value, Plugin.Rng, null);
+                if (a < 0)
+                {
+                    st.GaveUp = true; // nothing left to cover near any anchor: let the game place it
+                    return false;
+                }
+                BaseBuilding anchor = bases[a];
+                float inner = ownRadius + anchor.Radius;
+                float outer = Math.Min((inner + Math.Max(ownReach, anchor.Power.PowerConnectorRange)) * 0.9f, model.Radius);
+                if (outer < inner) outer = inner;
+                float distance = inner + (float)Plugin.Rng.NextDouble() * (outer - inner);
+                float angle = (float)(Plugin.Rng.NextDouble() * Math.PI * 2.0);
+                Vector3 world = anchor.transform.TransformPoint(new Vector3((float)Math.Cos(angle), 0f, (float)Math.Sin(angle)) * distance);
+                Vector3 down = (planetCentre - world).normalized;
+                world += -down * 2f;
+                Ray ray = new Ray(world, down);
+                if (!core.Construction.IsBuildingPlacementValid(data, core.Planet, ray)) continue;
+                RaycastHit hit;
+                if (!Physics.Raycast(ray, out hit, 1000f, 256)) continue;
+                float score = DefenseCoverage.UncoveredValue(new Point(hit.point.x, hit.point.y, hit.point.z), model.Targets, model.Values, model.Covered, model.Radius);
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestRay = ray;
+                    bestAnchor = anchor;
+                }
+            }
+            if (bestAnchor == null) return true; // no acceptable spot this step: try again next step
+
+            AIBuildingPlacementResult result = (AIBuildingPlacementResult)s_searchResult.GetValue(search);
+            result.Result = core.PlayerData.BuildingHandler.TryPlaceBuilding(data, bestRay, core.Planet, result.Result);
+            if (result.Result == null || !result.Result.IsSuccessful) return true;
+            result.PowerGridConnection = bestAnchor.Power;
+            s_setSearchComplete.Invoke(search, new object[] { true });
             return true;
         }
 
@@ -1034,8 +1103,8 @@ namespace InterplanetaryAI
             BuildingsData buildings = GameDataFileManager.GetDataFile<BuildingsData>();
             BuildingData kinetic = buildings.HasBuilding("bui_KineticDefense") ? buildings.GetBuilding("bui_KineticDefense") : null;
             if (kinetic == null || !kinetic.defense_functionality.IsValueSet) return;
-            float radius = DefenseRadius(kinetic);
             List<Point> targets = new List<Point>(), defenses = new List<Point>();
+            List<float> radii = new List<float>();
             List<float> values = new List<float>();
             List<bool> isCity = new List<bool>();
             foreach (BaseBuilding b in core.PlayerData.BuildingHandler.Buildings)
@@ -1045,9 +1114,13 @@ namespace InterplanetaryAI
                 targets.Add(new Point(p.x, p.y, p.z));
                 values.Add(b.IsCity ? Plugin.CoverageCityValue.Value : 1f);
                 isCity.Add(b.IsCity);
-                if (b.BuildingData != null && b.BuildingData.id.Value == "bui_KineticDefense" && b.CurrentState == BaseBuilding.BuildingState.Normal) defenses.Add(new Point(p.x, p.y, p.z));
+                if (b.BuildingData != null && b.BuildingData.id.Value == "bui_KineticDefense" && b.CurrentState == BaseBuilding.BuildingState.Normal && b.Power.HasPower)
+                {
+                    defenses.Add(new Point(p.x, p.y, p.z));
+                    radii.Add(b.Stats.Defenses.Radius);
+                }
             }
-            bool[] covered = DefenseCoverage.Covered(targets, defenses, radius);
+            bool[] covered = DefenseCoverage.Covered(targets, defenses, radii);
             share = DefenseCoverage.CoveredShare(values, covered);
             for (int i = 0; i < isCity.Count; i++)
             {

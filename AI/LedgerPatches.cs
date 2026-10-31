@@ -48,13 +48,27 @@ namespace InterplanetaryAI
                 // counter this weapon is not listed): "no eligible defense", not "no defense nearby".
                 bool eligibleInRange = events.Count > __state;
                 // Where did it land: near one of our cities, and is any defense of ours close by?
-                bool nearCity = false, anyDefenseNearby = false;
-                foreach (BaseBuilding b in defender.BuildingHandler.Buildings)
+                // Proxies, for AI defenders only (their own buildings): near = within city radius + 2; a defense "nearby"
+                // = any defense building within its own current radius, any type, powered or not.
+                bool nearCity = false, anyDefenseNearby = true;
+                if (defender.AIPlayer)
                 {
-                    if (b == null || b.CurrentState != BaseBuilding.BuildingState.Normal) continue;
-                    float d = (b.transform.position - worldPositionHit).magnitude;
-                    if (b.IsCity) { if (d < b.Radius + 2f) nearCity = true; }
-                    else if (b.BuildingData != null && b.BuildingData.defense_functionality.IsValueSet && d < 6.5f) anyDefenseNearby = true;
+                    anyDefenseNearby = false;
+                    foreach (BaseBuilding b in defender.BuildingHandler.Buildings)
+                    {
+                        if (b == null || b.CurrentState != BaseBuilding.BuildingState.Normal) continue;
+                        float d2 = (b.transform.position - worldPositionHit).sqrMagnitude;
+                        if (b.IsCity)
+                        {
+                            float r = b.Radius + 2f;
+                            if (d2 < r * r) nearCity = true;
+                        }
+                        else if (b.BuildingData != null && b.BuildingData.defense_functionality.IsValueSet)
+                        {
+                            float r = b.Stats.Defenses.Radius;
+                            if (d2 < r * r) anyDefenseNearby = true;
+                        }
+                    }
                 }
                 Plugin.Ledger.Record(defender.PlayerID, shooterID, weaponData.id.Value, __result, probabilityFails, noResource, disconnected, energySpent, eligibleInRange, nearCity, anyDefenseNearby);
             }

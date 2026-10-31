@@ -49,6 +49,24 @@ namespace InterplanetaryAI.Brain
             return covered;
         }
 
+        // Same, with each defense's own radius (upgrades change it).
+        public static bool[] Covered(IList<Point> targets, IList<Point> defenses, IList<float> radii)
+        {
+            bool[] covered = new bool[targets.Count];
+            for (int i = 0; i < targets.Count; i++)
+            {
+                for (int j = 0; j < defenses.Count; j++)
+                {
+                    if (targets[i].DistanceSquared(defenses[j]) < radii[j] * radii[j])
+                    {
+                        covered[i] = true;
+                        break;
+                    }
+                }
+            }
+            return covered;
+        }
+
         // Value of the targets within `radius` of `center` that no defense covers yet.
         public static float UncoveredValue(Point center, IList<Point> targets, IList<float> values, bool[] covered, float radius)
         {

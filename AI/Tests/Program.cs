@@ -304,6 +304,9 @@ namespace InterplanetaryAI.Tests
             bool[] c = DefenseCoverage.Covered(line, new List<Point> { P(0f) }, r);
             Check(c[0] && c[1] && !c[2] && !c[3], "radius 5.9: 0 and 3 covered, 5.9 (not strictly inside) and 7 not");
 
+            bool[] upgraded = DefenseCoverage.Covered(line, new List<Point> { P(0f), P(40f) }, new List<float> { 7.5f, 5.9f });
+            Check(upgraded[2] && upgraded[3], "per-defense radius: an upgraded defense (7.5) also covers 5.9 and 7");
+            Check(!DefenseCoverage.Covered(line, new List<Point> { P(0f) }, new List<float> { 2f })[1], "per-defense radius 2: 3 is outside");
             var values = new List<float> { 4f, 1f, 1f, 1f };
             Check(Math.Abs(DefenseCoverage.UncoveredValue(P(2f), line, values, new[] { false, false, false, false }, r) - 7f) < 1e-4f, "everything within 5.9 of 2 and uncovered: 4+1+1+1 = 7");
             Check(Math.Abs(DefenseCoverage.UncoveredValue(P(2f), line, values, new[] { true, false, false, false }, r) - 3f) < 1e-4f, "the covered city is not counted again");
