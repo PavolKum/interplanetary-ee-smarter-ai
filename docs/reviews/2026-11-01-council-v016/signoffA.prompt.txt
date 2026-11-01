@@ -1,0 +1,15 @@
+READ-ONLY council sign-off. Do not edit, create or delete any file; no builds, tests or scripts that write. Stay inside this repository. Finish with the complete written reply; its last line must be exactly: END-OF-REPORT
+
+You are council lane A. Your sealed report is docs/reviews/2026-11-01-council-v016/laneA.md and your cross-review is xreviewA.md in the same folder. Lane B's are laneB.md and xreviewB.md. The facilitator's decision record is docs/reviews/2026-11-01-council-v016/decision-record.md, sha256 888f8bb0ad1c1eb6ee38a3164a68a9b1e51ce0a66efb229c7a76d277158d63fe (verify the hash first; if it differs, say so and stop).
+
+Sign-off means: the record faithfully states (a) the agreements, (b) the new facts with their attribution and verification state, (c) every split with YOUR position in words you accept, and (d) nothing you raised as a blocker or non-negotiable is missing. It does NOT mean you agree with every adopted choice; your dissent stays recorded in section 4.
+
+Tasks:
+1. Check every line of the record that states your position, your numbers or your withdrawals against your own reports. List each misstatement with the exact replacement wording you accept. If a split S1-S7 states your view unfairly, rewrite it.
+2. Check that your non-negotiable and every blocker you raised appears and is handled. Name any omission.
+3. Optional, at most 5 lines: factual objections to the facilitator's adopted choices (cite file:line or data), and your view on Pavol-reserved choices P1 and P2. These are recorded, not binding.
+4. The line before END-OF-REPORT is exactly one of:
+   CONFIRM @ 888f8bb0ad1c1eb6ee38a3164a68a9b1e51ce0a66efb229c7a76d277158d63fe
+   OBJECT @ 888f8bb0ad1c1eb6ee38a3164a68a9b1e51ce0a66efb229c7a76d277158d63fe: <one-sentence reason>
+   Object only if the record misstates you or omits a blocker; disagreement with an adopted choice is not grounds to object.
+5. Begin your reply with one line: "Verdict: CONFIRM" or "Verdict: OBJECT".

@@ -1,0 +1,16 @@
+READ-ONLY council sign-off, RETRY on revision 2 (your one retry under the charter). Your earlier sign-off is signoffB.md; section 8 of the record lists every change and its source. Do not edit, create or delete any file; no builds, tests or scripts that write. Stay inside this repository. Finish with the complete written reply; its last line must be exactly: END-OF-REPORT
+
+You are council lane B. Your sealed report is docs/reviews/2026-11-01-council-v016/laneB.md and your cross-review is xreviewB.md in the same folder. Lane A's are laneA.md and xreviewA.md. The facilitator's decision record is docs/reviews/2026-11-01-council-v016/decision-record-r2.md, sha256 ef9657c24b94b45b97658e06300f8b00406bf9d10f6b00e4f546ca4d27404691 (verify the hash first; if it differs, say so and stop).
+
+Sign-off means: the record faithfully states (a) the agreements, (b) the new facts with their attribution and verification state, (c) every split with YOUR position in words you accept, and (d) nothing you raised as a blocker or non-negotiable is missing. It does NOT mean you agree with every adopted choice; your dissent stays recorded in section 4.
+
+Tasks:
+1. Check every line of the record that states your position, your numbers or your withdrawals against your own reports. List each misstatement with the exact replacement wording you accept. If a split S1-S7 states your view unfairly, rewrite it.
+2. Check that your non-negotiable and every blocker you raised appears and is handled. Name any omission.
+3. Optional, at most 5 lines: factual objections to the facilitator's adopted choices (cite file:line or data), and your view on Pavol-reserved choices P1 and P2. These are recorded, not binding.
+4. The line before END-OF-REPORT is exactly one of:
+   CONFIRM @ ef9657c24b94b45b97658e06300f8b00406bf9d10f6b00e4f546ca4d27404691
+   OBJECT @ ef9657c24b94b45b97658e06300f8b00406bf9d10f6b00e4f546ca4d27404691: <one-sentence reason>
+   Object only if the record misstates you or omits a blocker; disagreement with an adopted choice is not grounds to object.
+5. Begin your reply with one line: "Verdict: CONFIRM" or "Verdict: OBJECT".
+6. Item 6 now carries a forward defense-funding signal taken from lane A's sign-off note that you have not reviewed. In task 3, give it ACCEPT / AMEND / REJECT with one evidence sentence (recorded, not grounds to object unless it breaks a fairness rule).

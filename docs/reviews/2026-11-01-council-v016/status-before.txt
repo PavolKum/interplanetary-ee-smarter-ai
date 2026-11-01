@@ -1,0 +1,5 @@
+?? docs/original-mechanics.md
+?? docs/reviews/2026-11-01-council-v016/
+?? docs/reviews/terra-ai-v0.10.attempt1.md
+?? docs/reviews/terra-ai-v0.6-diagnosis.attempt2.md
+?? docs/ruleset/

@@ -1,0 +1,10 @@
+READ-ONLY council cross-review. Do not edit, create or delete any file; no builds, tests or writing scripts. Stay inside this repository. Finish with the complete written review; its last line must be exactly: END-OF-REPORT
+
+You are council lane B. Your own sealed report is docs/reviews/2026-11-01-council-v016/laneB.md (keep it as is; corrections go in a separate amendment section below). The other lane's sealed report is docs/reviews/2026-11-01-council-v016/laneA.md. Charter and constraints: docs/reviews/2026-11-01-council-v016/charter.md and packet.md (fair information, strict visible-only targeting, human-like accuracy, no cheats). Issue matrix: docs/reviews/2026-11-01-council-v016/issues.md. Data: docs/playtests/data/v0153-*, v0151-*, v0141-*; game source decompiled/; ruleset docs/ruleset/embedded/enhanced/.
+
+Tasks:
+1. Cross-review lane A's report. For each of its proposals (A1-A6) and each load-bearing evidence claim: re-derive it yourself from the data, code or ruleset (do not adopt its numbers on authority; show your check), then return ACCEPT, AMEND or REJECT with evidence and severity. Mark blockers separately. If you cannot reproduce something, say UNVERIFIED.
+2. Amendments to your own report: anything the other report shows you got wrong, as a separate section naming what it supersedes.
+3. Round-1 ballot on issues I1-I10 (issues.md): for each, ACCEPT / AMEND / REJECT, one evidence sentence, and exact replacement wording where you amend. Then state one non-negotiable and why.
+4. The unassigned lens (lane C was recused): Pavol's weak windows in his usual build-out (match 16: v0153 human telemetry; compare v0141 and v0151) and how he is likely to adapt after the AI exploits them. One short section.
+5. Your final combined v0.16 list: at most 6 changes, ranked, drawn from either report, each with its next-match gate (logged quantity and threshold). Say which existing config values or code paths change.

@@ -1,0 +1,30 @@
+READ-ONLY council lane. Do not edit, create or delete any file, and do not run builds, tests or scripts that write files. Stay inside this repository: any path outside it is auto-rejected and ends your run. Work independently: you will not see the other lanes' reports until you have sealed yours. Finish with the complete written report, and make its last line exactly: END-OF-REPORT
+
+# Council question
+Pavol (a strong human player) has beaten the Smarter AI mod in 16 matches. Design v0.16: what change set gives the AI the best chance to beat his usual build-out, within the constraints below? Charter: docs/reviews/2026-11-01-council-v016/charter.md. Frozen target: commit 24683684 (HEAD), plus the git-ignored inputs decompiled/ (game source, authoritative), docs/playtests/data/ (v0141-*, v0151-*, v0153-*) and docs/strategy/.
+
+# Constraints (non-negotiable)
+- Fair information only. Strict visible-only city targeting (Pavol's decision, 1 Nov): once a city leaves sight with SeenBuildingsShadows off (match 16 ran with it off), nothing is remembered. Counterintel stays a hard counter. No hidden enemy values.
+- Human-like accuracy (level 1: 0.7; guided weapons 0.85). No resource cheats, no rule changes.
+- The AI is a BepInEx/Harmony mod over the native AI: AI/ (Plugin.cs config, DirectorPatches.cs economy director, StrategyPatches.cs + Brain/Strategy.cs fire/hold, Patches.cs targeting/accuracy, Brain/*.cs pure rules with tests in AI/Tests/Program.cs).
+
+# Evidence to use (verify, do not trust summaries)
+- Scoreboard docs/PROGRESS.md. Playtest notes: docs/playtests/2026-11-01-v0.13.1.md, -v0.14.1.md, -v0.15.1.md, -v0.15.3.md (the latest: Pavol's usual build-out, human won T33).
+- Raw data: docs/playtests/data/v0153-ai-decisions.jsonl (AI decisions: e=economy/director/strategy/accuracy/strike/cover-search/research/target), v0153-human-telemetry.jsonl (human state per turn), same for v0151 (Pavol's early-fire variant, won T39) and v0141 (strongest AI economy, Bolide, won by human T29).
+- Tools you may run (read-only): python AI/tools/human_summary.py <telemetry.jsonl>, python AI/tools/human_turns.py <telemetry.jsonl>.
+- Game data: docs/ruleset/embedded/enhanced/*.csv (buildings, weapons, defenses, upgrades, projects, tech tree). Game-math study: docs/strategy/game-math-report.md. Mechanics notes: docs/original-mechanics.md.
+- Prior reviews: docs/reviews/sol-ai-v0.15.md, sol-ai-v0.15.2.md, their -disposition.md files, docs/reviews/audit-v0.14.2-synthesis.md.
+
+# Match 16 in one paragraph (verify against data)
+Pavol: pure economy to T22 (energy/turn 1.8k T12, 3.3k T16, 7.2k T20, 29.4k T25), counterintel first (Data Security Hubs from T12; multiplier x2 -> x16-27 by T22-T26), 30 Kinetic by T24, no Ion, then 20 -> 40 Railguns in T23-T26 and 105-120-shot volleys, Lasers at T30. AI (Labo): energy 1.9k T12, 4.6k T16, 7.3k T20, 12.8k T25; saw all 5 cities T8-T22 then none (counterintel), so all 45 Missile strikes went to the native random point; 30 Telescopes chasing intel; per-city Ion search placed 1 of 28 (ring around cities built over); weapons capped by firing upkeep (0.4 x income) to +2-4 a turn; material stock 15-47k unused; held T21-T23 at 90-100% expected through; first volley T24; human's T26 volley destroyed 2 cities and 17 of 24 weapons.
+
+# Report format
+1. Scope and frozen target you actually read; anything you could not access.
+2. Verdict in two sentences: the main reason the AI loses to this build-out, and the one change most likely to flip it. Confidence (High/Medium/Low, uncalibrated).
+3. Evidence: observations with file:line or jsonl line/turn references and your own computations (show the arithmetic).
+4. Proposals: at most 6, ranked. For each give: id (A1/B1/C1...), mechanism (what the AI does differently, where in code), why it is fair, expected effect with numbers, risk or counter-play, and a falsifiable gate for the next match (a logged quantity and threshold).
+5. What NOT to do (tempting changes that would not help or would break constraints).
+6. The strongest reason your analysis may be wrong.
+7. Unknowns and what single measurement would resolve each.
+
+YOUR LENS (lane A, game math and economy): derive from decompiled/ and the ruleset what economy curve, build order and research order the AI needs to match or beat Pavol's curve (match 16 and v0141), when military spending should start, and the energy/material balance (why material piled up 15-47k while weapons were capped by energy upkeep). Quantify: compute the curves, costs, yields and firing costs yourself and show the arithmetic.
