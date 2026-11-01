@@ -53,6 +53,7 @@ namespace InterplanetaryAI.Tests
             V011Rules();
             V012Rules();
             V013Rules();
+            V014Rules();
 
             Console.WriteLine(s_checks + " checks, " + s_failures + " failed");
             return s_failures == 0 ? 0 : 1;
@@ -333,6 +334,68 @@ namespace InterplanetaryAI.Tests
         }
 
         // ---- v0.13: repair, no extraction in material glut, weapons ranked per slot -------------------
+        private static void V014Rules()
+        {
+            StrategySettings s = new StrategySettings { OverlapDefenses = 20f };
+            // Attrition: the arsenal shrank by >= max(2, 15%) since last turn (v0.13.1 Guts: 26 -> 17 -> 11 -> 10 held).
+            Check(Strategy.Attrition(17, 26, s), "26 -> 17 live weapons is attrition");
+            Check(Strategy.Attrition(22, 26, s), "26 -> 22 (4 >= 3.9) is attrition");
+            Check(!Strategy.Attrition(23, 26, s), "26 -> 23 (3 < 3.9) is not");
+            Check(!Strategy.Attrition(9, 10, s), "10 -> 9 (1 < AttritionMinLoss 2) is not");
+            Check(!Strategy.Attrition(4, 5, s), "5 -> 4: 20% but 1 < AttritionMinLoss 2 is not");
+            Check(!Strategy.Attrition(17, -1, s), "unknown last turn is not");
+            Check(!Strategy.Attrition(30, 26, s), "a growing arsenal is not");
+            Check(!Strategy.Attrition(17, 26, new StrategySettings { AttritionLossShare = 0f }), "share 0 = off");
+            Func<int, List<SalvoTarget>> human = kinetic => new List<SalvoTarget> { Target(0, 1f, kinetic, true, 6000f) };
+            StrategyDecision held = Strategy.Decide(25, true, Railguns(17), 1f, human(19), EnhancedCounters(), -1000, 1, 17, s, 0, 17);
+            Check(!held.Fire && held.Reason == "below-saturation", "17 weapons, steady arsenal: hold; got " + held.Reason);
+            StrategyDecision shrinking = Strategy.Decide(25, true, Railguns(17), 1f, human(19), EnhancedCounters(), -1000, 1, 17, s, 0, 26);
+            Check(shrinking.Fire && shrinking.Reason == "attrition", "17 weapons, 26 last turn: fire them; got " + shrinking.Reason);
+            StrategyDecision pulse = Strategy.Decide(25, true, Railguns(17), 1f, human(19), EnhancedCounters(), 24, 0, 17, s, 0, 26);
+            Check(pulse.Fire && pulse.Reason == "attrition", "attrition fires even right after a strike; got " + pulse.Reason);
+            StrategyDecision peace = Strategy.Decide(15, false, Railguns(17), 1f, human(19), EnhancedCounters(), -1000, 0, 17, s, 0, 26);
+            Check(!peace.Fire, "no attrition fire before war");
+            Check(!Strategy.ShouldAbort(1, 17, "attrition", s), "an attrition strike is not called off");
+            Check(Strategy.ShouldAbort(1, 17, "saturated", s), "a saturated strike with 1 aimed weapon still is");
+
+            // Aim budget: clamp(total / all AI weapons, 30, 100) steps per weapon per frame (AIWeaponTargeting.BeginTurn).
+            Check(AimBudget.StepsPerWeapon(1200, 26) == 46, "1v1, 26 weapons: 46 steps; got " + AimBudget.StepsPerWeapon(1200, 26));
+            Check(AimBudget.StepsPerWeapon(1200, 11) == 100, "11 weapons: clamped to 100");
+            Check(AimBudget.StepsPerWeapon(1200, 60) == 30, "60 weapons: floor 30");
+            Check(AimBudget.StepsPerWeapon(2600, 26) == 100, "a 2600 budget gives 26 weapons the full 100");
+            Check(AimBudget.StepsPerWeapon(1200, 0) == 30, "no weapons: the floor");
+
+            // Placement backoff across turns (v0.13.1: Offshore Mines 6 abandoned at T14, 13 of 14 at T18).
+            var none = new Dictionary<string, int>();
+            var t14 = PlacementBackoff.Next(none, new Dictionary<string, int> { { "off", 6 } }, new Dictionary<string, int> { { "off", 6 } }, 14, 5);
+            Check(PlacementBackoff.Throttled(t14, "off", 18), "6 abandoned at T14: still throttled at T18");
+            Check(!PlacementBackoff.Throttled(t14, "off", 20), "released after 5 turns");
+            Check(!PlacementBackoff.Throttled(t14, "mine", 15), "other types untouched");
+            var t15 = PlacementBackoff.Next(t14, none, none, 15, 5);
+            Check(PlacementBackoff.Throttled(t15, "off", 18), "a turn without trying keeps the throttle");
+            var placed = PlacementBackoff.Next(t14, none, new Dictionary<string, int> { { "off", 2 } }, 15, 5);
+            Check(!PlacementBackoff.Throttled(placed, "off", 16), "two placed with no failure: released");
+            var partial = PlacementBackoff.Next(t14, new Dictionary<string, int> { { "off", 3 } }, new Dictionary<string, int> { { "off", 4 } }, 16, 5);
+            Check(PlacementBackoff.Throttled(partial, "off", 21), "1 of 4 placed, 3 failed: throttle renewed to T21");
+            var small = PlacementBackoff.Next(none, new Dictionary<string, int> { { "off", 2 } }, new Dictionary<string, int> { { "off", 2 } }, 14, 5);
+            Check(!PlacementBackoff.Throttled(small, "off", 15), "2 failures do not start a backoff");
+            Check(PlacementBackoff.Next(none, new Dictionary<string, int> { { "off", 6 } }, none, 14, 0).Count == 0, "turns 0 = off");
+
+            // A queued plant's connectors open slots: at T1 (0 free slots) the economy can buy a Mine after one plant.
+            Check(EconomyDirector.PlantSlots(true, 3) == 2 && EconomyDirector.PlantSlots(true, 4) == 3, "Solar 3 -> 2 slots, Nuclear 4 -> 3");
+            Check(EconomyDirector.PlantSlots(false, 2) == 0, "a Mine opens none");
+            EconOption mineT1 = new EconOption { Id = "mine", Kind = OptionKind.Producer, Energy = 300, Material = 300, MaterialGain = 100f, NeedsSlot = true };
+            EconOption solarT1 = new EconOption { Id = "solar", Kind = OptionKind.Plant, Energy = 250, Material = 400, EnergyGain = 100f };
+            // v0.13.1 Guts T1 after one Solar Plant: 750 energy and 200 material income, 500 energy and 950 material left.
+            EconomyBalance t1 = new EconomyBalance { EnergyIncome = 850, MaterialIncome = 200, EnergyBudget = 500, MaterialBudget = 950 };
+            Check(EconomyDirector.Best(new List<EconOption> { mineT1, solarT1 }, t1, 0) == solarT1, "0 slots: only another plant (v0.13.1: 3 Solar Plants)");
+            Check(EconomyDirector.Best(new List<EconOption> { mineT1, solarT1 }, t1, EconomyDirector.PlantSlots(true, 3)) == mineT1,
+                "the first plant's 2 slots: a Mine");
+
+            // Defense floor 0.25 (v0.13.1 T21: 140 non-city buildings, blind): 35 wanted, not 21.
+            Check(EconomyDirector.DesiredDefenses(0, 0f, 0.4f, 500f, 60, true, 140, 0.25f) == 35, "floor 0.25 x 140 = 35");
+        }
+
         private static void V013Rules()
         {
             // Repair: weapons, then defenses, then power; most damaged first; within budgets and count.

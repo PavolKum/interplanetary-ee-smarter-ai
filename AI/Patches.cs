@@ -56,8 +56,34 @@ namespace InterplanetaryAI
 
         // ---- who to shoot ----------------------------------------------------------------------
 
+        // v0.14: the trajectory search budget. AIWeaponTargeting.BeginTurn gives every AI weapon clamp(1200 / all AI weapons,
+        // 30, 100) search steps per frame (1200 = AICore's processor resources over all AIs). v0.13.1 1v1: 11-17 weapons
+        // (100 steps each) aimed 11/11 and 17/17; 26 weapons (46 each) aimed 6/26 and 9/26 on the two strike turns.
+        // AiProcessorResources replaces the 1200; the per-weapon clamp stays. 0 = the game's budget.
+        private static readonly FieldInfo s_trajectoryCalculator = AccessTools.Field(typeof(AIWeaponTargeting), "m_trajectoryCalculator");
+
+        private static void ApplyProcessorBudget(AIWeaponTargeting targeting)
+        {
+            int total = Plugin.AiProcessorResources.Value;
+            if (total <= 0) return;
+            try
+            {
+                int ais = Math.Max(1, PlayerManager.GetAiPlayerAmount());
+                targeting.ProcessorResourcesThisFrame = Math.Max(1, total / ais);
+                int perWeapon = AimBudget.StepsPerWeapon(total, PlayerManager.GetTotalAIWeaponAmount());
+                Interplanetary.Weapons.Trajectories.TrajectoryCalculator calc =
+                    s_trajectoryCalculator != null ? s_trajectoryCalculator.GetValue(targeting) as Interplanetary.Weapons.Trajectories.TrajectoryCalculator : null;
+                if (calc != null) calc.ReallocateDesignatedStepAmount(perWeapon);
+            }
+            catch (Exception e)
+            {
+                ReportOnce("processor-budget", e);
+            }
+        }
+
         private static void TargetingBeginTurnPostfix(AIWeaponTargeting __instance)
         {
+            if (Plugin.Active) ApplyProcessorBudget(__instance);
             if (!Plugin.Active || !Plugin.SmartTargeting.Value) return;
             try
             {

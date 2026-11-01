@@ -28,6 +28,7 @@ namespace InterplanetaryAI
             public int ReleasedEnergy;
             public bool Reported;               // this turn's firing has been counted
             public int LastCommitId = -1;       // the enemy the weapons were pointed at last turn
+            public int LastWeapons = -1;        // v0.14: live weapons counted at last turn's decision (attrition)
             public bool Aborted;                // this turn's strike was called off at firing time
             public StrategyDecision Decision;
             public readonly HashSet<int> PlanetsSeen = new HashSet<int>(); // enemies whose buildings our intel has seen
@@ -142,7 +143,7 @@ namespace InterplanetaryAI
             }
             if (state.Turn == turn) return; // decided already (a turn start seen twice)
             if (turn < state.Turn) { state.LastStrikeTurn = -1000; state.HoldTurns = 0; state.LastCommitId = -1; } // an earlier save
-            if (turn != state.Turn + 1) state.LastCommitId = -1; // aim memory only from the turn just before
+            if (turn != state.Turn + 1) { state.LastCommitId = -1; state.LastWeapons = -1; } // memory only from the turn just before
             state.Turn = turn;
             state.Decision = null;
             state.ReleasedEnergy = 0;
@@ -217,7 +218,8 @@ namespace InterplanetaryAI
                     });
                 }
                 decision = Strategy.Decide(turn, war, salvo, accuracy, targets, DefensePlanner.Counters, state.LastStrikeTurn, state.HoldTurns,
-                    weapons, Plugin.StrategyCfg, state.LastCommitId);
+                    weapons, Plugin.StrategyCfg, state.LastCommitId, state.LastWeapons);
+                state.LastWeapons = weapons;
                 if (!decision.Fire && !HoldAvailable)
                 {
                     decision.Fire = true; // cannot stop the shots: do not take their energy either

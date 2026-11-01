@@ -180,6 +180,13 @@ namespace InterplanetaryAI.Brain
             return value / Math.Max(1f, cost);
         }
 
+        // v0.14: free power slots a newly placed plant adds: its connectors minus the one that links it to the grid (BuildingsData
+        // power_connectors: Solar and Floating 3, Nuclear 4). Buildings that do not distribute power add none.
+        public static int PlantSlots(bool distributesPower, int connectors)
+        {
+            return distributesPower ? Math.Max(0, connectors - 1) : 0;
+        }
+
         // v0.10: material is in glut when the banked stock is several turns of what this turn's energy can spend.
         public static bool IsMaterialGlut(int materialStock, int energyBudget, float ratio, int minimum)
         {

@@ -22,7 +22,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.13.1";
+        public const string VERSION = "0.14.0";
 
         internal static ManualLogSource Log;
 
@@ -100,6 +100,9 @@ namespace InterplanetaryAI
         internal static ConfigEntry<float> AbortBelowShare;
         internal static ConfigEntry<int> AbortBelowWeapons;
         internal static ConfigEntry<float> AimingWindowSeconds;
+        internal static ConfigEntry<float> AttritionLossShare;
+        internal static ConfigEntry<int> AiProcessorResources;
+        internal static ConfigEntry<int> PlacementBackoffTurns;
         internal static ConfigEntry<float> ReachFailMinShare;
         internal static ConfigEntry<int> MaxWeapons;
         internal static ConfigEntry<int> MaterialHorizonTurn;
@@ -142,7 +145,23 @@ namespace InterplanetaryAI
         // Ultracapacitors) ahead of Uranium Alloys. Ultrasonic Projection (Shield Defense) added; it was missing.
         // v0.13: Orbital Assembly (Missile) at #13, right after the telescope tech: v0.12.1 AIs researched it at T21-22, after
         // war began at T20, and filled the 30-weapon cap with Railguns into a Kinetic-only human.
+        // v0.14: the yield techs that upgrade every existing building right after Experimental Matter Control, in the winner's
+        // order (v0.13.1 human: Microwave + Nanostructuring T13, Robotic Mining T14, Magnetic Radiation Shielding T15, then
+        // energy 3.8k -> 8.0k and material 8.3k -> 13.1k in one turn at T16). Guts had them at T19-T22 and Robotic Mining
+        // never (it was #25). Magnetic Radiation Shielding also unlocks the Data Security Hub (counterintel) and the first
+        // Railgun projectile upgrade; Ultracapacitors (the second) right after Orbital Assembly.
         private const string DefaultResearchPlan =
+            "tec_MassBiochemicalProcessing,tec_MolecularRecycling,tec_SmartGrids,tec_SuperTensileMaterials,tec_QuantumComputing,"
+            + "tec_4thGenNuclearReactors,tec_LosslessEnergyTransfer,tec_2ndGenComposites,tec_MaglevServos,tec_ExperimentalMatterControl,"
+            + "tec_Nanostructuring,tec_MicrowaveEnergyTranmission,tec_RoboticMining,tec_MagneticRadiationShielding,tec_SelfAdjustingOptics,"
+            + "tec_AdvancedSignalProcessing,tec_OrbitalAssembly,tec_Ultracapacitors,tec_PlasmaChannelInduction,tec_UraniumAlloys,"
+            + "tec_EmDrives,tec_ThermonuclearWarheads,tec_InductionCoils,tec_ZeroReluctanceEngineering,tec_MagneticSaturationElimination,"
+            + "tec_EarlyWarningAI,tec_UltrasonicProjection,tec_Metamaterials,tec_DesignerNanomaterials,tec_VerticalFarming,"
+            + "tec_QuantumCommunications,tec_AtmosphericInterferenceMitigation,tec_CompositeHeatCells,tec_Octaazacubane,tec_AdvancedGenetics,"
+            + "tec_SelfHealingMaterials,tec_AITargetTracking,tec_MultiChainedStages,tec_GammaRayLasers,tec_MassDrivers";
+
+        // v0.13 default, replaced on load if the config still holds it unchanged.
+        private const string V013ResearchPlan =
             "tec_MassBiochemicalProcessing,tec_MolecularRecycling,tec_SmartGrids,tec_SuperTensileMaterials,tec_QuantumComputing,"
             + "tec_4thGenNuclearReactors,tec_LosslessEnergyTransfer,tec_2ndGenComposites,tec_MaglevServos,tec_ExperimentalMatterControl,"
             + "tec_SelfAdjustingOptics,tec_AdvancedSignalProcessing,tec_OrbitalAssembly,tec_Nanostructuring,tec_MicrowaveEnergyTranmission,"
@@ -304,10 +323,11 @@ namespace InterplanetaryAI
             ResearchPlan = Config.Bind("Research", "Plan", DefaultResearchPlan,
                 "Tech IDs in order. Default (v0.3): the human's order from the 31 Oct 2026 win, economy first (material and energy projects, yield upgrades, Offshore Mine, Floating Plant), then the Nuclear Missile line, then the rest.");
             if (ResearchPlan.Value == V02ResearchPlan || ResearchPlan.Value == V03ResearchPlan || ResearchPlan.Value == V04ResearchPlan
-                || ResearchPlan.Value == V09ResearchPlan || ResearchPlan.Value == V010ResearchPlan || ResearchPlan.Value == V011ResearchPlan)
+                || ResearchPlan.Value == V09ResearchPlan || ResearchPlan.Value == V010ResearchPlan || ResearchPlan.Value == V011ResearchPlan
+                || ResearchPlan.Value == V013ResearchPlan)
             {
                 ResearchPlan.Value = DefaultResearchPlan;
-                Log.LogInfo("Research plan: replaced an unchanged older default with the v0.13 default.");
+                Log.LogInfo("Research plan: replaced an unchanged older default with the v0.14 default.");
             }
             if (Math.Abs(GrudgeWeight.Value - 0.6f) < 1e-4f)
             {
@@ -379,6 +399,10 @@ namespace InterplanetaryAI
             AbortBelowWeapons = Config.Bind("Strategy", "AbortBelowWeapons", 3, "v0.12: call a strike off when fewer than this many weapons found a trajectory onto the committed target.");
             AimingWindowSeconds = Config.Bind("Strategy", "AimingWindowSeconds", 40f,
                 "v0.12: on a strike turn the AI keeps searching for trajectories until this many seconds after its turn began, or the human ends the turn if later (the game: 20). Hold turns keep 20. Longer = more weapons aimed, more waiting between turns. 20-120.");
+            AttritionLossShare = Config.Bind("Strategy", "AttritionLossShare", 0.15f,
+                "v0.14: fire whatever aims when our live weapons dropped since last turn by at least this share (and at least 2), pulse or not. v0.13.1 Guts held at 26 -> 17 -> 11 -> 10 weapons while the human destroyed them unfired. 0 = off.");
+            AiProcessorResources = Config.Bind("Strategy", "AiProcessorResources", 0,
+                "v0.14: the AI's per-frame work budget for trajectory and placement searches (the game: 200). Higher = more weapons find a trajectory in the same time, at some frame-rate cost. 0 = the game's value. 200-1000.");
             ReachFailMinShare = Config.Bind("Strategy", "ReachFailMinShare", 0.5f,
                 "v0.12: a weapon that found no trajectory marks its target unreachable only when at least this share of the weapons aimed at that target found one (otherwise the search ran out of time).");
             RollEnergyShare = Config.Bind("Strategy", "RollEnergyShare", 0.5f, "Share of a target's energy income assumed left for its defense rolls (150 energy each).");
@@ -450,8 +474,17 @@ namespace InterplanetaryAI
             }
             DefensesPerTurn = Config.Bind("Director", "DefensesPerTurn", 3,
                 "Defenses queued per turn when on target; more when behind (see DefenseCatchUpTurns).");
-            DefenseFloorShare = Config.Bind("Director", "DefenseFloorShare", 0.15f,
-                "At war, defenses wanted are at least this share of our own non-city buildings, seen threat or not. 0 = off (v0.4 behaviour).");
+            DefenseFloorShare = Config.Bind("Director", "DefenseFloorShare", 0.25f,
+                "At war, defenses wanted are at least this share of our own non-city buildings, seen threat or not. 0 = off (v0.4 behaviour). v0.14: 0.25 (v0.13.1: the human held 23 Kinetic per ~100 buildings before attacking; the AI 15 per 99 at 0.15).");
+            if (migrated.Value == "0.13")
+            {
+                if (Math.Abs(DefenseFloorShare.Value - 0.15f) < 1e-4f)
+                {
+                    DefenseFloorShare.Value = 0.25f;
+                    Log.LogInfo("DefenseFloorShare: replaced the unchanged default 0.15 with 0.25 (once).");
+                }
+                migrated.Value = "0.14";
+            }
             DefenseCatchUpTurns = Config.Bind("Director", "DefenseCatchUpTurns", 3,
                 "When behind on defenses, queue enough per turn to close the gap in this many turns.");
             DefenseObservedMargin = Config.Bind("Director", "DefenseObservedMargin", 1.25f,
@@ -483,6 +516,8 @@ namespace InterplanetaryAI
             CounterintelPerBuildings = Config.Bind("Director", "CounterintelPerBuildings", 12,
                 "One counterintel building (Data Security Hub) wanted per this many non-city buildings; hides them from enemy intel. 0 = none.");
             CounterintelFromTurn = Config.Bind("Director", "CounterintelFromTurn", 8, "First turn counterintel is built.");
+            PlacementBackoffTurns = Config.Bind("Director", "PlacementBackoffTurns", 5,
+                "v0.14: a building type whose placements gave up 3+ times in a turn is queued at most twice a turn for this many turns, unless one of its placements succeeds (v0.13.1: 6 Offshore Mines abandoned at T14, then 13 more at T18). 0 = only the next turn (v0.11).");
             PlacementStepCap = Config.Bind("Director", "PlacementStepCap", 1500,
                 "Placement attempts before a building search gives up and its cost is returned (native searches never give up).");
 
@@ -569,6 +604,7 @@ namespace InterplanetaryAI
             StrategyCfg.BigSalvoShots = Math.Max(StrategyCfg.MinPassingShots, BigSalvoShots.Value);
             StrategyCfg.AbortBelowShare = Clamp01(AbortBelowShare.Value);
             StrategyCfg.AbortBelowWeapons = Math.Max(1, AbortBelowWeapons.Value);
+            StrategyCfg.AttritionLossShare = Clamp01(AttritionLossShare.Value);
 
             Build.Growth = BuildPlanner.Parse(GrowthWeights.Value, Build.Growth);
             Build.Pressure = BuildPlanner.Parse(PressureWeights.Value, Build.Pressure);

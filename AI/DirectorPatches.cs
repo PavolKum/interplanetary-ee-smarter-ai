@@ -109,6 +109,8 @@ namespace InterplanetaryAI
             public int AimedWeapons;                // own weapons needing a trajectory (not lasers, not superweapons), queued included
             // across turns
             public int WaterCooldownUntil;
+            // v0.14: building type -> last turn it stays throttled (at most two queued a turn) after 3+ placements gave up
+            public Dictionary<string, int> BackoffUntil = new Dictionary<string, int>();
         }
 
         private static readonly Dictionary<int, DirectorState> s_states = new Dictionary<int, DirectorState>();
@@ -205,7 +207,9 @@ namespace InterplanetaryAI
                     lastAbandons[pair.Key] = before >= 3 && pair.Value >= 1 ? Math.Max(3, pair.Value) : pair.Value;
                 }
             }
-            d = new DirectorState { WaterCooldownUntil = waterCooldown, Turn = turn, LastEnergyLeft = lastLeft, LastEnergyBudget = lastBudget };
+            Dictionary<string, int> backoff = turn > d.Turn ? NextBackoff(d, Plugin.PlacementBackoffTurns.Value) : new Dictionary<string, int>();
+            d = new DirectorState { WaterCooldownUntil = waterCooldown, Turn = turn, LastEnergyLeft = lastLeft, LastEnergyBudget = lastBudget,
+                BackoffUntil = backoff };
             foreach (KeyValuePair<string, int> pair in lastAbandons) d.AbandonedLastTurn[pair.Key] = pair.Value;
             s_states[core.PlayerData.PlayerID] = d;
 
@@ -1284,7 +1288,21 @@ namespace InterplanetaryAI
             int abandoned, queuedNow;
             d.AbandonedLastTurn.TryGetValue(id, out abandoned);
             d.QueuedById.TryGetValue(id, out queuedNow);
-            return abandoned >= 3 && queuedNow >= 2;
+            bool backoff = PlacementBackoff.Throttled(d.BackoffUntil, id, d.Turn);
+            return (abandoned >= 3 || backoff) && queuedNow >= 2;
+        }
+
+        private static Dictionary<string, int> NextBackoff(DirectorState last, int turns)
+        {
+            if (last == null) return new Dictionary<string, int>();
+            return PlacementBackoff.Next(last.BackoffUntil, last.PlacementFailures, last.QueuedById, last.Turn, turns);
+        }
+
+        // v0.14: free power slots a newly placed plant adds: its connectors minus the one that links it to the grid.
+        private static int PlantSlots(BuildingData data)
+        {
+            if (data == null) return 0;
+            return EconomyDirector.PlantSlots(data.distribute_power.IsValueSet && data.distribute_power.Value, Value(data.power_connectors));
         }
 
         private static bool QueueBuilding(AIConstruction construction, AICore core, DirectorState d, BuildingData data, string role)
@@ -1298,6 +1316,13 @@ namespace InterplanetaryAI
             {
                 d.SlotsLeft--;
                 construction.PowerSlotNeed++; // keep the native bookkeeping consistent
+            }
+            else
+            {
+                // v0.14: a queued plant brings its connectors (one links it to the grid). v0.13.1 Guts started T1 with 0 free
+                // slots, so no Mine could be queued and the economy bought 3 Solar Plants with 1,200 of its 1,350 material
+                // (then 750-975 energy unspent each turn T2-T6); the human built 1 Solar Plant + 1 Mine.
+                d.SlotsLeft += PlantSlots(data);
             }
             Record(d, role + ":" + data.id.Value);
             Increment(d.QueuedById, data.id.Value);
@@ -1847,7 +1872,11 @@ namespace InterplanetaryAI
             core.Resources.Energy += energy;
             core.Resources.Material += material;
             if (!(data.distribute_power.IsValueSet && data.distribute_power.Value)) d.SlotsLeft++;
-            else d.PowerEnergySpent = Math.Max(0, d.PowerEnergySpent - energy); // a refunded plant was not spent on energy
+            else
+            {
+                d.PowerEnergySpent = Math.Max(0, d.PowerEnergySpent - energy); // a refunded plant was not spent on energy
+                d.SlotsLeft -= PlantSlots(data); // v0.14: its connectors were counted when it was queued
+            }
             d.Refunds++;
             d.Reopened = true;
             Record(d, "abandoned:" + id);

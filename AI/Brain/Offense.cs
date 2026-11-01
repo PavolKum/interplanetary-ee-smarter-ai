@@ -82,4 +82,18 @@ namespace InterplanetaryAI.Brain
             return baseWeight * Math.Max(1f, Math.Min(Math.Max(1f, maxMultiplier), ratio));
         }
     }
+
+    // v0.14: trajectory search steps per frame for each AI weapon, as AIWeaponTargeting.BeginTurn computes them from the
+    // total processor budget (the game: 1200 over all AIs): clamp(total / all AI weapons, 30, 100).
+    public static class AimBudget
+    {
+        public const int MinSteps = 30, MaxSteps = 100;
+
+        public static int StepsPerWeapon(int totalBudget, int totalAiWeapons)
+        {
+            if (totalAiWeapons <= 0) return MinSteps;
+            int steps = (int)Math.Round(totalBudget / (double)totalAiWeapons); // Mathf.RoundToInt: half to even
+            return Math.Max(MinSteps, Math.Min(MaxSteps, steps));
+        }
+    }
 }

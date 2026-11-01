@@ -191,4 +191,48 @@ namespace InterplanetaryAI.Brain
             return weakestCity;
         }
     }
+
+    // v0.14: placement throttle across turns. v0.11 carried a failing type's throttle (at most two queued a turn) only to the
+    // turn just after, so a type with no room left was tried again in bulk later (v0.13.1: 6 Offshore Mines abandoned at T14,
+    // 14 queued and 13 abandoned at T18). A type whose placements gave up 3+ times on `lastTurn` is throttled to
+    // lastTurn + turns; a type queued with no failure that turn is released.
+    public static class PlacementBackoff
+    {
+        public static Dictionary<string, int> Next(IDictionary<string, int> backoffUntil, IDictionary<string, int> failures,
+            IDictionary<string, int> queued, int lastTurn, int turns)
+        {
+            Dictionary<string, int> next = new Dictionary<string, int>();
+            if (turns <= 0) return next;
+            if (backoffUntil != null)
+            {
+                foreach (KeyValuePair<string, int> pair in backoffUntil)
+                {
+                    if (pair.Value > lastTurn) next[pair.Key] = pair.Value;
+                }
+            }
+            if (failures != null)
+            {
+                foreach (KeyValuePair<string, int> pair in failures)
+                {
+                    if (pair.Value >= 3) next[pair.Key] = lastTurn + turns;
+                }
+            }
+            if (queued != null)
+            {
+                foreach (KeyValuePair<string, int> pair in queued)
+                {
+                    int failed = 0;
+                    if (failures != null) failures.TryGetValue(pair.Key, out failed);
+                    if (pair.Value > 0 && failed == 0) next.Remove(pair.Key);
+                }
+            }
+            return next;
+        }
+
+        public static bool Throttled(IDictionary<string, int> backoffUntil, string id, int turn)
+        {
+            int until;
+            return backoffUntil != null && backoffUntil.TryGetValue(id, out until) && until >= turn;
+        }
+    }
 }
