@@ -1516,6 +1516,21 @@ namespace InterplanetaryAI.Tests
             IntelBidState st2 = new IntelBidState { CreditedEnergy = 270000f, SpentEnergy = 14000f, FailedBatches = 1, BatchBought = 3, BatchTurn = 19 };
             IntelBudget.Evaluate(st2, 21, 0, 1, 2, 2, 0.1f, 0.5f);
             Check(st2.Stopped, "two failures and over half the budget spent: stop-loss");
+            // Terra v0.16.1 #3: four failures stop regardless of spend (the 50% spend can be out of reach).
+            IntelBidState st3 = new IntelBidState { CreditedEnergy = 270000f, SpentEnergy = 5000f, FailedBatches = 3, BatchBought = 8, BatchTurn = 25 };
+            IntelBudget.Evaluate(st3, 27, 0, 1, 2, 2, 0.1f, 0.5f);
+            Check(st3.Stopped, "four failed pushes stop even under half the budget");
+
+            // Terra v0.16.1 #2: planet-pool drain guard (match 17 T24: pool 193k, drain ~22k, 12 turns to T36).
+            Check(!PlanetGuard.DrainAllowed(22000f, 2000f, 0, 193000, 12), "22k a turn already exceeds a 193k pool over 12 turns");
+            Check(PlanetGuard.DrainAllowed(8000f, 1000f, 0, 193000, 12), "8k + 1k a turn fits 193k over 12 turns");
+            Check(!PlanetGuard.DrainAllowed(14000f, 6000f, 6, 193000, 12), "14k x 12 + 6k x 6 = 204k > 193k: refused");
+            Check(PlanetGuard.DrainAllowed(12000f, 6000f, 6, 193000, 12), "a 6-turn project counts only its 6 turns: 144k + 36k = 180k fits");
+            Check(PlanetGuard.DrainAllowed(5000f, 9999f, 0, -1, 12), "unlimited planet: no guard");
+
+            // Terra v0.16.1 #4: reserve only placeable Jamming copies.
+            Check(SlotPolicy.LeavesRoom(true, 0, 1), "no city can take another Jamming: nothing reserved");
+            Check(!SlotPolicy.LeavesRoom(true, 2, 2), "two placeable copies wanted, 2 free: another project waits");
         }
 
         private static void Check(bool condition, string what)

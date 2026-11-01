@@ -37,6 +37,7 @@ namespace InterplanetaryAI.Brain
         public float IncomeEnergy = float.NaN;
         public float IncomeMaterial = float.NaN;
         public float IncomeScience = float.NaN;   // v0.16 (Sol v0.16 M2)
+        public float PlanetDrainAdd;              // v0.16.1 (Terra #2): planet cost this option adds per turn
 
         public float NextTurnEnergy { get { return float.IsNaN(IncomeEnergy) ? EnergyGain : IncomeEnergy; } }
         public float NextTurnMaterial { get { return float.IsNaN(IncomeMaterial) ? MaterialGain : IncomeMaterial; } }

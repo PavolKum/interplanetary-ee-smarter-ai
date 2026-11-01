@@ -118,6 +118,9 @@ namespace InterplanetaryAI
             public int RareMaterialActive;         // v0.16.1: Rare Material Synthesis installed or queued
             public bool EmcDone;
             public int ExtractionBlocked;          // v0.16.1: extraction options refused by the planet guard
+            public float PlanetDrain;              // v0.16.1: max(planet cost, production), this turn's queued additions included
+            public int PlanetPool = -1;            // remaining planet material (-1 unlimited)
+            public int JammingEligibleCities;      // living cities without Jamming (one copy per city)
             public int ProjectSlotsFree, ProjectSlotsTotal;
             public string ProjectSlots = "";       // per city "free/total:permanent:temporary"
             public int PermanentsBlocked;          // permanent project options refused by the slot policy this turn
@@ -307,6 +310,8 @@ namespace InterplanetaryAI
                 PlayerResourceHandler res = me.ResourceHandler;
                 bool limited = GameSessionManager.CurrentGameSettings.PlanetMaterial != -1;
                 float drain = Math.Max(res.PlanetMaterialCost, res.MaterialProductionPerTurn);
+                d.PlanetDrain = drain;
+                d.PlanetPool = limited ? Math.Max(0, res.PlanetMaterial) : -1;
                 d.SustainableMaterial = EconomyDirector.SustainableMaterialIncome(res.PlanetMaterial, res.Material, limited, turn, Plugin.MaterialHorizonTurn.Value, 3);
                 d.MaterialReserve = EconomyDirector.EconomyReserve(res.PlanetMaterial, drain, limited, Plugin.BankWarningTurns.Value, Plugin.MaterialReserve.Value);
                 int[] sold;
@@ -1315,6 +1320,7 @@ namespace InterplanetaryAI
                         d.EnergyIncome += best.NextTurnEnergy;
                         d.MaterialIncome += best.NextTurnMaterial;
                         if (d.ScienceIncome >= 0f) d.ScienceIncome += best.NextTurnScience;
+                        d.PlanetDrain += Math.Max(0f, best.PlanetDrainAdd); // v0.16.1
                     }
                     if (EconomyDirector.IsEnergyOnly(best)) d.PowerEnergySpent += best.Energy;
                     return true;
@@ -1432,6 +1438,16 @@ namespace InterplanetaryAI
                     }
                     float scienceGain = Value(upgrade.turn_yield_science_addition) * globalScience;
                     if (energyGain <= 0f && materialGain <= 0f && scienceGain <= 0f) continue;
+                    // Terra v0.16.1 #2: a yield upgrade that multiplies a mine's planet cost is extra drain too.
+                    float upgradeDrainAdd = savesReserve ? 0f : Value(data.turn_cost_planet_material)
+                        * me.StatHandler.GetGlobalStatModifier(GlobalStatModifierID.TurnCostPlanetMaterial)
+                        * Math.Max(0f, FloatValue(upgrade.turn_cost_planet_material_multiplier, 1f) - 1f);
+                    if (Plugin.PlanetDrainGuard.Value && upgradeDrainAdd > 0f
+                        && !PlanetGuard.DrainAllowed(d.PlanetDrain, upgradeDrainAdd, 0, d.PlanetPool, Plugin.PlanetGuardHorizonTurn.Value - d.Turn))
+                    {
+                        d.ExtractionBlocked++;
+                        continue;
+                    }
                     if (!seen.Add(data.id.Value + "|" + installed + "|" + upgrade.id.Value + "|" + planned)) continue;
                     options.Add(new EconOption
                     {
@@ -1443,6 +1459,7 @@ namespace InterplanetaryAI
                         MaterialGain = materialGain,
                         ScienceGain = scienceGain,
                         SavesReserve = savesReserve,
+                        PlanetDrainAdd = upgradeDrainAdd,
                         Payload = upgrade,
                         Target = building,
                     });
@@ -1540,9 +1557,11 @@ namespace InterplanetaryAI
                 float scienceGain = thisCityScience * (FloatValue(p.turn_yield_science_multiplier, 1f) - 1f)
                     + d.ScienceIncome * (FloatValue(p.turn_yield_science_multiplier_global, 1f) - 1f);
                 if (energyGain * span <= 0f && materialGain * span <= 0f && scienceGain <= 0f) continue;
-                bool drains = FloatValue(p.turn_cost_planet_material_multiplier_global, 1f) > 1f || Value(p.turn_cost_planet_material_addition) > 0;
-                if (Plugin.PlanetDrainGuard.Value && drains && materialGain > 0f
-                    && !PlanetGuard.ExtractionAllowed(d.MaterialIncome, materialGain, d.SustainableMaterial))
+                float projectDrainAdd = Value(p.turn_cost_planet_material_addition)
+                    + Math.Max(0f, d.PlanetDrain) * Math.Max(0f, FloatValue(p.turn_cost_planet_material_multiplier_global, 1f) - 1f);
+                if (Plugin.PlanetDrainGuard.Value && projectDrainAdd > 0f
+                    && !PlanetGuard.DrainAllowed(d.PlanetDrain, projectDrainAdd, permanent ? 0 : Math.Max(1, p.duration.Value), d.PlanetPool,
+                        Plugin.PlanetGuardHorizonTurn.Value - d.Turn))
                 {
                     d.ExtractionBlocked++;
                     continue;
@@ -1559,6 +1578,7 @@ namespace InterplanetaryAI
                     IncomeEnergy = energyGain,
                     IncomeMaterial = materialGain,
                     IncomeScience = scienceGain,
+                    PlanetDrainAdd = projectDrainAdd,
                     Payload = project,
                 });
             }
@@ -1656,6 +1676,9 @@ namespace InterplanetaryAI
                         if (p.id.Value == SstarProject) d.SstarActive++;
                         if (p.id.Value == RareMaterialProject) d.RareMaterialActive++;
                     }
+                    bool hasJamming = false;
+                    foreach (ProjectData p in city.Projects.CurrentProjects) if (p != null && p.id.Value == JammingProject) hasJamming = true;
+                    if (!hasJamming) d.JammingEligibleCities++;
                     int free = CityFreeSlots(core.Construction, city);
                     int total = free + permanent + temporary;
                     d.PermanentProjects += permanent;
@@ -1718,9 +1741,11 @@ namespace InterplanetaryAI
             if (p.id.Value == JammingProject)
                 return SlotPolicy.JammingAllowed(d.JammingActive, Plugin.JammingMax.Value, d.RemainingPlanScience, Plugin.JammingMinPlanScience.Value);
             // v0.16.1: Jamming still wanted (EMC done, research left, under the ceiling) keeps its slots from other projects.
-            bool jammingWanted = d.EmcDone
-                && SlotPolicy.JammingAllowed(d.JammingActive, Plugin.JammingMax.Value, d.RemainingPlanScience, Plugin.JammingMinPlanScience.Value);
-            bool leavesJamming = SlotPolicy.TemporaryAllowed(jammingWanted, d.JammingActive, Plugin.JammingMax.Value, d.ProjectSlotsFree);
+            bool researchLeft = SlotPolicy.JammingAllowed(d.JammingActive, Plugin.JammingMax.Value, d.RemainingPlanScience, Plugin.JammingMinPlanScience.Value);
+            int jammingNeeded = Math.Min(Math.Max(0, Plugin.JammingMax.Value - d.JammingActive), d.JammingEligibleCities); // Terra #4: placeable copies
+            bool leavesJamming = SlotPolicy.LeavesRoom(d.EmcDone && researchLeft, jammingNeeded, d.ProjectSlotsFree);
+            // Terra v0.16.1 #1: Science Institutes (cap-exempt) keep the Jamming room before EMC too.
+            bool leavesJammingAlways = SlotPolicy.LeavesRoom(researchLeft, jammingNeeded, d.ProjectSlotsFree);
             if (!IsPermanent(p))
             {
                 if (p.id.Value == SstarProject) return true; // SSTAR shares the priority (Jamming into SSTAR)
@@ -1730,7 +1755,7 @@ namespace InterplanetaryAI
             // v0.16.1: a permanent science project skips the opening cap (match 17: half the human's science).
             bool science = Plugin.OpeningCapExemptScience.Value && FloatValue(p.turn_yield_science_multiplier, 1f) > 1f;
             if (science)
-                return leavesJamming && (!d.LosslessDone || SlotPolicy.PermanentAllowed(true, d.PermanentProjects, Plugin.OpeningPermanentCap.Value,
+                return leavesJammingAlways && (!d.LosslessDone || SlotPolicy.PermanentAllowed(true, d.PermanentProjects, Plugin.OpeningPermanentCap.Value,
                     CityFreeSlots(construction, city), Plugin.ProjectSlotReserve.Value));
             return SlotPolicy.PermanentAllowed(d.LosslessDone, d.PermanentProjects, Plugin.OpeningPermanentCap.Value,
                 CityFreeSlots(construction, city), Plugin.ProjectSlotReserve.Value);
@@ -1781,8 +1806,9 @@ namespace InterplanetaryAI
                 float materialGain = Value(data.turn_yield_material) * globalMaterial * planetFactor - Value(data.turn_cost_material);
                 if (!isPlant && Value(data.turn_yield_material) > 0 && me.ResourceHandler.PlanetMaterial <= 0) continue;
                 // v0.16.1: extraction only up to what the planet sustains to the material horizon (match 17: 86 Offshore Mines at T22).
-                if (Plugin.PlanetDrainGuard.Value && !isPlant && materialGain > 0f && Value(data.turn_cost_planet_material) > 0
-                    && !PlanetGuard.ExtractionAllowed(d.MaterialIncome, materialGain, d.SustainableMaterial))
+                float buildingDrainAdd = Value(data.turn_cost_planet_material) * me.StatHandler.GetGlobalStatModifier(GlobalStatModifierID.TurnCostPlanetMaterial);
+                if (Plugin.PlanetDrainGuard.Value && !isPlant && buildingDrainAdd > 0f
+                    && !PlanetGuard.DrainAllowed(d.PlanetDrain, buildingDrainAdd, 0, d.PlanetPool, Plugin.PlanetGuardHorizonTurn.Value - d.Turn))
                 {
                     d.ExtractionBlocked++;
                     continue;
@@ -1791,6 +1817,7 @@ namespace InterplanetaryAI
                 {
                     Id = id,
                     Kind = isPlant ? OptionKind.Plant : OptionKind.Producer,
+                    PlanetDrainAdd = isPlant ? 0f : buildingDrainAdd,
                     Energy = Value(data.build_cost_energy),
                     Material = Value(data.build_cost_material),
                     EnergyGain = Value(data.turn_yield_energy) * globalEnergy,
@@ -1908,7 +1935,7 @@ namespace InterplanetaryAI
             // v0.16 item 1: queued projects count against the slot policy for the rest of the turn.
             int freeBefore = CityFreeSlots(construction, city) + 1; // the queue now holds this project
             if (IsPermanent(project.Project)) d.PermanentProjects++;
-            if (project.Project.id.Value == JammingProject) d.JammingActive++;
+            if (project.Project.id.Value == JammingProject) { d.JammingActive++; d.JammingEligibleCities = Math.Max(0, d.JammingEligibleCities - 1); }
             if (project.Project.id.Value == SstarProject) d.SstarActive++;
             if (project.Project.id.Value == RareMaterialProject) d.RareMaterialActive++;
             d.ProjectSlotsFree = Math.Max(0, d.ProjectSlotsFree - 1); // v0.16.1: the Jamming reservation reads this

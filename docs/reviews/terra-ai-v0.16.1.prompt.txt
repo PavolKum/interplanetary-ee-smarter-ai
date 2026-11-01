@@ -1,0 +1,17 @@
+READ-ONLY review. Do not edit, create or delete any file. Stay inside this repository: any path outside it is auto-rejected and ends your run. Finish with the complete written report; include a line containing the word "verdict".
+
+Code review of AI v0.16.1. Diff: docs/reviews/terra-ai-v0.16.1.diff (git diff d40f4b1..23bf3bb -- AI). It answers match 17, docs/playtests/2026-11-01-v0.16.md (data docs/playtests/data/v016-*; human won T31; read the "v0.16.1 candidates" section). Background: v0.16 council record docs/reviews/2026-11-01-council-v016/decision-record-r2.md and Sol's v0.16 review chain (sol-ai-v0.16*.md, disposition). decompiled/ is the game source (authoritative); docs/ruleset/embedded/enhanced/ the data. Fairness rules: strict visible-only targeting, no hidden enemy values, no enemy city count, human-like accuracy, no resource cheats.
+
+v0.16.1 changes:
+1. Science tempo: SlotPolicy.TemporaryAllowed (a temporary other than Jamming/SSTAR must leave room for Jamming copies still wanted after EMC); RareMaterialMax 1; permanent science projects (Science Institute) exempt from OpeningPermanentCap but still leave room for Jamming; ProjectSlotsFree decremented per queued project.
+2. Research order: 2nd Gen + Maglev + Plasma + Optics + Advanced Signal Processing right after EMC, then Nano, Microwave, 4th Gen, Lossless (V016 default migrated).
+3. Intel: IntelBudget.BatchSize sizes a batch to budget room / 200 E (IntelBatch is now the cap, 3 -> 8 migrated); the stop-loss also needs IntelStopMinBudgetUse 0.5 of the budget spent.
+4. PlanetGuard.ExtractionAllowed: extraction buildings and planet-draining projects only while material income + gain <= the planet's sustainable income to MaterialHorizonTurn (d.SustainableMaterial).
+
+Questions:
+1. Correctness: does each change do what it says? Check ProjectSlotsFree semantics (turn start vs this turn's queue, per-city vs total), the Jamming reservation when EMC is done but Jamming is unaffordable or unavailable (could it starve every other temporary forever?), the migration chain ("0.14" -> "0.16" -> "0.16.1"), and SustainableMaterial's units/sign when the planet is unlimited or nearly dry.
+2. Will the research reorder plausibly fix the T16-T19 stall (no Kinetic/Telescope tech) without starving the energy curve? Use match 17's science per turn.
+3. Is the bigger intel batch still within the fairness boundary and the 10% budget? Any way the planet guard blocks recovery after a planet runs dry or after losses?
+4. Any new crash path, double counting or fairness leak.
+
+Rank findings (blocker / high / medium / low) with file:line and a concrete fix. End with: SHIP, SHIP AFTER FIXES (list), or DO NOT SHIP. Under 1,500 words.

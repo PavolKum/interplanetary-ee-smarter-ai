@@ -319,6 +319,7 @@ namespace InterplanetaryAI
         internal static ConfigEntry<bool> OpeningCapExemptScience;   // v0.16.1
         internal static ConfigEntry<float> IntelStopMinBudgetUse;    // v0.16.1
         internal static ConfigEntry<bool> PlanetDrainGuard;          // v0.16.1
+        internal static ConfigEntry<int> PlanetGuardHorizonTurn;     // v0.16.1
         internal static ConfigEntry<float> AntiNukeCityValue;
         internal static ConfigEntry<int> NukeMemoryTurns;
         internal static ConfigEntry<float> CoverageCityValue;
@@ -659,7 +660,9 @@ namespace InterplanetaryAI
             IntelStopMinBudgetUse = Config.Bind("Director", "IntelStopMinBudgetUse", 0.5f,
                 "v0.16.1: the intel stop-loss needs IntelFailedBatchesStop failed batches AND at least this share of the intel budget spent. Match 17 stopped after 1,000 E of ~27,000 E.");
             PlanetDrainGuard = Config.Bind("Director", "PlanetDrainGuard", true,
-                "v0.16.1: extraction (mines, material projects) grows only up to the material the planet can sustain to MaterialHorizonTurn.");
+                "v0.16.1: extra planet drain (mines, mine yield upgrades, Rare Material / Molecular Recycling projects) only while today's drain to PlanetGuardHorizonTurn plus the new drain fits in the remaining planet pool.");
+            PlanetGuardHorizonTurn = Config.Bind("Director", "PlanetGuardHorizonTurn", 36,
+                "v0.16.1: the turn the planet pool should last to under the drain guard (matches 14-17 ended T29-T39; match 16's human ran dry at T30 and won).");
             if (migrated.Value == "0.14")
             {
                 // v0.16 (council v0.16): each unchanged v0.15 default moves once.

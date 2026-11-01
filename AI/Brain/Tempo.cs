@@ -24,8 +24,15 @@ namespace InterplanetaryAI.Brain
         // human's): a temporary project other than Jamming / SSTAR must leave room for the Jamming copies still wanted.
         public static bool TemporaryAllowed(bool jammingWanted, int jammingActive, int jammingMax, int totalFreeSlots)
         {
+            return LeavesRoom(jammingWanted, Math.Max(0, jammingMax - jammingActive), totalFreeSlots);
+        }
+
+        // Terra v0.16.1 #4: reserve only the Jamming copies that can still be placed (one per city: jammingNeeded =
+        // min(ceiling - active, cities without Jamming)).
+        public static bool LeavesRoom(bool jammingWanted, int jammingNeeded, int totalFreeSlots)
+        {
             if (!jammingWanted) return true;
-            return totalFreeSlots - 1 >= Math.Max(0, jammingMax - jammingActive);
+            return totalFreeSlots - 1 >= Math.Max(0, jammingNeeded);
         }
 
         // Jamming while useful research remains, up to `max` active or queued at once.
@@ -72,6 +79,18 @@ namespace InterplanetaryAI.Brain
             if (sustainableIncome < 0f || materialGain <= 0f) return true;
             return materialIncome + materialGain <= sustainableIncome;
         }
+
+        // Terra v0.16.1 #2: the game drains max(planet cost, production) from the planet pool. Extra planet cost (a mine, a
+        // yield upgrade, a project's multiplier) is allowed only if today's drain to the guard horizon plus the extra drain
+        // for its duration (0 = permanent) fits in the remaining planet pool. The bank is not planet supply. -1 pool =
+        // unlimited planet. After losses the drain falls and room returns by itself.
+        public static bool DrainAllowed(float drain, float extraDrain, int extraTurns, int planetPool, int turnsLeft)
+        {
+            if (planetPool < 0 || extraDrain <= 0f) return true;
+            int left = Math.Max(1, turnsLeft);
+            int dur = extraTurns <= 0 ? left : Math.Min(extraTurns, left);
+            return Math.Max(0f, drain) * left + extraDrain * dur <= planetPool;
+        }
     }
 
     public static class IntelBudget
@@ -97,7 +116,9 @@ namespace InterplanetaryAI.Brain
             {
                 s.FailedBatches++;
                 bool spentEnough = budgetShare <= 0f || s.SpentEnergy >= stopMinUse * budgetShare * s.CreditedEnergy;
-                if (failedBatchesStop > 0 && s.FailedBatches >= failedBatchesStop && spentEnough) s.Stopped = true;
+                // Terra v0.16.1 #3: twice the failure run stops regardless of spend, so the stop-loss is always reachable.
+                if (failedBatchesStop > 0 && s.FailedBatches >= failedBatchesStop && (spentEnough || s.FailedBatches >= 2 * failedBatchesStop))
+                    s.Stopped = true;
                 s.LastVerdict = s.Stopped ? "stop-loss" : "failed";
             }
             s.BatchBought = 0;

@@ -1,0 +1,360 @@
+diff --git a/AI/Brain/Tempo.cs b/AI/Brain/Tempo.cs
+index 6a5446f..af06043 100644
+--- a/AI/Brain/Tempo.cs
++++ b/AI/Brain/Tempo.cs
+@@ -20,6 +20,14 @@ namespace InterplanetaryAI.Brain
+             return cityFreeSlots - 1 >= Math.Max(0, reserve);
+         }
+ 
++        // v0.16.1 (match 17: five Rare Material copies took every free slot at T13, no Jamming until T16, science half the
++        // human's): a temporary project other than Jamming / SSTAR must leave room for the Jamming copies still wanted.
++        public static bool TemporaryAllowed(bool jammingWanted, int jammingActive, int jammingMax, int totalFreeSlots)
++        {
++            if (!jammingWanted) return true;
++            return totalFreeSlots - 1 >= Math.Max(0, jammingMax - jammingActive);
++        }
++
+         // Jamming while useful research remains, up to `max` active or queued at once.
+         public static bool JammingAllowed(int activeOrQueued, int max, float planScienceLeft, float minPlanScience)
+         {
+@@ -52,6 +60,18 @@ namespace InterplanetaryAI.Brain
+         public int Probes;               // single purchases after the stop-loss
+         public int LastProbeTurn = -1000;
+         public string LastVerdict = "";
++        public int BatchSize;            // v0.16.1: this batch's size (budget-scaled)
++    }
++
++    // v0.16.1 (match 17: 86 Offshore Mines in one turn at T22 and Rare Material x3 drained ~50k a turn; the planet went
++    // 235k -> 72k in eight turns): extraction may grow only up to what the planet can sustain to the material horizon.
++    public static class PlanetGuard
++    {
++        public static bool ExtractionAllowed(float materialIncome, float materialGain, float sustainableIncome)
++        {
++            if (sustainableIncome < 0f || materialGain <= 0f) return true;
++            return materialIncome + materialGain <= sustainableIncome;
++        }
+     }
+ 
+     public static class IntelBudget
+@@ -60,7 +80,10 @@ namespace InterplanetaryAI.Brain
+ 
+         // Judge a batch `evalTurns` after it started: success when more enemy cities are visible now or fewer enemies
+         // are unreadable. A success clears the failure run (and a stop-loss: a probe found something).
+-        public static void Evaluate(IntelBidState s, int turn, int visibleCities, int blindEnemies, int evalTurns, int failedBatchesStop)
++        // v0.16.1 (match 17: the stop-loss tripped after 1,000 E of a ~27,000 E budget): the stop needs both the failure run
++        // and at least stopMinUse of the budget spent. budgetShare 0 = no spend condition (v0.16 behaviour).
++        public static void Evaluate(IntelBidState s, int turn, int visibleCities, int blindEnemies, int evalTurns, int failedBatchesStop,
++            float budgetShare = 0f, float stopMinUse = 0f)
+         {
+             if (s.BatchBought <= 0 || turn < s.BatchTurn + Math.Max(1, evalTurns)) return;
+             bool success = visibleCities > s.BatchVisibleBefore || blindEnemies < s.BatchBlindBefore;
+@@ -73,7 +96,8 @@ namespace InterplanetaryAI.Brain
+             else
+             {
+                 s.FailedBatches++;
+-                if (failedBatchesStop > 0 && s.FailedBatches >= failedBatchesStop) s.Stopped = true;
++                bool spentEnough = budgetShare <= 0f || s.SpentEnergy >= stopMinUse * budgetShare * s.CreditedEnergy;
++                if (failedBatchesStop > 0 && s.FailedBatches >= failedBatchesStop && spentEnough) s.Stopped = true;
+                 s.LastVerdict = s.Stopped ? "stop-loss" : "failed";
+             }
+             s.BatchBought = 0;
+@@ -81,10 +105,21 @@ namespace InterplanetaryAI.Brain
+ 
+         // Intel purchases allowed now for vision (native minimum intel is separate). wantVision: no enemy city visible
+         // now, or an enemy we cannot read.
++        // v0.16.1: with unitCost > 0 a batch is sized to the budget room (room / unitCost), capped at `batch`: a 3-array batch
++        // could never close a 3-5x counterintel gap, so it failed by construction (match 17).
++        public static int BatchSize(IntelBidState s, float budgetShare, float unitCost, int batchMax)
++        {
++            if (unitCost <= 0f || budgetShare <= 0f) return batchMax;
++            int fit = (int)Math.Floor((budgetShare * s.CreditedEnergy - s.SpentEnergy) / unitCost);
++            return Math.Max(1, Math.Min(batchMax, fit));
++        }
++
+         public static int Allowed(IntelBidState s, int turn, bool wantVision, int bidFromTurn, float budgetShare, float nextCost,
+-            int batch, int evalTurns, int probeMax)
++            int batch, int evalTurns, int probeMax, float unitCost = 0f)
+         {
+             if (!wantVision || turn < bidFromTurn || batch <= 0) return 0;
++            if (s.BatchBought == 0 || s.BatchTurn != turn) s.BatchSize = BatchSize(s, budgetShare, unitCost, batch);
++            if (s.BatchSize > 0) batch = s.BatchSize;
+             if (budgetShare > 0f && s.SpentEnergy + nextCost > budgetShare * s.CreditedEnergy) return 0;
+             if (s.BatchBought > 0)
+             {
+diff --git a/AI/DirectorPatches.cs b/AI/DirectorPatches.cs
+index d41fed1..7493663 100644
+--- a/AI/DirectorPatches.cs
++++ b/AI/DirectorPatches.cs
+@@ -115,6 +115,9 @@ namespace InterplanetaryAI
+             public int PermanentProjects;          // permanent city projects installed or queued (all our cities)
+             public int JammingActive;              // Electromagnetic Jamming installed or queued
+             public int SstarActive;                // SSTAR Reactor Trials installed or queued
++            public int RareMaterialActive;         // v0.16.1: Rare Material Synthesis installed or queued
++            public bool EmcDone;
++            public int ExtractionBlocked;          // v0.16.1: extraction options refused by the planet guard
+             public int ProjectSlotsFree, ProjectSlotsTotal;
+             public string ProjectSlots = "";       // per city "free/total:permanent:temporary"
+             public int PermanentsBlocked;          // permanent project options refused by the slot policy this turn
+@@ -177,6 +180,8 @@ namespace InterplanetaryAI
+         internal const string OrbitalAssemblyTech = "tec_OrbitalAssembly";
+         internal const string JammingProject = "pro_ScienceYieldShortGlobal1";
+         internal const string SstarProject = "pro_EnergyYieldLongGlobal1";
++        internal const string RareMaterialProject = "pro_MaterialYieldLongGlobal1"; // v0.16.1
++        internal const string EmcTech = "tec_ExperimentalMatterControl";
+         internal const string LidarUpgrade = "upg_RadiotelescopeIntelYield1";
+ 
+         private static bool TechDone(PlayerData me, string id)
+@@ -333,6 +338,7 @@ namespace InterplanetaryAI
+             d.WarTurn = WarTurnFor(me, turn); // v0.16 item 4: T16 with Orbital Assembly and WarMinIncome, else WarFallbackTurn
+             d.War = EconomyDirector.WarPhase(turn, d.WarTurn, recentDamage, Plugin.WarDamageTrigger.Value);
+             d.LosslessDone = TechDone(me, LosslessTech);
++            d.EmcDone = TechDone(me, EmcTech);
+             CountProjects(core, d);
+             d.EnergyGlut = Plugin.EnergyGlutShare.Value > 0f
+                 && EconomyDirector.IsEnergyGlut(d.LastEnergyLeft, d.LastEnergyBudget, Plugin.EnergyGlutShare.Value, Plugin.EnergyGlutMin.Value);
+@@ -499,7 +505,8 @@ namespace InterplanetaryAI
+             {
+                 memory.Intel.CreditedEnergy += Math.Max(0, me.ResourceHandler.EnergyProductionPerTurn);
+                 memory.CreditedTurn = turn;
+-                IntelBudget.Evaluate(memory.Intel, turn, d.VisibleEnemyCities, d.BlindEnemies, Plugin.IntelEvalTurns.Value, Plugin.IntelFailedBatchesStop.Value);
++                IntelBudget.Evaluate(memory.Intel, turn, d.VisibleEnemyCities, d.BlindEnemies, Plugin.IntelEvalTurns.Value, Plugin.IntelFailedBatchesStop.Value,
++                    Plugin.IntelBudgetShare.Value, Plugin.IntelStopMinBudgetUse.Value);
+             }
+             // v0.13: weapons are chosen against the enemy the strategy committed to this turn (v0.12.1: the director chose
+             // against the other AI's defenses while every strike went at the human).
+@@ -692,7 +699,7 @@ namespace InterplanetaryAI
+             MatchMemory memory = MemoryOf(core.PlayerData.PlayerID);
+             bool wantVision = d.Blind || d.BlindEnemies > 0;
+             int bidAllowed = IntelBudget.Allowed(memory.Intel, d.Turn, wantVision, Plugin.IntelBidFromTurn.Value, Plugin.IntelBudgetShare.Value, 50f, // cheapest candidate; arrays re-checked at 200
+-                Plugin.IntelBatch.Value, Plugin.IntelEvalTurns.Value, Plugin.IntelProbeMax.Value);
++                Plugin.IntelBatch.Value, Plugin.IntelEvalTurns.Value, Plugin.IntelProbeMax.Value, 200f);
+             if (d.Steps <= 1) d.IntelAllowed = bidAllowed;
+             d.IntelPolicy = memory.Intel.Stopped ? "stop-loss" : bidAllowed > 0 ? "bid" : wantVision ? "wait" : "seeing";
+             // v0.16 (Sol v0.16 F5): native minimum gets priority but stays inside the budget share; its spend never opens or
+@@ -1533,6 +1540,13 @@ namespace InterplanetaryAI
+                 float scienceGain = thisCityScience * (FloatValue(p.turn_yield_science_multiplier, 1f) - 1f)
+                     + d.ScienceIncome * (FloatValue(p.turn_yield_science_multiplier_global, 1f) - 1f);
+                 if (energyGain * span <= 0f && materialGain * span <= 0f && scienceGain <= 0f) continue;
++                bool drains = FloatValue(p.turn_cost_planet_material_multiplier_global, 1f) > 1f || Value(p.turn_cost_planet_material_addition) > 0;
++                if (Plugin.PlanetDrainGuard.Value && drains && materialGain > 0f
++                    && !PlanetGuard.ExtractionAllowed(d.MaterialIncome, materialGain, d.SustainableMaterial))
++                {
++                    d.ExtractionBlocked++;
++                    continue;
++                }
+                 options.Add(new EconOption
+                 {
+                     Id = key,
+@@ -1640,6 +1654,7 @@ namespace InterplanetaryAI
+                         else temporary++;
+                         if (p.id.Value == JammingProject) d.JammingActive++;
+                         if (p.id.Value == SstarProject) d.SstarActive++;
++                        if (p.id.Value == RareMaterialProject) d.RareMaterialActive++;
+                     }
+                     int free = CityFreeSlots(core.Construction, city);
+                     int total = free + permanent + temporary;
+@@ -1702,7 +1717,21 @@ namespace InterplanetaryAI
+             if (p == null || city == null) return false;
+             if (p.id.Value == JammingProject)
+                 return SlotPolicy.JammingAllowed(d.JammingActive, Plugin.JammingMax.Value, d.RemainingPlanScience, Plugin.JammingMinPlanScience.Value);
+-            if (!IsPermanent(p)) return true;
++            // v0.16.1: Jamming still wanted (EMC done, research left, under the ceiling) keeps its slots from other projects.
++            bool jammingWanted = d.EmcDone
++                && SlotPolicy.JammingAllowed(d.JammingActive, Plugin.JammingMax.Value, d.RemainingPlanScience, Plugin.JammingMinPlanScience.Value);
++            bool leavesJamming = SlotPolicy.TemporaryAllowed(jammingWanted, d.JammingActive, Plugin.JammingMax.Value, d.ProjectSlotsFree);
++            if (!IsPermanent(p))
++            {
++                if (p.id.Value == SstarProject) return true; // SSTAR shares the priority (Jamming into SSTAR)
++                if (p.id.Value == RareMaterialProject && d.RareMaterialActive >= Math.Max(0, Plugin.RareMaterialMax.Value)) return false;
++                return leavesJamming;
++            }
++            // v0.16.1: a permanent science project skips the opening cap (match 17: half the human's science).
++            bool science = Plugin.OpeningCapExemptScience.Value && FloatValue(p.turn_yield_science_multiplier, 1f) > 1f;
++            if (science)
++                return leavesJamming && (!d.LosslessDone || SlotPolicy.PermanentAllowed(true, d.PermanentProjects, Plugin.OpeningPermanentCap.Value,
++                    CityFreeSlots(construction, city), Plugin.ProjectSlotReserve.Value));
+             return SlotPolicy.PermanentAllowed(d.LosslessDone, d.PermanentProjects, Plugin.OpeningPermanentCap.Value,
+                 CityFreeSlots(construction, city), Plugin.ProjectSlotReserve.Value);
+         }
+@@ -1751,6 +1780,13 @@ namespace InterplanetaryAI
+                 if (waterOnly && !isPlant && !HasWaterAnchor(core)) continue; // an offshore mine needs a powered water neighbour
+                 float materialGain = Value(data.turn_yield_material) * globalMaterial * planetFactor - Value(data.turn_cost_material);
+                 if (!isPlant && Value(data.turn_yield_material) > 0 && me.ResourceHandler.PlanetMaterial <= 0) continue;
++                // v0.16.1: extraction only up to what the planet sustains to the material horizon (match 17: 86 Offshore Mines at T22).
++                if (Plugin.PlanetDrainGuard.Value && !isPlant && materialGain > 0f && Value(data.turn_cost_planet_material) > 0
++                    && !PlanetGuard.ExtractionAllowed(d.MaterialIncome, materialGain, d.SustainableMaterial))
++                {
++                    d.ExtractionBlocked++;
++                    continue;
++                }
+                 options.Add(new EconOption
+                 {
+                     Id = id,
+@@ -1874,6 +1910,8 @@ namespace InterplanetaryAI
+             if (IsPermanent(project.Project)) d.PermanentProjects++;
+             if (project.Project.id.Value == JammingProject) d.JammingActive++;
+             if (project.Project.id.Value == SstarProject) d.SstarActive++;
++            if (project.Project.id.Value == RareMaterialProject) d.RareMaterialActive++;
++            d.ProjectSlotsFree = Math.Max(0, d.ProjectSlotsFree - 1); // v0.16.1: the Jamming reservation reads this
+             Plugin.WriteDecision(new Json().Str("e", "project").Int("t", d.Turn).Str("ai", core.PlayerData.UserNickName)
+                 .Str("project", project.Project.id.Value).Str("city", city.ObjectId.ToString()).Bool("permanent", IsPermanent(project.Project))
+                 .Int("cityFreeBefore", freeBefore).Int("reserve", Plugin.ProjectSlotReserve.Value).Bool("lossless", d.LosslessDone)
+@@ -2658,7 +2696,8 @@ namespace InterplanetaryAI
+                 .Int("visibleCities", d.VisibleEnemyCities).Int("ownIntel", d.OwnIntel).Bool("guidedThreat", d.GuidedThreat)
+                 // v0.16 gates (council v0.16 decision-record-r2 section 3)
+                 .Int("warTurn", d.WarTurn).Bool("lossless", d.LosslessDone).Int("permanentProjects", d.PermanentProjects)
+-                .Int("jamming", d.JammingActive).Int("sstar", d.SstarActive).Int("projectSlotsFree", d.ProjectSlotsFree)
++                .Int("jamming", d.JammingActive).Int("sstar", d.SstarActive).Int("rareMaterial", d.RareMaterialActive)
++                .Int("extractionBlocked", d.ExtractionBlocked).Int("intelBatchSize", MemoryOf(core.PlayerData.PlayerID).Intel.BatchSize).Int("projectSlotsFree", d.ProjectSlotsFree)
+                 .Int("projectSlotsTotal", d.ProjectSlotsTotal).Str("projectSlots", d.ProjectSlots).Int("permanentsBlocked", d.PermanentsBlocked)
+                 .Str("intelPolicy", d.IntelPolicy).Int("intelAllowed", d.IntelAllowed)
+                 .Num("intelSpent", MemoryOf(core.PlayerData.PlayerID).Intel.SpentEnergy).Num("intelCredited", MemoryOf(core.PlayerData.PlayerID).Intel.CreditedEnergy)
+diff --git a/AI/Plugin.cs b/AI/Plugin.cs
+index 40904c5..951c779 100644
+--- a/AI/Plugin.cs
++++ b/AI/Plugin.cs
+@@ -24,7 +24,7 @@ namespace InterplanetaryAI
+     {
+         public const string GUID = "pavol.interplanetary.ai";
+         public const string NAME = "Interplanetary EE: Smarter AI";
+-        public const string VERSION = "0.16.0";
++        public const string VERSION = "0.16.1";
+ 
+         internal static ManualLogSource Log;
+ 
+@@ -169,7 +169,22 @@ namespace InterplanetaryAI
+         // Warning AI (Kinetic range). Ultracapacitors + Composite Heat Cells (blind artillery, Pavol's P1) never before EMC,
+         // Nano, Microwave, Lossless and Plasma. Robotic Mining stays late: the limited-planet upgrade policy cannot install its
+         // second yield upgrade (council N6). Match 16 had EMC ~T18, Microwave T22, Plasma T28.
++        // v0.16.1 (match 17): the v0.16 order put Kinetic (2nd Gen + Maglev) at #13-14 and Telescopes at #11-12, after Nano,
++        // Microwave, 4th Gen and Lossless; at 400-600 science the AI idled 6-7k energy a turn T16-T19 waiting for them, met
++        // the first volley with 6 Kinetics at T20 and never saw a city. Defense and sight now follow EMC (Jamming); the
++        // energy upgrades follow them (the AI's energy was already ahead of the human's). Plasma stays right after Maglev.
+         private const string DefaultResearchPlan =
++            "tec_MassBiochemicalProcessing,tec_MolecularRecycling,tec_SuperTensileMaterials,tec_SmartGrids,tec_QuantumComputing,"
++            + "tec_ExperimentalMatterControl,tec_2ndGenComposites,tec_MaglevServos,tec_PlasmaChannelInduction,tec_SelfAdjustingOptics,"
++            + "tec_AdvancedSignalProcessing,tec_Nanostructuring,tec_MicrowaveEnergyTranmission,tec_4thGenNuclearReactors,tec_LosslessEnergyTransfer,"
++            + "tec_OrbitalAssembly,tec_EarlyWarningAI,tec_MagneticRadiationShielding,tec_Ultracapacitors,tec_CompositeHeatCells,"
++            + "tec_UraniumAlloys,tec_EmDrives,tec_ThermonuclearWarheads,tec_InductionCoils,tec_ZeroReluctanceEngineering,"
++            + "tec_MagneticSaturationElimination,tec_RoboticMining,tec_UltrasonicProjection,tec_Metamaterials,tec_DesignerNanomaterials,"
++            + "tec_VerticalFarming,tec_QuantumCommunications,tec_AtmosphericInterferenceMitigation,tec_Octaazacubane,tec_AdvancedGenetics,"
++            + "tec_SelfHealingMaterials,tec_AITargetTracking,tec_MultiChainedStages,tec_GammaRayLasers,tec_MassDrivers";
++
++        // v0.16.0 default, replaced on load if the config still holds it unchanged.
++        private const string V016ResearchPlan =
+             "tec_MassBiochemicalProcessing,tec_MolecularRecycling,tec_SuperTensileMaterials,tec_SmartGrids,tec_QuantumComputing,"
+             + "tec_ExperimentalMatterControl,tec_Nanostructuring,tec_MicrowaveEnergyTranmission,tec_4thGenNuclearReactors,tec_LosslessEnergyTransfer,"
+             + "tec_SelfAdjustingOptics,tec_AdvancedSignalProcessing,tec_2ndGenComposites,tec_MaglevServos,tec_PlasmaChannelInduction,"
+@@ -300,6 +315,10 @@ namespace InterplanetaryAI
+         internal static ConfigEntry<string> DefenseUpgradeIds;
+         internal static ConfigEntry<int> DefenseUpgradesPerTurn;
+         internal static ConfigEntry<float> ForwardDefenseMargin;
++        internal static ConfigEntry<int> RareMaterialMax;            // v0.16.1
++        internal static ConfigEntry<bool> OpeningCapExemptScience;   // v0.16.1
++        internal static ConfigEntry<float> IntelStopMinBudgetUse;    // v0.16.1
++        internal static ConfigEntry<bool> PlanetDrainGuard;          // v0.16.1
+         internal static ConfigEntry<float> AntiNukeCityValue;
+         internal static ConfigEntry<int> NukeMemoryTurns;
+         internal static ConfigEntry<float> CoverageCityValue;
+@@ -397,10 +416,10 @@ namespace InterplanetaryAI
+                 "Tech IDs in order. Default (v0.3): the human's order from the 31 Oct 2026 win, economy first (material and energy projects, yield upgrades, Offshore Mine, Floating Plant), then the Nuclear Missile line, then the rest.");
+             if (ResearchPlan.Value == V02ResearchPlan || ResearchPlan.Value == V03ResearchPlan || ResearchPlan.Value == V04ResearchPlan
+                 || ResearchPlan.Value == V09ResearchPlan || ResearchPlan.Value == V010ResearchPlan || ResearchPlan.Value == V011ResearchPlan
+-                || ResearchPlan.Value == V014ResearchPlan || ResearchPlan.Value == V015ResearchPlan)
++                || ResearchPlan.Value == V014ResearchPlan || ResearchPlan.Value == V015ResearchPlan || ResearchPlan.Value == V016ResearchPlan)
+             {
+                 ResearchPlan.Value = DefaultResearchPlan;
+-                Log.LogInfo("Research plan: replaced an unchanged older default with the v0.16 default.");
++                Log.LogInfo("Research plan: replaced an unchanged older default with the v0.16.1 default.");
+             }
+             if (Math.Abs(GrudgeWeight.Value - 0.6f) < 1e-4f)
+             {
+@@ -613,7 +632,7 @@ namespace InterplanetaryAI
+                 "v0.16 item 5: intel construction and upgrade energy stays within this share of the energy credited so far (upkeep logged separately). Replaces the unconditional unseen-city escalation (Pavol's P2: no enemy city count is used).");
+             IntelBidFromTurn = Config.Bind("Director", "IntelBidFromTurn", 14,
+                 "v0.16 item 5: intel bought to find enemy cities waits until this turn, timed to the strike window (a T8 sighting is worthless once the city goes dark).");
+-            IntelBatch = Config.Bind("Director", "IntelBatch", 3, "v0.16 item 5: intel buildings or Lidar upgrades bought in one batch.");
++            IntelBatch = Config.Bind("Director", "IntelBatch", 8, "v0.16.1: most intel buildings or Lidar upgrades in one batch; the batch is sized to the remaining budget (budget room / 200 E).");
+             IntelEvalTurns = Config.Bind("Director", "IntelEvalTurns", 2, "v0.16 item 5: turns after a batch before its visibility result is judged.");
+             IntelFailedBatchesStop = Config.Bind("Director", "IntelFailedBatchesStop", 2,
+                 "v0.16 item 5: after this many batches in a row that showed no new enemy city or readable enemy, intel stops (stop-loss) except bounded probes.");
+@@ -632,6 +651,15 @@ namespace InterplanetaryAI
+             DefenseUpgradesPerTurn = Config.Bind("Director", "DefenseUpgradesPerTurn", 4, "v0.16 item 6: most defense upgrades queued per turn. 0 = off.");
+             ForwardDefenseMargin = Config.Bind("Director", "ForwardDefenseMargin", 1.25f,
+                 "v0.16 item 6: once enemy fire has landed, the defense reserve asks for the largest volley seen so far x the share of impacts a defense could meet x the live roll cost x this margin (bounded by DefenseHardCapShare). The T26 estimator asked 1,250 E one phase before an 83-impact volley. 0 = off.");
++            // ---- v0.16.1 (match 17, docs/playtests/2026-11-01-v0.16.md) ----
++            RareMaterialMax = Config.Bind("Director", "RareMaterialMax", 1,
++                "v0.16.1: most simultaneous Rare Material Synthesis projects (material x1.3, energy x0.95, planet cost x1.3 each). Match 17 bought 5 at T13, which took the Jamming slots, and 3 more at T24 while the planet drained ~50k a turn.");
++            OpeningCapExemptScience = Config.Bind("Director", "OpeningCapExemptScience", true,
++                "v0.16.1: permanent science projects (Science Institute) are exempt from OpeningPermanentCap, still leaving room for wanted Jamming. Match 17 had half the human's science.");
++            IntelStopMinBudgetUse = Config.Bind("Director", "IntelStopMinBudgetUse", 0.5f,
++                "v0.16.1: the intel stop-loss needs IntelFailedBatchesStop failed batches AND at least this share of the intel budget spent. Match 17 stopped after 1,000 E of ~27,000 E.");
++            PlanetDrainGuard = Config.Bind("Director", "PlanetDrainGuard", true,
++                "v0.16.1: extraction (mines, material projects) grows only up to the material the planet can sustain to MaterialHorizonTurn.");
+             if (migrated.Value == "0.14")
+             {
+                 // v0.16 (council v0.16): each unchanged v0.15 default moves once.
+@@ -644,6 +672,12 @@ namespace InterplanetaryAI
+                 if (IntelSprintUntilTurn.Value == 14) { IntelSprintUntilTurn.Value = 0; Log.LogInfo("IntelSprintUntilTurn: 14 -> 0 (once; the opening sprint is retired)."); }
+                 migrated.Value = "0.16";
+             }
++            if (migrated.Value == "0.16")
++            {
++                // v0.16.1: IntelBatch is now the maximum of a budget-sized batch.
++                if (IntelBatch.Value == 3) { IntelBatch.Value = 8; Log.LogInfo("IntelBatch: 3 -> 8 (once; now the cap of a budget-sized batch)."); }
++                migrated.Value = "0.16.1";
++            }
+ 
+             EnableLasers = Config.Bind("Lasers", "EnableLasers", false,
+                 "EXPERIMENTAL. Let the AI build and fire Laser / EMP Laser / Solar Laser. The game's own AI laser code was switched off by its developers and has bugs (crash on no target, wrong building aimed); this installs fixes for both plus a bypass at end of turn. Needs a game restart. Try it in a throwaway match first.");
+diff --git a/AI/Tests/Program.cs b/AI/Tests/Program.cs
+index b173912..00614b1 100644
+--- a/AI/Tests/Program.cs
++++ b/AI/Tests/Program.cs
+@@ -58,6 +58,7 @@ namespace InterplanetaryAI.Tests
+             V0151Rules();
+             V0152Rules();
+             V016Rules();
++            V0161Rules();
+ 
+             Console.WriteLine(s_checks + " checks, " + s_failures + " failed");
+             return s_failures == 0 ? 0 : 1;
+@@ -1485,6 +1486,38 @@ namespace InterplanetaryAI.Tests
+             Check(fresh.LastDefender(7).Impacts == 2 && fresh.PendingDefender(7).Impacts == 0, "after Roll the fresh phase becomes LastDefender");
+         }
+ 
++        // ---- v0.16.1 (match 17) -----------------------------------------------------------------------
++
++        private static void V0161Rules()
++        {
++            // Jamming keeps its slots: match 17 T13 had 5 free slots and bought 5 Rare Material, 0 Jamming.
++            Check(!SlotPolicy.TemporaryAllowed(true, 0, 3, 3), "3 free slots, 3 Jammings wanted: another temporary must wait");
++            Check(SlotPolicy.TemporaryAllowed(true, 0, 3, 4), "4 free slots, 3 Jammings wanted: one other temporary fits");
++            Check(SlotPolicy.TemporaryAllowed(true, 3, 3, 1), "Jamming at its ceiling: nothing reserved");
++            Check(SlotPolicy.TemporaryAllowed(false, 0, 3, 1), "Jamming not wanted (no EMC or no research left): no reservation");
++
++            // Planet guard: T22 income 2,325, sustainable ~10,200 (235k over 23 turns).
++            Check(PlanetGuard.ExtractionAllowed(2325f, 7000f, 10200f), "extraction up to the sustainable income is allowed");
++            Check(!PlanetGuard.ExtractionAllowed(9000f, 2000f, 10200f), "extraction past the sustainable income is refused");
++            Check(PlanetGuard.ExtractionAllowed(50000f, 2000f, -1f), "unlimited planet: no guard");
++            Check(PlanetGuard.ExtractionAllowed(50000f, -300f, 10200f), "a project that lowers material is never blocked here");
++
++            // Intel batches sized to the budget (match 17: 3-array batches, 1,000 E spent of ~27,000 E, then stop-loss).
++            IntelBidState big = new IntelBidState { CreditedEnergy = 200000f };
++            Check(IntelBudget.BatchSize(big, 0.1f, 200f, 8) == 8, "20,000 E of room: capped at 8");
++            IntelBidState small = new IntelBidState { CreditedEnergy = 6000f };
++            Check(IntelBudget.BatchSize(small, 0.1f, 200f, 8) == 3, "600 E of room: 3 arrays");
++            Check(IntelBudget.BatchSize(small, 0.1f, 0f, 8) == 8, "unitCost 0 = fixed batch (v0.16)");
++            Check(IntelBudget.Allowed(big, 19, true, 14, 0.1f, 50f, 8, 2, 2, 200f) == 8, "the bid buys a budget-sized batch");
++            // Stop-loss needs the spend as well as the failures.
++            IntelBidState st = new IntelBidState { CreditedEnergy = 270000f, SpentEnergy = 1000f, FailedBatches = 1, BatchBought = 3, BatchTurn = 19 };
++            IntelBudget.Evaluate(st, 21, 0, 1, 2, 2, 0.1f, 0.5f);
++            Check(!st.Stopped && st.FailedBatches == 2, "two failures but 1,000 of 27,000 E spent: no stop-loss");
++            IntelBidState st2 = new IntelBidState { CreditedEnergy = 270000f, SpentEnergy = 14000f, FailedBatches = 1, BatchBought = 3, BatchTurn = 19 };
++            IntelBudget.Evaluate(st2, 21, 0, 1, 2, 2, 0.1f, 0.5f);
++            Check(st2.Stopped, "two failures and over half the budget spent: stop-loss");
++        }
++
+         private static void Check(bool condition, string what)
+         {
+             s_checks++;
