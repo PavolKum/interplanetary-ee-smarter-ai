@@ -57,6 +57,7 @@ namespace InterplanetaryAI.Tests
             V015Rules();
             V0151Rules();
             V0152Rules();
+            V016Rules();
 
             Console.WriteLine(s_checks + " checks, " + s_failures + " failed");
             return s_failures == 0 ? 0 : 1;
@@ -1367,6 +1368,66 @@ namespace InterplanetaryAI.Tests
             Check(EconomyDirector.EndgameBank(60000, 10000f, 8, 6000, 50000) == 6000, "6 turns left: bank the target");
             Check(EconomyDirector.EndgameBank(0, 10000f, 8, 6000, 2500) == 2500, "depleted: bank what is left");
             Check(EconomyDirector.EndgameBank(60000, 10000f, 8, 0, 50000) == 0, "no target, no bank");
+        }
+
+        // ---- v0.16 (council v0.16) -------------------------------------------------------------------
+
+        private static void V016Rules()
+        {
+            // Item 1: slot policy.
+            Check(SlotPolicy.PermanentAllowed(false, 1, 2, 1, 1), "opening: the 2nd permanent fits under the cap of 2");
+            Check(!SlotPolicy.PermanentAllowed(false, 2, 2, 5, 1), "opening: a 3rd permanent waits for Lossless (match 16 queued 7 by T11)");
+            Check(SlotPolicy.PermanentAllowed(false, 9, 0, 1, 1), "cap 0 = no opening cap");
+            Check(SlotPolicy.PermanentAllowed(true, 9, 2, 2, 1), "after Lossless: a city with 2 free slots keeps 1 for SSTAR");
+            Check(!SlotPolicy.PermanentAllowed(true, 0, 2, 1, 1), "after Lossless: a permanent never takes a city's reserved last slot");
+            Check(SlotPolicy.JammingAllowed(2, 3, 2000f, 1500f), "Jamming: 3rd copy while research remains");
+            Check(!SlotPolicy.JammingAllowed(3, 3, 2000f, 1500f), "Jamming: ceiling of 3 simultaneous copies");
+            Check(!SlotPolicy.JammingAllowed(0, 3, 1499f, 1500f), "Jamming: not when under 1,500 plan science remains");
+
+            // Item 4: war start.
+            Check(WarStart.Turn(16, 20, true, 12000f, 12000f) == 16, "war at 16 with Orbital Assembly and 12k income");
+            Check(WarStart.Turn(16, 20, true, 11999f, 12000f) == 20, "war waits for 20 below 12k income");
+            Check(WarStart.Turn(16, 20, false, 50000f, 12000f) == 20, "war waits for 20 without Orbital Assembly");
+            Check(WarStart.Turn(22, 20, false, 0f, 12000f) == 22, "a later WarFromTurn is never moved earlier by the fallback");
+
+            // Item 5: intel bid, judged on own visibility results only.
+            IntelBidState s = new IntelBidState { CreditedEnergy = 20000f };
+            Check(IntelBudget.Allowed(s, 13, true, 14, 0.1f, 200f, 3, 2, 2) == 0, "no bid before IntelBidFromTurn");
+            Check(IntelBudget.Allowed(s, 14, false, 14, 0.1f, 200f, 3, 2, 2) == 0, "no bid while a city is visible and every enemy readable");
+            Check(IntelBudget.Allowed(s, 14, true, 14, 0.1f, 200f, 3, 2, 2) == 3, "a batch of 3 when blind");
+            for (int i = 0; i < 3; i++) IntelBudget.Record(s, 14, 200f, 0, 1);
+            Check(IntelBudget.Allowed(s, 14, true, 14, 0.1f, 200f, 3, 2, 2) == 0, "the batch is full");
+            Check(IntelBudget.Allowed(s, 15, true, 14, 0.1f, 200f, 3, 2, 2) == 0, "wait for the batch's result");
+            IntelBudget.Evaluate(s, 16, 0, 1, 2, 2);
+            Check(s.FailedBatches == 1 && !s.Stopped && s.LastVerdict == "failed", "nothing new seen: a failed batch; got " + s.LastVerdict);
+            Check(IntelBudget.Allowed(s, 16, true, 14, 0.1f, 200f, 3, 2, 2) == 3, "a second batch after one failure");
+            for (int i = 0; i < 3; i++) IntelBudget.Record(s, 16, 200f, 0, 1);
+            IntelBudget.Evaluate(s, 18, 0, 1, 2, 2);
+            Check(s.Stopped && s.LastVerdict == "stop-loss", "two failed batches: stop-loss");
+            Check(IntelBudget.Allowed(s, 18, true, 14, 0.1f, 200f, 3, 2, 2) == 1, "after the stop-loss: one probe");
+            IntelBudget.Record(s, 18, 200f, 0, 1);
+            Check(s.Probes == 1 && IntelBudget.Allowed(s, 18, true, 14, 0.1f, 200f, 3, 2, 2) == 0, "one probe at a time");
+            IntelBudget.Evaluate(s, 20, 1, 1, 2, 2);
+            Check(!s.Stopped && s.FailedBatches == 0 && s.LastVerdict == "success", "a probe that shows a city lifts the stop-loss");
+            IntelBidState poor = new IntelBidState { CreditedEnergy = 10000f, SpentEnergy = 950f };
+            Check(IntelBudget.Allowed(poor, 20, true, 14, 0.1f, 100f, 3, 2, 2) == 0, "the budget is 10% of credited energy: 950 + 100 > 1,000");
+            IntelBidState spent = new IntelBidState { CreditedEnergy = 10000f, Stopped = true, Probes = 2 };
+            Check(IntelBudget.Allowed(spent, 30, true, 14, 0.1f, 100f, 3, 2, 2) == 0, "at most IntelProbeMax probes after the stop-loss");
+
+            // Item 6: forward defense need (match 16 T27: 83 impacts, 56 with a defense in range).
+            int need = ForwardDefense.Need(83, 56f / 83f, 150f, 1.25f, 14725f, 0.8f);
+            Check(need == 10500, "forward need = 56 eligible x 150 x 1.25 = 10,500; got " + need);
+            Check(ForwardDefense.Need(83, 56f / 83f, 150f, 1.25f, 14725f, 0.5f) == 7362, "bounded by the hard cap share of income");
+            Check(ForwardDefense.Need(0, 1f, 150f, 1.25f, 14725f, 0.8f) == 0, "no enemy fire yet: no forward need");
+
+            // Item 4 (S3): match 16 T21, 9 Missiles, 7.65 guided through at 100%, two cities visible.
+            Check(PrecisionOpportunity.Holds(2, 7.65f, 1f, 150f, 500, true, 6f, 0.9f, 1f), "T21: 1,147 population through vs a 500 city fires");
+            Check(!PrecisionOpportunity.Holds(2, 7.65f, 1f, 150f, 1200, true, 6f, 0.9f, 1f), "no credible kill on a 1,200 city");
+            Check(!PrecisionOpportunity.Holds(2, 5.9f, 1f, 150f, 300, true, 6f, 0.9f, 1f), "under lane A's 6 guided through");
+            Check(!PrecisionOpportunity.Holds(2, 7.65f, 0.85f, 150f, 300, true, 6f, 0.9f, 1f), "under the 0.9 pass share");
+            Check(!PrecisionOpportunity.Holds(0, 7.65f, 1f, 150f, 300, true, 6f, 0.9f, 1f), "no city visible now: no precision fire");
+            Check(!PrecisionOpportunity.Holds(2, 7.65f, 1f, 150f, 300, false, 6f, 0.9f, 1f), "unfunded: no precision fire");
+            Check(!PrecisionOpportunity.Holds(2, 7.65f, 1f, 150f, 300, true, 6f, 0.9f, 0f), "killShare 0 = off");
         }
 
         private static void Check(bool condition, string what)

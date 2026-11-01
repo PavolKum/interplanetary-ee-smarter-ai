@@ -31,6 +31,14 @@ namespace InterplanetaryAI.Brain
         public float ScienceGain;
         public bool NeedsSlot;
         public bool SavesReserve; // gain is planet material saved (refinery), not production: never counted as income
+        // v0.16 item 1 (council E1, B-Amendment 2): next-turn production change when it differs from the investment
+        // utility above. A temporary project's utility is its gain x duration/10 (a common ten-turn horizon); its
+        // production next turn is the full gain. NaN = same as EnergyGain / MaterialGain.
+        public float IncomeEnergy = float.NaN;
+        public float IncomeMaterial = float.NaN;
+
+        public float NextTurnEnergy { get { return float.IsNaN(IncomeEnergy) ? EnergyGain : IncomeEnergy; } }
+        public float NextTurnMaterial { get { return float.IsNaN(IncomeMaterial) ? MaterialGain : IncomeMaterial; } }
         public object Payload;  // adapter data (BuildingData, UpgradeData, AIProjectEntity)
         public object Target;   // adapter data (the building an upgrade goes on)
 

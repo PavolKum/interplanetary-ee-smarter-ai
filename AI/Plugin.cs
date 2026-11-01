@@ -22,7 +22,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.15.3";
+        public const string VERSION = "0.16.0";
 
         internal static ManualLogSource Log;
 
@@ -160,7 +160,25 @@ namespace InterplanetaryAI
         // war began at T20, and filled the 30-weapon cap with Railguns into a Kinetic-only human.
         // v0.15: Self-Adjusting Optics + Advanced Signal Processing (Telescope Array, 650 science) at #3-4, before the human's
         // counterintel (v0.14.1: they were #11-12, first Telescopes at T16, the human's first hub at T13, no city ever seen).
+        // v0.16 (council v0.16 item 2, decision-record-r2): economy and science first. Super Tensile (Offshore Mine), Smart
+        // Grids (Floating Plant), Quantum Computing, Experimental Matter Control (Electromagnetic Jamming, science x1.25 per
+        // city), Nanostructuring + Microwave (Floating Plant yield), 4th Gen + Lossless (SSTAR, energy x1.3 per city), then
+        // Telescopes, Kinetic (2nd Gen + Maglev), Plasma right after Maglev (Ion insurance), Orbital Assembly (Missile), Early
+        // Warning AI (Kinetic range). Ultracapacitors + Composite Heat Cells (blind artillery, Pavol's P1) never before EMC,
+        // Nano, Microwave, Lossless and Plasma. Robotic Mining stays late: the limited-planet upgrade policy cannot install its
+        // second yield upgrade (council N6). Match 16 had EMC ~T18, Microwave T22, Plasma T28.
         private const string DefaultResearchPlan =
+            "tec_MassBiochemicalProcessing,tec_MolecularRecycling,tec_SuperTensileMaterials,tec_SmartGrids,tec_QuantumComputing,"
+            + "tec_ExperimentalMatterControl,tec_Nanostructuring,tec_MicrowaveEnergyTranmission,tec_4thGenNuclearReactors,tec_LosslessEnergyTransfer,"
+            + "tec_SelfAdjustingOptics,tec_AdvancedSignalProcessing,tec_2ndGenComposites,tec_MaglevServos,tec_PlasmaChannelInduction,"
+            + "tec_OrbitalAssembly,tec_EarlyWarningAI,tec_MagneticRadiationShielding,tec_Ultracapacitors,tec_CompositeHeatCells,"
+            + "tec_UraniumAlloys,tec_EmDrives,tec_ThermonuclearWarheads,tec_InductionCoils,tec_ZeroReluctanceEngineering,"
+            + "tec_MagneticSaturationElimination,tec_RoboticMining,tec_UltrasonicProjection,tec_Metamaterials,tec_DesignerNanomaterials,"
+            + "tec_VerticalFarming,tec_QuantumCommunications,tec_AtmosphericInterferenceMitigation,tec_Octaazacubane,tec_AdvancedGenetics,"
+            + "tec_SelfHealingMaterials,tec_AITargetTracking,tec_MultiChainedStages,tec_GammaRayLasers,tec_MassDrivers";
+
+        // v0.15 default, replaced on load if the config still holds it unchanged.
+        private const string V015ResearchPlan =
             "tec_MassBiochemicalProcessing,tec_MolecularRecycling,tec_SelfAdjustingOptics,tec_AdvancedSignalProcessing,tec_SmartGrids,"
             + "tec_SuperTensileMaterials,tec_QuantumComputing,tec_4thGenNuclearReactors,tec_LosslessEnergyTransfer,tec_2ndGenComposites,"
             + "tec_MaglevServos,tec_ExperimentalMatterControl,tec_OrbitalAssembly,tec_Nanostructuring,tec_MicrowaveEnergyTranmission,"
@@ -259,6 +277,27 @@ namespace InterplanetaryAI
         internal static ConfigEntry<int> AntiNukePerCity;
         internal static ConfigEntry<int> AntiNukePriorPerCity;
         internal static ConfigEntry<int> AntiNukePriorTurn;
+        // v0.16 (council v0.16, decision-record-r2)
+        internal static ConfigEntry<int> OpeningPermanentCap;
+        internal static ConfigEntry<int> ProjectSlotReserve;
+        internal static ConfigEntry<int> JammingMax;
+        internal static ConfigEntry<int> JammingMinPlanScience;
+        internal static ConfigEntry<int> WarFallbackTurn;
+        internal static ConfigEntry<int> WarMinIncome;
+        internal static ConfigEntry<float> IntelBudgetShare;
+        internal static ConfigEntry<int> IntelBidFromTurn;
+        internal static ConfigEntry<int> IntelBatch;
+        internal static ConfigEntry<int> IntelEvalTurns;
+        internal static ConfigEntry<int> IntelFailedBatchesStop;
+        internal static ConfigEntry<int> IntelProbeMax;
+        internal static ConfigEntry<float> PrecisionMinGuided;
+        internal static ConfigEntry<float> PrecisionMinShare;
+        internal static ConfigEntry<float> PrecisionKillShare;
+        internal static ConfigEntry<bool> BlindArtillery;
+        internal static ConfigEntry<string> BlindArtilleryUpgrades;
+        internal static ConfigEntry<string> DefenseUpgradeIds;
+        internal static ConfigEntry<int> DefenseUpgradesPerTurn;
+        internal static ConfigEntry<float> ForwardDefenseMargin;
         internal static ConfigEntry<float> AntiNukeCityValue;
         internal static ConfigEntry<int> NukeMemoryTurns;
         internal static ConfigEntry<float> CoverageCityValue;
@@ -336,7 +375,7 @@ namespace InterplanetaryAI
                 "v0.15: a guided target counts as fully allocated once the damage aimed at it this volley reaches this multiple of its durability (population for cities, HP otherwise); further shots move to the next target.");
             GuidedCityCover = Config.Bind("Director", "GuidedCityCover", true,
                 "v0.15: any enemy guided weapon (Missile, MIRV, Nuke) seen or landed triggers the per-city anti-missile cover (AntiNukePerCity defenses over each city), without the defense throttle. Off = Nuclear Missiles only (v0.14).");
-            IntelSprintUntilTurn = Config.Bind("Director", "IntelSprintUntilTurn", 14,
+            IntelSprintUntilTurn = Config.Bind("Director", "IntelSprintUntilTurn", 0,
                 "v0.15: until this turn, while an enemy city has never been seen, intel buildings may be queued IntelSprintPerTurn a turn up to IntelSprintBuildings. Cities never move and once seen stay on the map for guided strikes. 0 = off.");
             IntelSprintBuildings = Config.Bind("Director", "IntelSprintBuildings", 6,
                 "v0.15: intel buildings the sprint aims for (6 Telescopes x 8 intel = 48 >= a small city's 45 stealth before counterintel).");
@@ -355,10 +394,10 @@ namespace InterplanetaryAI
                 "Tech IDs in order. Default (v0.3): the human's order from the 31 Oct 2026 win, economy first (material and energy projects, yield upgrades, Offshore Mine, Floating Plant), then the Nuclear Missile line, then the rest.");
             if (ResearchPlan.Value == V02ResearchPlan || ResearchPlan.Value == V03ResearchPlan || ResearchPlan.Value == V04ResearchPlan
                 || ResearchPlan.Value == V09ResearchPlan || ResearchPlan.Value == V010ResearchPlan || ResearchPlan.Value == V011ResearchPlan
-                || ResearchPlan.Value == V014ResearchPlan)
+                || ResearchPlan.Value == V014ResearchPlan || ResearchPlan.Value == V015ResearchPlan)
             {
                 ResearchPlan.Value = DefaultResearchPlan;
-                Log.LogInfo("Research plan: replaced an unchanged older default with the v0.15 default.");
+                Log.LogInfo("Research plan: replaced an unchanged older default with the v0.16 default.");
             }
             if (Math.Abs(GrudgeWeight.Value - 0.6f) < 1e-4f)
             {
@@ -369,8 +408,8 @@ namespace InterplanetaryAI
             UnknownEconomyShare = Config.Bind("Targeting", "UnknownEconomyShare", 0.8f,
                 "Economy share (of the strongest known) assumed for an enemy whose production our intel cannot read. Unknown is not weak.");
             IntelPerTurn = Config.Bind("Director", "IntelPerTurn", 2, "Most intel buildings (Telescope Array) queued per turn while some enemy's numbers are unreadable.");
-            MaxIntelBuildings = Config.Bind("Director", "MaxIntelBuildings", 30, "Cap on intel buildings.");
-            DefenseReserveShare = Config.Bind("Director", "DefenseReserveShare", 0.3f,
+            MaxIntelBuildings = Config.Bind("Director", "MaxIntelBuildings", 21, "Cap on intel buildings.");
+            DefenseReserveShare = Config.Bind("Director", "DefenseReserveShare", 0.4f,
                 "At war, energy kept unspent for defense rolls, at most this share of energy income (each roll costs the defender 100-200 energy; 0 left = the defense fails).");
             EndgameBankMaterial = Config.Bind("Director", "EndgameBankMaterial", 6000,
                 "Material kept banked before a superweapon is available, once the planet is about to run dry. 0 = off.");
@@ -386,7 +425,7 @@ namespace InterplanetaryAI
             WeaponUpgradeShare = Config.Bind("Director", "WeaponUpgradeShare", 0.3f, "Most of a turn's starting material spent on weapon upgrades.");
             WeaponUpgradeMinGain = Config.Bind("Director", "WeaponUpgradeMinGain", 0.15f, "Smallest gain in damage per firing energy worth an upgrade (0.15 = +15%).");
             PopulationDamageWeight = Config.Bind("Director", "PopulationDamageWeight", 1.5f, "Population damage valued against building damage when judging weapons (cities at 0 population decide the game).");
-            MaterialGlutRatio = Config.Bind("Director", "MaterialGlutRatio", 3f,
+            MaterialGlutRatio = Config.Bind("Director", "MaterialGlutRatio", 1.5f,
                 "v0.10: material counts as in glut once the banked stock is this many times the turn's energy budget; energy gains then count fully, material gains and material cost at 0.25. 0 = off.");
             MaterialGlutMin = Config.Bind("Director", "MaterialGlutMin", 5000, "Smallest material stock that counts as glut.");
             EnergyGlutShare = Config.Bind("Director", "EnergyGlutShare", 0.3f,
@@ -443,7 +482,7 @@ namespace InterplanetaryAI
 
             DirectorEnabled = Config.Bind("Director", "Enabled", true,
                 "v0.3 economy director: replaces the native construction choice. Buys yield upgrades and city projects first, keeps energy income near EnergyToMaterialTarget x material income, places water buildings properly, holds weapons until WarFromTurn, and counters visible enemy weapons with defenses. Off = the v0.2 build planner.");
-            WarFromTurn = Config.Bind("Director", "WarFromTurn", 20,
+            WarFromTurn = Config.Bind("Director", "WarFromTurn", 16,
                 "Turn from which the AI builds weapons (v0.9.1: the human built its first at T22). Before it, only retaliation after heavy damage. Firing is decided by [Strategy].");
             DefenseFromTurn = Config.Bind("Director", "DefenseFromTurn", 15,
                 "v0.10: turn from which the defense floor (DefenseFloorShare) and the defense energy reserve apply, before weapons (WarFromTurn).");
@@ -455,7 +494,7 @@ namespace InterplanetaryAI
                 "Same cap while retaliating before WarFromTurn.");
             WarSpendShare = Config.Bind("Director", "WarSpendShare", 0.4f,
                 "Share of a turn's energy spent on new weapons before the economy gets the rest. Energy left over after the economy also goes to weapons (it does not carry over).");
-            EnergyToMaterialTarget = Config.Bind("Director", "EnergyToMaterialTarget", 0.6f,
+            EnergyToMaterialTarget = Config.Bind("Director", "EnergyToMaterialTarget", 1.0f,
                 "Wanted energy income as a share of material income (plus weapon upkeep). The human who won kept ~0.5-0.65 while booming.");
             DefensePerEnemyWeapon = Config.Bind("Director", "DefensePerEnemyWeapon", 0.4f,
                 "Defenses wanted per visible enemy weapon building.");
@@ -536,7 +575,7 @@ namespace InterplanetaryAI
             AntiNukePerCity = Config.Bind("Director", "AntiNukePerCity", 2,
                 "Once an enemy Nuclear Missile is seen or lands on us: this many defenses that stop it (Ion in Enhanced) per city, placed over the cities. 0 = off.");
             AntiNukePriorPerCity = Config.Bind("Director", "AntiNukePriorPerCity", 1, "Before any nuke is seen, from AntiNukePriorTurn: this many per city.");
-            AntiNukePriorTurn = Config.Bind("Director", "AntiNukePriorTurn", 24, "Turn from which nukes are expected without having seen one (0 = never).");
+            AntiNukePriorTurn = Config.Bind("Director", "AntiNukePriorTurn", 18, "Turn from which nukes are expected without having seen one (0 = never).");
             AntiNukeCityValue = Config.Bind("Director", "AntiNukeCityValue", 20f, "Weight of a city when placing an anti-nuke defense (an ordinary building is 1).");
             NukeMemoryTurns = Config.Bind("Director", "NukeMemoryTurns", 12, "A Nuclear Missile that hit us keeps the threat on for this many turns.");
             CoverageCityValue = Config.Bind("Director", "CoverageCityValue", 4f, "Weight of a city when judging what a defense covers (an ordinary building is 1).");
@@ -554,6 +593,54 @@ namespace InterplanetaryAI
                 "v0.14: a building type whose placements gave up 3+ times in a turn is queued at most twice a turn for this many turns, unless one of its placements succeeds (v0.13.1: 6 Offshore Mines abandoned at T14, then 13 more at T18). 0 = only the next turn (v0.11).");
             PlacementStepCap = Config.Bind("Director", "PlacementStepCap", 1500,
                 "Placement attempts before a building search gives up and its cost is returned (native searches never give up).");
+
+            // ---- v0.16 (council v0.16, docs/reviews/2026-11-01-council-v016/decision-record-r2.md) ----
+            OpeningPermanentCap = Config.Bind("Director", "OpeningPermanentCap", 2,
+                "v0.16 item 1: permanent city projects (owned + queued) allowed before Lossless Energy Transfer is researched. Match 16 queued 5 Molecular Recycling Plants by T7 and 2 Quantum Encryption Hubs by T11, filling all 7 slots; the first SSTAR came at T31. 0 = no cap.");
+            ProjectSlotReserve = Config.Bind("Director", "ProjectSlotReserve", 1,
+                "v0.16 item 1: after the opening cap, a permanent city project goes only into a city that keeps this many free project slots for Jamming / SSTAR.");
+            JammingMax = Config.Bind("Director", "JammingMax", 3,
+                "v0.16 item 1: most simultaneous Electromagnetic Jamming projects (science x1.25 global each, 4 turns). Lane A's provisional ceiling, adopted by the facilitator.");
+            JammingMinPlanScience = Config.Bind("Director", "JammingMinPlanScience", 1500,
+                "v0.16 item 1: Jamming is bought only while at least this much research-plan science remains.");
+            WarFallbackTurn = Config.Bind("Director", "WarFallbackTurn", 20,
+                "v0.16 item 4: war starts at WarFromTurn only when Orbital Assembly is researched and energy income is at least WarMinIncome; otherwise at this turn (v0.15 behaviour).");
+            WarMinIncome = Config.Bind("Director", "WarMinIncome", 12000, "v0.16 item 4: energy income needed for the early war start (WarFromTurn).");
+            IntelBudgetShare = Config.Bind("Director", "IntelBudgetShare", 0.1f,
+                "v0.16 item 5: intel construction and upgrade energy stays within this share of the energy credited so far (upkeep logged separately). Replaces the unconditional unseen-city escalation (Pavol's P2: no enemy city count is used).");
+            IntelBidFromTurn = Config.Bind("Director", "IntelBidFromTurn", 14,
+                "v0.16 item 5: intel bought to find enemy cities waits until this turn, timed to the strike window (a T8 sighting is worthless once the city goes dark).");
+            IntelBatch = Config.Bind("Director", "IntelBatch", 3, "v0.16 item 5: intel buildings or Lidar upgrades bought in one batch.");
+            IntelEvalTurns = Config.Bind("Director", "IntelEvalTurns", 2, "v0.16 item 5: turns after a batch before its visibility result is judged.");
+            IntelFailedBatchesStop = Config.Bind("Director", "IntelFailedBatchesStop", 2,
+                "v0.16 item 5: after this many batches in a row that showed no new enemy city or readable enemy, intel stops (stop-loss) except bounded probes.");
+            IntelProbeMax = Config.Bind("Director", "IntelProbeMax", 2, "v0.16 item 5: single intel buildings allowed after the stop-loss (probes).");
+            PrecisionMinGuided = Config.Bind("Strategy", "PrecisionMinGuided", 6f,
+                "v0.16 item 4 (S3, lane A's floor): fire below MinPassingShots when a city is visible now and at least this many guided shots are expected through...");
+            PrecisionMinShare = Config.Bind("Strategy", "PrecisionMinShare", 0.9f, "...at least this share of the salvo gets through...");
+            PrecisionKillShare = Config.Bind("Strategy", "PrecisionKillShare", 1f,
+                "...and (S3, lane B's credible-kill predicate) the guided population damage expected through is at least this multiple of the smallest visible city's population, within the war firing budget. Match 16 held at T21-T22 with 7.65 and 10 guided shots through onto two visible cities. 0 = off.");
+            BlindArtillery = Config.Bind("Director", "BlindArtillery", true,
+                "v0.16 item 4 (Pavol's P1): with no enemy city visible, buy no guided weapons (match 16: 45 Missiles struck random points) and prefer upgraded unguided artillery.");
+            BlindArtilleryUpgrades = Config.Bind("Director", "BlindArtilleryUpgrades", "upg_RailgunRadius3,upg_RailgunProjectileAmount2",
+                "v0.16 item 4: weapon upgrades bought first while blind (Optimized Airburst, Triple Barrel Assembly).");
+            DefenseUpgradeIds = Config.Bind("Director", "DefenseUpgradeIds", "upg_KineticEnergyCostDown1,upg_KineticRange1",
+                "v0.16 item 6: defense upgrades bought on owned defenses, in order (Kinetic roll cost x0.7; Kinetic range x1.3).");
+            DefenseUpgradesPerTurn = Config.Bind("Director", "DefenseUpgradesPerTurn", 4, "v0.16 item 6: most defense upgrades queued per turn. 0 = off.");
+            ForwardDefenseMargin = Config.Bind("Director", "ForwardDefenseMargin", 1.25f,
+                "v0.16 item 6: once enemy fire has landed, the defense reserve asks for the largest volley seen so far x the share of impacts a defense could meet x the live roll cost x this margin (bounded by DefenseHardCapShare). The T26 estimator asked 1,250 E one phase before an 83-impact volley. 0 = off.");
+            if (migrated.Value == "0.14")
+            {
+                // v0.16 (council v0.16): each unchanged v0.15 default moves once.
+                if (Math.Abs(EnergyToMaterialTarget.Value - 0.6f) < 1e-4f) { EnergyToMaterialTarget.Value = 1.0f; Log.LogInfo("EnergyToMaterialTarget: 0.6 -> 1.0 (once)."); }
+                if (Math.Abs(MaterialGlutRatio.Value - 3f) < 1e-4f) { MaterialGlutRatio.Value = 1.5f; Log.LogInfo("MaterialGlutRatio: 3 -> 1.5 (once)."); }
+                if (WarFromTurn.Value == 20) { WarFromTurn.Value = 16; Log.LogInfo("WarFromTurn: 20 -> 16 (once; gated by WarMinIncome)."); }
+                if (AntiNukePriorTurn.Value == 24) { AntiNukePriorTurn.Value = 18; Log.LogInfo("AntiNukePriorTurn: 24 -> 18 (once)."); }
+                if (Math.Abs(DefenseReserveShare.Value - 0.3f) < 1e-4f) { DefenseReserveShare.Value = 0.4f; Log.LogInfo("DefenseReserveShare: 0.3 -> 0.4 (once)."); }
+                if (MaxIntelBuildings.Value == 30) { MaxIntelBuildings.Value = 21; Log.LogInfo("MaxIntelBuildings: 30 -> 21 (once)."); }
+                if (IntelSprintUntilTurn.Value == 14) { IntelSprintUntilTurn.Value = 0; Log.LogInfo("IntelSprintUntilTurn: 14 -> 0 (once; the opening sprint is retired)."); }
+                migrated.Value = "0.16";
+            }
 
             EnableLasers = Config.Bind("Lasers", "EnableLasers", false,
                 "EXPERIMENTAL. Let the AI build and fire Laser / EMP Laser / Solar Laser. The game's own AI laser code was switched off by its developers and has bugs (crash on no target, wrong building aimed); this installs fixes for both plus a bypass at end of turn. Needs a game restart. Try it in a throwaway match first.");
