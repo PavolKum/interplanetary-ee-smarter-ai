@@ -519,7 +519,7 @@ namespace InterplanetaryAI
                     string head = queue.Count > 0 ? queue[0] : null;
                     HashSet<string> owned;
                     bool ownedHead = head != null && ((s_ownedQueue.TryGetValue(pid, out owned) && owned.Contains(head))
-                        || urgent.Contains(head) || s_defenseTechs.ContainsValue(head)); // v0.16 (Sol v0.16 M3): counter research kept
+                        || urgent.Contains(head)); // v0.16 (Sol v0.16 M3): the current counter research is kept
                     bool planLeft = ResearchPlan.NextTarget(Plugin.ResearchPlanIds, id => SafeCompleted(tech, id, pid), id => s_refused.Contains(pid + ":" + id)) != null;
                     if (head == null || ownedHead || !planLeft) return;
                     guardHead = head;

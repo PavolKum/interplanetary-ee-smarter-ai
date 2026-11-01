@@ -129,6 +129,7 @@ namespace InterplanetaryAI
             public int TargetCandidates;
             public int ForwardDefenseNeed;
             public int RepairHeld;                 // energy repairs left for the defense reserve this turn
+            public int ReserveWanted;              // defense reserve asked for before the recovery cap
             public int DefenseUpgradesThisTurn;
             public int GuidedRefused;              // guided weapons not bought: no city visible to strike
             public bool GuidedThreat;     // v0.15: an enemy guided weapon (Missile, MIRV, Nuke) seen or landed
@@ -629,6 +630,7 @@ namespace InterplanetaryAI
                 // Under a nuke threat every working anti-nuke defense gets one 200-energy roll (Terra v0.8 #5).
                 if (d.NukeThreat) reserve = Math.Max(reserve, (int)Math.Min(d.AntiNukeOwned * 200f, 0.4f * d.EnergyIncome));
                 reserve = Math.Max(0, Math.Min(reserve, core.Resources.Energy));
+                d.ReserveWanted = reserve; // v0.16: what the defense wanted before the recovery cap (logged with the shortfall)
                 reserve = EconomyDirector.CapReserveForRecovery(reserve, core.Resources.Energy, d.EnergyIncome, Plugin.DefenseRecoveryShare.Value);
                 if (economy.BuyPending && !economy.Bought) reserve = Math.Min(reserve, Math.Max(0, core.Resources.Energy - economy.GoalEnergyCost));
                 core.Resources.Energy -= reserve;
@@ -1108,8 +1110,12 @@ namespace InterplanetaryAI
                 // v0.16 item 6 (council N5): repairs ran before the defense reserve and took its room (T26: 3,600 E of
                 // repairs, reserve clipped to 3,080 before an 83-impact volley). The observed and forward defense need now
                 // comes off the repair budget first.
+                // v0.16 (Sol v0.16 re-check #2): repairs get only what is left after firing, the recovery floor AND the
+                // intended defense reserve: repairRoom = energy - firing - recovery - protectedDefense.
                 int defenseHold = RepairDefenseHold(me, firingUpkeep);
-                int energyBudget = (int)Math.Min(Math.Max(0f, Plugin.RepairEnergyShare.Value) * res.Energy, Math.Max(0, res.Energy - firingUpkeep - defenseHold));
+                float recovery = Math.Max(0f, Plugin.DefenseRecoveryShare.Value) * res.EnergyProductionPerTurn;
+                int repairRoom = (int)Math.Max(0f, res.Energy - firingUpkeep - recovery - defenseHold);
+                int energyBudget = (int)Math.Min(Math.Max(0f, Plugin.RepairEnergyShare.Value) * res.Energy, repairRoom);
                 int materialBudget = (int)(Math.Max(0f, Math.Min(1f, Plugin.RepairMaterialShare.Value)) * res.Material);
                 List<RepairCandidate> picked = RepairPlanner.Pick(candidates, energyBudget, materialBudget, Plugin.RepairsPerTurn.Value, Plugin.RepairBelowHpShare.Value);
                 int n = 0, spentE = 0, spentM = 0;
@@ -1183,10 +1189,20 @@ namespace InterplanetaryAI
                 float income = me.ResourceHandler.EnergyProductionPerTurn;
                 float observed = EconomyDirector.ObservedDefenseNeed(fresh.EnergySpent, fresh.NoResource, fresh.Impacts - fresh.NoEligibleDefense, 100f,
                     Plugin.DefenseObservedMargin.Value);
+                // Own defenses counted now (the same filter as construction's ledger count); the rest of the planned inputs
+                // from last turn's director state, the only state that exists before AICore.BeginTurn.
+                int ownDefenses = 0;
+                foreach (BaseBuilding b in me.BuildingHandler.Buildings)
+                {
+                    if (b != null && !b.IsCity && b.BuildingData != null && b.BuildingData.defense_functionality.IsValueSet
+                        && b.CurrentState == BaseBuilding.BuildingState.Normal) ownDefenses++;
+                }
                 float planned = prev != null
-                    ? EconomyDirector.DefenseReserve(prev.OwnDefenses, prev.VisibleEnemyWeapons, Math.Max(1, prev.EnemiesAlive), prev.RecentDamage,
+                    ? EconomyDirector.DefenseReserve(ownDefenses, prev.VisibleEnemyWeapons, Math.Max(1, prev.EnemiesAlive), prev.RecentDamage,
                         150f, 125f, Plugin.DefenseReserveShare.Value, income, 1f, observed, Plugin.DefenseHardCapShare.Value)
                     : Math.Min(observed, Plugin.DefenseHardCapShare.Value * income);
+                // Construction's explicit Ion demand under a guided threat (StartConstruction), included here too.
+                if (prev != null && prev.NukeThreat) planned = Math.Max(planned, Math.Min(prev.AntiNukeOwned * 200f, 0.4f * income));
                 float hold = Math.Max(planned, ForwardNeed(me, fresh));
                 float room = me.ResourceHandler.Energy - firingUpkeep - Math.Max(0f, Plugin.DefenseRecoveryShare.Value) * income;
                 return (int)Math.Max(0f, Math.Min(hold, room));
@@ -2694,7 +2710,8 @@ namespace InterplanetaryAI
                 .Int("intelUpgradesQueued", d.IntelUpgradesThisTurn).Int("intelBatchTurn", MemoryOf(core.PlayerData.PlayerID).Intel.BatchTurn)
                 .Int("intelBatchBought", MemoryOf(core.PlayerData.PlayerID).Intel.BatchBought)
                 .Bool("blind", d.Blind).Int("targetCandidates", d.TargetCandidates).Int("guidedRefused", d.GuidedRefused).Int("forwardDefenseNeed", d.ForwardDefenseNeed)
-                .Int("repairHeld", d.RepairHeld).Int("defenseUpgrades", d.DefenseUpgradesThisTurn)
+                .Int("repairHeld", d.RepairHeld).Int("reserveWanted", d.ReserveWanted)
+                .Int("reserveShortfall", Math.Max(0, d.ReserveWanted - d.DefenseReserve)).Int("defenseUpgrades", d.DefenseUpgradesThisTurn)
                 .Str("keyTechs", KeyTechs(core.PlayerData)).Str("upgradedDefenses", UpgradedDefenses(core.PlayerData))
                 .Int("peakImpacts", MemoryOf(core.PlayerData.PlayerID).PeakImpacts)
                 .Int("antiNukeProtecting", d.AntiNukeProtecting).Int("antiNukeWanted", d.AntiNukeWanted)

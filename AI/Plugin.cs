@@ -660,6 +660,7 @@ namespace InterplanetaryAI
             patched += TryPatch(typeof(AICore), "Initialize", null, "CoreInitializePostfix");
             patched += TryPatch(typeof(AIWeaponTargeting), "BeginTurn", null, "TargetingBeginTurnPostfix");
             patched += TryPatch(typeof(AIWeaponTargetingGoal), "BeginTurn", null, "GoalBeginTurnPostfix");
+            patched += TryPatch(typeof(PlayerWeaponHandler), "CompleteFirstPhaseTargeting", "CompleteFirstPhasePrefix", "CompleteFirstPhasePostfix"); // v0.16
             int holdHook = TryPatch(typeof(AIWeaponTargetingGoal), "TargetWeapons", "GoalTargetWeaponsPrefix", "GoalTargetWeaponsPostfix");
             HoldHookPatched = holdHook == 1; // without it the strategy never holds fire (nothing would stop the shots)
             patched += holdHook;
@@ -675,7 +676,7 @@ namespace InterplanetaryAI
             patched += TryPatch(typeof(AIBuildingPlacementFinder), "Update", "FinderUpdatePrefix", null, typeof(DirectorPatches));
             patched += TryPatch(typeof(PlayerDefenseHandler), "IsHitIntercepted", "BeforeIntercept", "AfterIntercept", typeof(LedgerPatches));
             int laserPatches = EnableLasers.Value ? LaserPatches.Install(new Harmony(GUID + ".lasers")) : 0;
-            Log.LogInfo(NAME + " " + VERSION + " loaded; " + patched + " of 15 hooks patched. Director " + (DirectorEnabled.Value ? "on" : "off")
+            Log.LogInfo(NAME + " " + VERSION + " loaded; " + patched + " of 16 hooks patched. Director " + (DirectorEnabled.Value ? "on" : "off")
                 + ", war from turn " + WarFromTurn.Value + ". Accuracy by level: " + AccuracyByLevel.Value
                 + "; research plan " + ResearchPlanIds.Count + " techs; superweapons " + Superweapons.Value
                 + "; lasers " + (EnableLasers.Value ? laserPatches + " of 5 patches" : "off"));

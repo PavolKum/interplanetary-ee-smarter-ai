@@ -41,3 +41,15 @@
 - `guidedPopDamage` in the strategy record.
 
 **Still not logged:** ranked economy alternatives with rejection reasons, and allocation reasons for reserve shortfalls.
+
+## Re-check round (docs/reviews/sol-ai-v0.16-recheck.md, DO NOT SHIP, 4 blockers + 1 regression) - fixes
+
+| Re-check item | Fix |
+|---|---|
+| #1 F1 fail-open on exception | `SecondPhasePrefix` fails closed. Every path returns false. On an exception before an action was queued, it uses the random-surface point. When core or planet is null, there is no second phase (never the native selector) |
+| #2 F4 arithmetic | `repairRoom = energy - firing - recovery(0.2 x income) - protectedDefense`. Own defenses are counted live. Construction's Ion demand under a guided threat is included. Construction logs `reserveWanted` and `reserveShortfall` |
+| #3 F7 assigned enemy vs destination | `Destination()` = primary target, the stored secondary trajectory's planet, or, for a miss, the miss trajectory's planet. A hit with an unresolved destination is withheld (fail closed). Final authority is a new prefix on `PlayerWeaponHandler.CompleteFirstPhaseTargeting`: an AI guided shot whose completed trajectory lands on an enemy with no visible candidate is refused exactly like an unaffordable shot (nothing spent), and logged as `fire-refused` |
+| #4 F7 paid energy | A postfix on `CompleteFirstPhaseTargeting` writes `fire-paid` for every successful AI payment: weapon, guided flag, actual destination, candidates there, energy delta. The planned record is renamed `fire-plan` |
+| #5 summarizer crash | The new record is renamed from `fire` to `fire-plan`; the legacy `fire` schema is untouched |
+| M3 blanket exemption | `s_defenseTechs.ContainsValue` exemption removed; only the current counter research (`urgent`) is kept |
+| M1/M2/M4/M6 remainders | Deferred to v0.16.1 (non-blocking per re-check section 4) |

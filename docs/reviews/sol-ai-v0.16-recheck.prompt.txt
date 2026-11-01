@@ -1,0 +1,14 @@
+READ-ONLY re-check. Do not edit, create or delete any file. Stay inside this repository: any path outside it is auto-rejected and ends your run. Finish with the complete written report; include a line containing the word "verdict".
+
+You reviewed AI v0.16.0 and returned DO NOT SHIP: docs/reviews/sol-ai-v0.16.md. The fixes are in docs/reviews/sol-ai-v0.16-fixes.diff (git diff 4a5b66a..f0179c0 -- AI); the disposition, with each finding's fix and status, is docs/reviews/sol-ai-v0.16-disposition.md. Pavol deferred Ion cover-site reservation to v0.16.1 (scope decision, recorded there). HEAD is f0179c0. decompiled/ is the game source (authoritative).
+
+Task: verify the fixes, nothing else.
+1. For each of F1-F8 and M1-M6: FIXED, PARTIAL or NOT FIXED, with file:line evidence. Check especially:
+   - F1: no remaining path where a Shadow city's coordinates or record select a precision target, including the random-surface fallback and any other native call.
+   - F2: no remaining consumer of the real surviving-city count.
+   - F7/F8: the withholding and quota code in GoalTargetWeaponsPrefix runs before the abort; removing weapons from m_hittingWeapons/m_missingWeapons cannot leave native TargetWeapons in a broken state (compare the hold-fire path, which clears both lists).
+   - F4: the repair hold's arithmetic and ordering against AICore.BeginTurn, Ledger.Roll and StartConstruction.
+2. Did any fix introduce a new defect: null reference, exception in a hook, double counting, a fairness leak, or a behaviour change outside its finding?
+3. Name any remaining blocker.
+
+Rank new or remaining findings by severity with file:line and a concrete fix. End with a verdict line: SHIP, SHIP AFTER FIXES (list), or DO NOT SHIP.
