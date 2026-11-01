@@ -46,3 +46,11 @@ The options are in decision-record-r2 §5.
 | P0 | Build v0.16 | All six items. |
 | P1 | Blind-phase posture | (b) artillery primary, with A's two conditions. |
 | P2 | Replacement for `UnseenCities` | (c) no count, own visibility results only. Both lanes prefer it. |
+
+## Pavol's decisions (2026-11-01 19:2x)
+
+| ID | Decision |
+|---|---|
+| P0 | **Build all six items**, plus the `UnseenCities` replacement. |
+| P1 | **(b) Artillery primary** in the blind phase, with lane A's two conditions: log loss per 1,000 paid firing E from the first blind salvo; Ultracapacitors and Composite Heat Cells never ahead of EMC, Nano, Microwave, Lossless and Plasma in the plan. |
+| P2 | **(c) No count.** Intel spending runs on own visibility results only; no enemy city count is used or remembered. |
