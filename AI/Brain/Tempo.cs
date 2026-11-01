@@ -20,6 +20,14 @@ namespace InterplanetaryAI.Brain
             return cityFreeSlots - 1 >= Math.Max(0, reserve);
         }
 
+        // v0.16.1 (match 17: five Rare Material copies took every free slot at T13, no Jamming until T16, science half the
+        // human's): a temporary project other than Jamming / SSTAR must leave room for the Jamming copies still wanted.
+        public static bool TemporaryAllowed(bool jammingWanted, int jammingActive, int jammingMax, int totalFreeSlots)
+        {
+            if (!jammingWanted) return true;
+            return totalFreeSlots - 1 >= Math.Max(0, jammingMax - jammingActive);
+        }
+
         // Jamming while useful research remains, up to `max` active or queued at once.
         public static bool JammingAllowed(int activeOrQueued, int max, float planScienceLeft, float minPlanScience)
         {
@@ -52,6 +60,18 @@ namespace InterplanetaryAI.Brain
         public int Probes;               // single purchases after the stop-loss
         public int LastProbeTurn = -1000;
         public string LastVerdict = "";
+        public int BatchSize;            // v0.16.1: this batch's size (budget-scaled)
+    }
+
+    // v0.16.1 (match 17: 86 Offshore Mines in one turn at T22 and Rare Material x3 drained ~50k a turn; the planet went
+    // 235k -> 72k in eight turns): extraction may grow only up to what the planet can sustain to the material horizon.
+    public static class PlanetGuard
+    {
+        public static bool ExtractionAllowed(float materialIncome, float materialGain, float sustainableIncome)
+        {
+            if (sustainableIncome < 0f || materialGain <= 0f) return true;
+            return materialIncome + materialGain <= sustainableIncome;
+        }
     }
 
     public static class IntelBudget
@@ -60,7 +80,10 @@ namespace InterplanetaryAI.Brain
 
         // Judge a batch `evalTurns` after it started: success when more enemy cities are visible now or fewer enemies
         // are unreadable. A success clears the failure run (and a stop-loss: a probe found something).
-        public static void Evaluate(IntelBidState s, int turn, int visibleCities, int blindEnemies, int evalTurns, int failedBatchesStop)
+        // v0.16.1 (match 17: the stop-loss tripped after 1,000 E of a ~27,000 E budget): the stop needs both the failure run
+        // and at least stopMinUse of the budget spent. budgetShare 0 = no spend condition (v0.16 behaviour).
+        public static void Evaluate(IntelBidState s, int turn, int visibleCities, int blindEnemies, int evalTurns, int failedBatchesStop,
+            float budgetShare = 0f, float stopMinUse = 0f)
         {
             if (s.BatchBought <= 0 || turn < s.BatchTurn + Math.Max(1, evalTurns)) return;
             bool success = visibleCities > s.BatchVisibleBefore || blindEnemies < s.BatchBlindBefore;
@@ -73,7 +96,8 @@ namespace InterplanetaryAI.Brain
             else
             {
                 s.FailedBatches++;
-                if (failedBatchesStop > 0 && s.FailedBatches >= failedBatchesStop) s.Stopped = true;
+                bool spentEnough = budgetShare <= 0f || s.SpentEnergy >= stopMinUse * budgetShare * s.CreditedEnergy;
+                if (failedBatchesStop > 0 && s.FailedBatches >= failedBatchesStop && spentEnough) s.Stopped = true;
                 s.LastVerdict = s.Stopped ? "stop-loss" : "failed";
             }
             s.BatchBought = 0;
@@ -81,10 +105,21 @@ namespace InterplanetaryAI.Brain
 
         // Intel purchases allowed now for vision (native minimum intel is separate). wantVision: no enemy city visible
         // now, or an enemy we cannot read.
+        // v0.16.1: with unitCost > 0 a batch is sized to the budget room (room / unitCost), capped at `batch`: a 3-array batch
+        // could never close a 3-5x counterintel gap, so it failed by construction (match 17).
+        public static int BatchSize(IntelBidState s, float budgetShare, float unitCost, int batchMax)
+        {
+            if (unitCost <= 0f || budgetShare <= 0f) return batchMax;
+            int fit = (int)Math.Floor((budgetShare * s.CreditedEnergy - s.SpentEnergy) / unitCost);
+            return Math.Max(1, Math.Min(batchMax, fit));
+        }
+
         public static int Allowed(IntelBidState s, int turn, bool wantVision, int bidFromTurn, float budgetShare, float nextCost,
-            int batch, int evalTurns, int probeMax)
+            int batch, int evalTurns, int probeMax, float unitCost = 0f)
         {
             if (!wantVision || turn < bidFromTurn || batch <= 0) return 0;
+            if (s.BatchBought == 0 || s.BatchTurn != turn) s.BatchSize = BatchSize(s, budgetShare, unitCost, batch);
+            if (s.BatchSize > 0) batch = s.BatchSize;
             if (budgetShare > 0f && s.SpentEnergy + nextCost > budgetShare * s.CreditedEnergy) return 0;
             if (s.BatchBought > 0)
             {

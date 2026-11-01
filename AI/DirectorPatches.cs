@@ -115,6 +115,9 @@ namespace InterplanetaryAI
             public int PermanentProjects;          // permanent city projects installed or queued (all our cities)
             public int JammingActive;              // Electromagnetic Jamming installed or queued
             public int SstarActive;                // SSTAR Reactor Trials installed or queued
+            public int RareMaterialActive;         // v0.16.1: Rare Material Synthesis installed or queued
+            public bool EmcDone;
+            public int ExtractionBlocked;          // v0.16.1: extraction options refused by the planet guard
             public int ProjectSlotsFree, ProjectSlotsTotal;
             public string ProjectSlots = "";       // per city "free/total:permanent:temporary"
             public int PermanentsBlocked;          // permanent project options refused by the slot policy this turn
@@ -177,6 +180,8 @@ namespace InterplanetaryAI
         internal const string OrbitalAssemblyTech = "tec_OrbitalAssembly";
         internal const string JammingProject = "pro_ScienceYieldShortGlobal1";
         internal const string SstarProject = "pro_EnergyYieldLongGlobal1";
+        internal const string RareMaterialProject = "pro_MaterialYieldLongGlobal1"; // v0.16.1
+        internal const string EmcTech = "tec_ExperimentalMatterControl";
         internal const string LidarUpgrade = "upg_RadiotelescopeIntelYield1";
 
         private static bool TechDone(PlayerData me, string id)
@@ -333,6 +338,7 @@ namespace InterplanetaryAI
             d.WarTurn = WarTurnFor(me, turn); // v0.16 item 4: T16 with Orbital Assembly and WarMinIncome, else WarFallbackTurn
             d.War = EconomyDirector.WarPhase(turn, d.WarTurn, recentDamage, Plugin.WarDamageTrigger.Value);
             d.LosslessDone = TechDone(me, LosslessTech);
+            d.EmcDone = TechDone(me, EmcTech);
             CountProjects(core, d);
             d.EnergyGlut = Plugin.EnergyGlutShare.Value > 0f
                 && EconomyDirector.IsEnergyGlut(d.LastEnergyLeft, d.LastEnergyBudget, Plugin.EnergyGlutShare.Value, Plugin.EnergyGlutMin.Value);
@@ -499,7 +505,8 @@ namespace InterplanetaryAI
             {
                 memory.Intel.CreditedEnergy += Math.Max(0, me.ResourceHandler.EnergyProductionPerTurn);
                 memory.CreditedTurn = turn;
-                IntelBudget.Evaluate(memory.Intel, turn, d.VisibleEnemyCities, d.BlindEnemies, Plugin.IntelEvalTurns.Value, Plugin.IntelFailedBatchesStop.Value);
+                IntelBudget.Evaluate(memory.Intel, turn, d.VisibleEnemyCities, d.BlindEnemies, Plugin.IntelEvalTurns.Value, Plugin.IntelFailedBatchesStop.Value,
+                    Plugin.IntelBudgetShare.Value, Plugin.IntelStopMinBudgetUse.Value);
             }
             // v0.13: weapons are chosen against the enemy the strategy committed to this turn (v0.12.1: the director chose
             // against the other AI's defenses while every strike went at the human).
@@ -692,7 +699,7 @@ namespace InterplanetaryAI
             MatchMemory memory = MemoryOf(core.PlayerData.PlayerID);
             bool wantVision = d.Blind || d.BlindEnemies > 0;
             int bidAllowed = IntelBudget.Allowed(memory.Intel, d.Turn, wantVision, Plugin.IntelBidFromTurn.Value, Plugin.IntelBudgetShare.Value, 50f, // cheapest candidate; arrays re-checked at 200
-                Plugin.IntelBatch.Value, Plugin.IntelEvalTurns.Value, Plugin.IntelProbeMax.Value);
+                Plugin.IntelBatch.Value, Plugin.IntelEvalTurns.Value, Plugin.IntelProbeMax.Value, 200f);
             if (d.Steps <= 1) d.IntelAllowed = bidAllowed;
             d.IntelPolicy = memory.Intel.Stopped ? "stop-loss" : bidAllowed > 0 ? "bid" : wantVision ? "wait" : "seeing";
             // v0.16 (Sol v0.16 F5): native minimum gets priority but stays inside the budget share; its spend never opens or
@@ -1533,6 +1540,13 @@ namespace InterplanetaryAI
                 float scienceGain = thisCityScience * (FloatValue(p.turn_yield_science_multiplier, 1f) - 1f)
                     + d.ScienceIncome * (FloatValue(p.turn_yield_science_multiplier_global, 1f) - 1f);
                 if (energyGain * span <= 0f && materialGain * span <= 0f && scienceGain <= 0f) continue;
+                bool drains = FloatValue(p.turn_cost_planet_material_multiplier_global, 1f) > 1f || Value(p.turn_cost_planet_material_addition) > 0;
+                if (Plugin.PlanetDrainGuard.Value && drains && materialGain > 0f
+                    && !PlanetGuard.ExtractionAllowed(d.MaterialIncome, materialGain, d.SustainableMaterial))
+                {
+                    d.ExtractionBlocked++;
+                    continue;
+                }
                 options.Add(new EconOption
                 {
                     Id = key,
@@ -1640,6 +1654,7 @@ namespace InterplanetaryAI
                         else temporary++;
                         if (p.id.Value == JammingProject) d.JammingActive++;
                         if (p.id.Value == SstarProject) d.SstarActive++;
+                        if (p.id.Value == RareMaterialProject) d.RareMaterialActive++;
                     }
                     int free = CityFreeSlots(core.Construction, city);
                     int total = free + permanent + temporary;
@@ -1702,7 +1717,21 @@ namespace InterplanetaryAI
             if (p == null || city == null) return false;
             if (p.id.Value == JammingProject)
                 return SlotPolicy.JammingAllowed(d.JammingActive, Plugin.JammingMax.Value, d.RemainingPlanScience, Plugin.JammingMinPlanScience.Value);
-            if (!IsPermanent(p)) return true;
+            // v0.16.1: Jamming still wanted (EMC done, research left, under the ceiling) keeps its slots from other projects.
+            bool jammingWanted = d.EmcDone
+                && SlotPolicy.JammingAllowed(d.JammingActive, Plugin.JammingMax.Value, d.RemainingPlanScience, Plugin.JammingMinPlanScience.Value);
+            bool leavesJamming = SlotPolicy.TemporaryAllowed(jammingWanted, d.JammingActive, Plugin.JammingMax.Value, d.ProjectSlotsFree);
+            if (!IsPermanent(p))
+            {
+                if (p.id.Value == SstarProject) return true; // SSTAR shares the priority (Jamming into SSTAR)
+                if (p.id.Value == RareMaterialProject && d.RareMaterialActive >= Math.Max(0, Plugin.RareMaterialMax.Value)) return false;
+                return leavesJamming;
+            }
+            // v0.16.1: a permanent science project skips the opening cap (match 17: half the human's science).
+            bool science = Plugin.OpeningCapExemptScience.Value && FloatValue(p.turn_yield_science_multiplier, 1f) > 1f;
+            if (science)
+                return leavesJamming && (!d.LosslessDone || SlotPolicy.PermanentAllowed(true, d.PermanentProjects, Plugin.OpeningPermanentCap.Value,
+                    CityFreeSlots(construction, city), Plugin.ProjectSlotReserve.Value));
             return SlotPolicy.PermanentAllowed(d.LosslessDone, d.PermanentProjects, Plugin.OpeningPermanentCap.Value,
                 CityFreeSlots(construction, city), Plugin.ProjectSlotReserve.Value);
         }
@@ -1751,6 +1780,13 @@ namespace InterplanetaryAI
                 if (waterOnly && !isPlant && !HasWaterAnchor(core)) continue; // an offshore mine needs a powered water neighbour
                 float materialGain = Value(data.turn_yield_material) * globalMaterial * planetFactor - Value(data.turn_cost_material);
                 if (!isPlant && Value(data.turn_yield_material) > 0 && me.ResourceHandler.PlanetMaterial <= 0) continue;
+                // v0.16.1: extraction only up to what the planet sustains to the material horizon (match 17: 86 Offshore Mines at T22).
+                if (Plugin.PlanetDrainGuard.Value && !isPlant && materialGain > 0f && Value(data.turn_cost_planet_material) > 0
+                    && !PlanetGuard.ExtractionAllowed(d.MaterialIncome, materialGain, d.SustainableMaterial))
+                {
+                    d.ExtractionBlocked++;
+                    continue;
+                }
                 options.Add(new EconOption
                 {
                     Id = id,
@@ -1874,6 +1910,8 @@ namespace InterplanetaryAI
             if (IsPermanent(project.Project)) d.PermanentProjects++;
             if (project.Project.id.Value == JammingProject) d.JammingActive++;
             if (project.Project.id.Value == SstarProject) d.SstarActive++;
+            if (project.Project.id.Value == RareMaterialProject) d.RareMaterialActive++;
+            d.ProjectSlotsFree = Math.Max(0, d.ProjectSlotsFree - 1); // v0.16.1: the Jamming reservation reads this
             Plugin.WriteDecision(new Json().Str("e", "project").Int("t", d.Turn).Str("ai", core.PlayerData.UserNickName)
                 .Str("project", project.Project.id.Value).Str("city", city.ObjectId.ToString()).Bool("permanent", IsPermanent(project.Project))
                 .Int("cityFreeBefore", freeBefore).Int("reserve", Plugin.ProjectSlotReserve.Value).Bool("lossless", d.LosslessDone)
@@ -2658,7 +2696,8 @@ namespace InterplanetaryAI
                 .Int("visibleCities", d.VisibleEnemyCities).Int("ownIntel", d.OwnIntel).Bool("guidedThreat", d.GuidedThreat)
                 // v0.16 gates (council v0.16 decision-record-r2 section 3)
                 .Int("warTurn", d.WarTurn).Bool("lossless", d.LosslessDone).Int("permanentProjects", d.PermanentProjects)
-                .Int("jamming", d.JammingActive).Int("sstar", d.SstarActive).Int("projectSlotsFree", d.ProjectSlotsFree)
+                .Int("jamming", d.JammingActive).Int("sstar", d.SstarActive).Int("rareMaterial", d.RareMaterialActive)
+                .Int("extractionBlocked", d.ExtractionBlocked).Int("intelBatchSize", MemoryOf(core.PlayerData.PlayerID).Intel.BatchSize).Int("projectSlotsFree", d.ProjectSlotsFree)
                 .Int("projectSlotsTotal", d.ProjectSlotsTotal).Str("projectSlots", d.ProjectSlots).Int("permanentsBlocked", d.PermanentsBlocked)
                 .Str("intelPolicy", d.IntelPolicy).Int("intelAllowed", d.IntelAllowed)
                 .Num("intelSpent", MemoryOf(core.PlayerData.PlayerID).Intel.SpentEnergy).Num("intelCredited", MemoryOf(core.PlayerData.PlayerID).Intel.CreditedEnergy)

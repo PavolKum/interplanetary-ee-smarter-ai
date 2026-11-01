@@ -58,6 +58,7 @@ namespace InterplanetaryAI.Tests
             V0151Rules();
             V0152Rules();
             V016Rules();
+            V0161Rules();
 
             Console.WriteLine(s_checks + " checks, " + s_failures + " failed");
             return s_failures == 0 ? 0 : 1;
@@ -1483,6 +1484,38 @@ namespace InterplanetaryAI.Tests
             Check(fresh.PendingDefender(7).Impacts == 2 && fresh.LastDefender(7).Impacts == 0, "repairs see the fresh phase; LastDefender is the older one until Roll");
             fresh.Roll(7);
             Check(fresh.LastDefender(7).Impacts == 2 && fresh.PendingDefender(7).Impacts == 0, "after Roll the fresh phase becomes LastDefender");
+        }
+
+        // ---- v0.16.1 (match 17) -----------------------------------------------------------------------
+
+        private static void V0161Rules()
+        {
+            // Jamming keeps its slots: match 17 T13 had 5 free slots and bought 5 Rare Material, 0 Jamming.
+            Check(!SlotPolicy.TemporaryAllowed(true, 0, 3, 3), "3 free slots, 3 Jammings wanted: another temporary must wait");
+            Check(SlotPolicy.TemporaryAllowed(true, 0, 3, 4), "4 free slots, 3 Jammings wanted: one other temporary fits");
+            Check(SlotPolicy.TemporaryAllowed(true, 3, 3, 1), "Jamming at its ceiling: nothing reserved");
+            Check(SlotPolicy.TemporaryAllowed(false, 0, 3, 1), "Jamming not wanted (no EMC or no research left): no reservation");
+
+            // Planet guard: T22 income 2,325, sustainable ~10,200 (235k over 23 turns).
+            Check(PlanetGuard.ExtractionAllowed(2325f, 7000f, 10200f), "extraction up to the sustainable income is allowed");
+            Check(!PlanetGuard.ExtractionAllowed(9000f, 2000f, 10200f), "extraction past the sustainable income is refused");
+            Check(PlanetGuard.ExtractionAllowed(50000f, 2000f, -1f), "unlimited planet: no guard");
+            Check(PlanetGuard.ExtractionAllowed(50000f, -300f, 10200f), "a project that lowers material is never blocked here");
+
+            // Intel batches sized to the budget (match 17: 3-array batches, 1,000 E spent of ~27,000 E, then stop-loss).
+            IntelBidState big = new IntelBidState { CreditedEnergy = 200000f };
+            Check(IntelBudget.BatchSize(big, 0.1f, 200f, 8) == 8, "20,000 E of room: capped at 8");
+            IntelBidState small = new IntelBidState { CreditedEnergy = 6000f };
+            Check(IntelBudget.BatchSize(small, 0.1f, 200f, 8) == 3, "600 E of room: 3 arrays");
+            Check(IntelBudget.BatchSize(small, 0.1f, 0f, 8) == 8, "unitCost 0 = fixed batch (v0.16)");
+            Check(IntelBudget.Allowed(big, 19, true, 14, 0.1f, 50f, 8, 2, 2, 200f) == 8, "the bid buys a budget-sized batch");
+            // Stop-loss needs the spend as well as the failures.
+            IntelBidState st = new IntelBidState { CreditedEnergy = 270000f, SpentEnergy = 1000f, FailedBatches = 1, BatchBought = 3, BatchTurn = 19 };
+            IntelBudget.Evaluate(st, 21, 0, 1, 2, 2, 0.1f, 0.5f);
+            Check(!st.Stopped && st.FailedBatches == 2, "two failures but 1,000 of 27,000 E spent: no stop-loss");
+            IntelBidState st2 = new IntelBidState { CreditedEnergy = 270000f, SpentEnergy = 14000f, FailedBatches = 1, BatchBought = 3, BatchTurn = 19 };
+            IntelBudget.Evaluate(st2, 21, 0, 1, 2, 2, 0.1f, 0.5f);
+            Check(st2.Stopped, "two failures and over half the budget spent: stop-loss");
         }
 
         private static void Check(bool condition, string what)

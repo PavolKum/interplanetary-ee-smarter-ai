@@ -24,7 +24,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.16.0";
+        public const string VERSION = "0.16.1";
 
         internal static ManualLogSource Log;
 
@@ -169,7 +169,22 @@ namespace InterplanetaryAI
         // Warning AI (Kinetic range). Ultracapacitors + Composite Heat Cells (blind artillery, Pavol's P1) never before EMC,
         // Nano, Microwave, Lossless and Plasma. Robotic Mining stays late: the limited-planet upgrade policy cannot install its
         // second yield upgrade (council N6). Match 16 had EMC ~T18, Microwave T22, Plasma T28.
+        // v0.16.1 (match 17): the v0.16 order put Kinetic (2nd Gen + Maglev) at #13-14 and Telescopes at #11-12, after Nano,
+        // Microwave, 4th Gen and Lossless; at 400-600 science the AI idled 6-7k energy a turn T16-T19 waiting for them, met
+        // the first volley with 6 Kinetics at T20 and never saw a city. Defense and sight now follow EMC (Jamming); the
+        // energy upgrades follow them (the AI's energy was already ahead of the human's). Plasma stays right after Maglev.
         private const string DefaultResearchPlan =
+            "tec_MassBiochemicalProcessing,tec_MolecularRecycling,tec_SuperTensileMaterials,tec_SmartGrids,tec_QuantumComputing,"
+            + "tec_ExperimentalMatterControl,tec_2ndGenComposites,tec_MaglevServos,tec_PlasmaChannelInduction,tec_SelfAdjustingOptics,"
+            + "tec_AdvancedSignalProcessing,tec_Nanostructuring,tec_MicrowaveEnergyTranmission,tec_4thGenNuclearReactors,tec_LosslessEnergyTransfer,"
+            + "tec_OrbitalAssembly,tec_EarlyWarningAI,tec_MagneticRadiationShielding,tec_Ultracapacitors,tec_CompositeHeatCells,"
+            + "tec_UraniumAlloys,tec_EmDrives,tec_ThermonuclearWarheads,tec_InductionCoils,tec_ZeroReluctanceEngineering,"
+            + "tec_MagneticSaturationElimination,tec_RoboticMining,tec_UltrasonicProjection,tec_Metamaterials,tec_DesignerNanomaterials,"
+            + "tec_VerticalFarming,tec_QuantumCommunications,tec_AtmosphericInterferenceMitigation,tec_Octaazacubane,tec_AdvancedGenetics,"
+            + "tec_SelfHealingMaterials,tec_AITargetTracking,tec_MultiChainedStages,tec_GammaRayLasers,tec_MassDrivers";
+
+        // v0.16.0 default, replaced on load if the config still holds it unchanged.
+        private const string V016ResearchPlan =
             "tec_MassBiochemicalProcessing,tec_MolecularRecycling,tec_SuperTensileMaterials,tec_SmartGrids,tec_QuantumComputing,"
             + "tec_ExperimentalMatterControl,tec_Nanostructuring,tec_MicrowaveEnergyTranmission,tec_4thGenNuclearReactors,tec_LosslessEnergyTransfer,"
             + "tec_SelfAdjustingOptics,tec_AdvancedSignalProcessing,tec_2ndGenComposites,tec_MaglevServos,tec_PlasmaChannelInduction,"
@@ -300,6 +315,10 @@ namespace InterplanetaryAI
         internal static ConfigEntry<string> DefenseUpgradeIds;
         internal static ConfigEntry<int> DefenseUpgradesPerTurn;
         internal static ConfigEntry<float> ForwardDefenseMargin;
+        internal static ConfigEntry<int> RareMaterialMax;            // v0.16.1
+        internal static ConfigEntry<bool> OpeningCapExemptScience;   // v0.16.1
+        internal static ConfigEntry<float> IntelStopMinBudgetUse;    // v0.16.1
+        internal static ConfigEntry<bool> PlanetDrainGuard;          // v0.16.1
         internal static ConfigEntry<float> AntiNukeCityValue;
         internal static ConfigEntry<int> NukeMemoryTurns;
         internal static ConfigEntry<float> CoverageCityValue;
@@ -397,10 +416,10 @@ namespace InterplanetaryAI
                 "Tech IDs in order. Default (v0.3): the human's order from the 31 Oct 2026 win, economy first (material and energy projects, yield upgrades, Offshore Mine, Floating Plant), then the Nuclear Missile line, then the rest.");
             if (ResearchPlan.Value == V02ResearchPlan || ResearchPlan.Value == V03ResearchPlan || ResearchPlan.Value == V04ResearchPlan
                 || ResearchPlan.Value == V09ResearchPlan || ResearchPlan.Value == V010ResearchPlan || ResearchPlan.Value == V011ResearchPlan
-                || ResearchPlan.Value == V014ResearchPlan || ResearchPlan.Value == V015ResearchPlan)
+                || ResearchPlan.Value == V014ResearchPlan || ResearchPlan.Value == V015ResearchPlan || ResearchPlan.Value == V016ResearchPlan)
             {
                 ResearchPlan.Value = DefaultResearchPlan;
-                Log.LogInfo("Research plan: replaced an unchanged older default with the v0.16 default.");
+                Log.LogInfo("Research plan: replaced an unchanged older default with the v0.16.1 default.");
             }
             if (Math.Abs(GrudgeWeight.Value - 0.6f) < 1e-4f)
             {
@@ -613,7 +632,7 @@ namespace InterplanetaryAI
                 "v0.16 item 5: intel construction and upgrade energy stays within this share of the energy credited so far (upkeep logged separately). Replaces the unconditional unseen-city escalation (Pavol's P2: no enemy city count is used).");
             IntelBidFromTurn = Config.Bind("Director", "IntelBidFromTurn", 14,
                 "v0.16 item 5: intel bought to find enemy cities waits until this turn, timed to the strike window (a T8 sighting is worthless once the city goes dark).");
-            IntelBatch = Config.Bind("Director", "IntelBatch", 3, "v0.16 item 5: intel buildings or Lidar upgrades bought in one batch.");
+            IntelBatch = Config.Bind("Director", "IntelBatch", 8, "v0.16.1: most intel buildings or Lidar upgrades in one batch; the batch is sized to the remaining budget (budget room / 200 E).");
             IntelEvalTurns = Config.Bind("Director", "IntelEvalTurns", 2, "v0.16 item 5: turns after a batch before its visibility result is judged.");
             IntelFailedBatchesStop = Config.Bind("Director", "IntelFailedBatchesStop", 2,
                 "v0.16 item 5: after this many batches in a row that showed no new enemy city or readable enemy, intel stops (stop-loss) except bounded probes.");
@@ -632,6 +651,15 @@ namespace InterplanetaryAI
             DefenseUpgradesPerTurn = Config.Bind("Director", "DefenseUpgradesPerTurn", 4, "v0.16 item 6: most defense upgrades queued per turn. 0 = off.");
             ForwardDefenseMargin = Config.Bind("Director", "ForwardDefenseMargin", 1.25f,
                 "v0.16 item 6: once enemy fire has landed, the defense reserve asks for the largest volley seen so far x the share of impacts a defense could meet x the live roll cost x this margin (bounded by DefenseHardCapShare). The T26 estimator asked 1,250 E one phase before an 83-impact volley. 0 = off.");
+            // ---- v0.16.1 (match 17, docs/playtests/2026-11-01-v0.16.md) ----
+            RareMaterialMax = Config.Bind("Director", "RareMaterialMax", 1,
+                "v0.16.1: most simultaneous Rare Material Synthesis projects (material x1.3, energy x0.95, planet cost x1.3 each). Match 17 bought 5 at T13, which took the Jamming slots, and 3 more at T24 while the planet drained ~50k a turn.");
+            OpeningCapExemptScience = Config.Bind("Director", "OpeningCapExemptScience", true,
+                "v0.16.1: permanent science projects (Science Institute) are exempt from OpeningPermanentCap, still leaving room for wanted Jamming. Match 17 had half the human's science.");
+            IntelStopMinBudgetUse = Config.Bind("Director", "IntelStopMinBudgetUse", 0.5f,
+                "v0.16.1: the intel stop-loss needs IntelFailedBatchesStop failed batches AND at least this share of the intel budget spent. Match 17 stopped after 1,000 E of ~27,000 E.");
+            PlanetDrainGuard = Config.Bind("Director", "PlanetDrainGuard", true,
+                "v0.16.1: extraction (mines, material projects) grows only up to the material the planet can sustain to MaterialHorizonTurn.");
             if (migrated.Value == "0.14")
             {
                 // v0.16 (council v0.16): each unchanged v0.15 default moves once.
@@ -643,6 +671,12 @@ namespace InterplanetaryAI
                 if (MaxIntelBuildings.Value == 30) { MaxIntelBuildings.Value = 21; Log.LogInfo("MaxIntelBuildings: 30 -> 21 (once)."); }
                 if (IntelSprintUntilTurn.Value == 14) { IntelSprintUntilTurn.Value = 0; Log.LogInfo("IntelSprintUntilTurn: 14 -> 0 (once; the opening sprint is retired)."); }
                 migrated.Value = "0.16";
+            }
+            if (migrated.Value == "0.16")
+            {
+                // v0.16.1: IntelBatch is now the maximum of a budget-sized batch.
+                if (IntelBatch.Value == 3) { IntelBatch.Value = 8; Log.LogInfo("IntelBatch: 3 -> 8 (once; now the cap of a budget-sized batch)."); }
+                migrated.Value = "0.16.1";
             }
 
             EnableLasers = Config.Bind("Lasers", "EnableLasers", false,
