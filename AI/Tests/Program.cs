@@ -1452,6 +1452,10 @@ namespace InterplanetaryAI.Tests
             pd = Strategy.Decide(21, true, missiles, 0.7f, new List<SalvoTarget> { t21(new List<int> { 500 }) }, EnhancedCounters(),
                 -1000, 1, 9, ps, -1, -1, false, guidedRate, false, null, 150f, true);
             Check(!pd.Fire, "no guided weapons: no precision exception");
+            Dictionary<string, float> mixed = new Dictionary<string, float> { { "wea_Missile", 9f }, { "wea_Railgun", 20f } };
+            pd = Strategy.Decide(22, true, mixed, 0.7f, new List<SalvoTarget> { t21(new List<int> { 500 }) }, EnhancedCounters(),
+                -1000, 1, 29, ps, -1, -1, false, guidedRate, false, guidedIds, 150f, true);
+            Check(Math.Abs(pd.GuidedPassing - 7.65f) < 0.01f, "mixed salvo: only the Missiles count as guided through; got " + pd.GuidedPassing);
         }
 
         private static void Check(bool condition, string what)
