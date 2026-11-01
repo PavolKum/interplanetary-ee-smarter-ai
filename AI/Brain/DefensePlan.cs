@@ -121,6 +121,34 @@ namespace InterplanetaryAI.Brain
             return best;
         }
 
+        // v0.13.1 (Sol v0.13 next move 2): weapons that hit us count as known even when their buildings stay hidden. v0.12.1:
+        // the human's Lasers hit from T29 and no Shield was built, because counters looked only at visible weapon buildings.
+        // Estimate: impacts / impactsPerWeapon (rounded up), remembered with the same decay as seen weapons; known[type] is
+        // raised to it, never lowered.
+        public static void RememberIncoming(Dictionary<string, float> memory, IDictionary<string, int> impactsByWeapon, float impactsPerWeapon,
+            float decay, Dictionary<string, int> known)
+        {
+            foreach (string type in new List<string>(memory.Keys)) memory[type] *= decay;
+            if (impactsByWeapon != null)
+            {
+                foreach (KeyValuePair<string, int> hit in impactsByWeapon)
+                {
+                    if (hit.Value <= 0 || hit.Key == null || hit.Key == "?") continue;
+                    float estimate = (float)Math.Ceiling(hit.Value / Math.Max(1f, impactsPerWeapon));
+                    float old;
+                    memory.TryGetValue(hit.Key, out old);
+                    memory[hit.Key] = Math.Max(old, estimate);
+                }
+            }
+            foreach (KeyValuePair<string, float> pair in memory)
+            {
+                int n = (int)Math.Round(pair.Value);
+                int have;
+                known.TryGetValue(pair.Key, out have);
+                if (n > have) known[pair.Key] = n;
+            }
+        }
+
         // v0.5: remember enemy weapons once seen. Counterintel hides weapons it does not destroy: the 31 Oct
         // human went dark at T21 and built 24 Railguns the AI no longer counted. Per enemy and type, keep the
         // larger of what is visible now and the memory decayed by `decay` per turn; forget enemies no longer

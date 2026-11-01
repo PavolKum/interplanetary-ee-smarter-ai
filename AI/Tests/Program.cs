@@ -392,6 +392,55 @@ namespace InterplanetaryAI.Tests
             Check(mSlot > rSlot && Math.Abs(rSlot - 375f * 0.45f) < 0.01f, "per slot: Missile (455 through) beats Railgun (169 through)");
             WeaponStats only = EconomyDirector.PickWeapon(new List<WeaponStats> { rail, missile }, none, EnhancedCounters(), 10f, 4f, 0.6f, new Random(1), observed, true);
             Check(only == missile, "per slot with band 0.6: only the Missile qualifies (169 < 0.6 x 455)");
+
+            // v0.13.1 (Sol #4): Railgun interception is evidence about Coilcannons (both stopped by Kinetic), not Missiles.
+            var shared = new Dictionary<string, float> { { "wea_Railgun", 0.45f } };
+            EconomyDirector.ShareObservedPass(shared, new List<string> { "wea_Railgun", "wea_Coilcannon", "wea_Missile", "wea_Laser" }, EnhancedCounters(), 0.5f);
+            Check(shared.ContainsKey("wea_Coilcannon") && Math.Abs(shared["wea_Coilcannon"] - 0.45f) < 1e-6, "Coilcannon inherits the Railgun's 0.45");
+            Check(!shared.ContainsKey("wea_Missile"), "Missile (stopped by Ion) does not");
+            Check(!shared.ContainsKey("wea_Laser"), "a weapon nothing in the table stops does not");
+            var both = new Dictionary<string, float> { { "wea_Railgun", 0.45f }, { "wea_Coilcannon", 0.9f } };
+            EconomyDirector.ShareObservedPass(both, new List<string> { "wea_Railgun", "wea_Coilcannon" }, EnhancedCounters(), 0.5f);
+            Check(Math.Abs(both["wea_Coilcannon"] - 0.9f) < 1e-6, "an observed value is never overwritten");
+            var lowStop = new Dictionary<string, Dictionary<string, float>> {
+                { "bui_KineticDefense", new Dictionary<string, float> { { "wea_Railgun", 0.8f }, { "wea_Coilcannon", 0.3f } } } };
+            var weak = new Dictionary<string, float> { { "wea_Railgun", 0.45f } };
+            EconomyDirector.ShareObservedPass(weak, new List<string> { "wea_Coilcannon" }, lowStop, 0.5f);
+            Check(!weak.ContainsKey("wea_Coilcannon"), "a defense below minChance does not make two weapons alike");
+            var unstopped = new Dictionary<string, float> { { "wea_Laser", 0.3f } };
+            EconomyDirector.ShareObservedPass(unstopped, new List<string> { "wea_Laser", "wea_SolarLaser" }, EnhancedCounters(), 0.5f);
+            Check(!unstopped.ContainsKey("wea_SolarLaser"), "two weapons nothing in the table stops are not alike");
+            WeaponStats coil = new WeaponStats { BuildingId = "bui_Coilcannon", WeaponId = "wea_Coilcannon", BuildEnergy = 250, BuildMaterial = 400, FiringEnergy = 200, Damage = 1320f };
+            float cSlot = EconomyDirector.WeaponScore(coil, none, EnhancedCounters(), 10f, 4f, shared, true);
+            Check(Math.Abs(cSlot - 1320f * 0.45f) < 0.01f && 455f >= 0.6f * cSlot, "with shared evidence the Missile (455) stays in the band of the Coilcannon (594)");
+
+            // v0.13.1 (Sol #1): energy spent on more energy counts as unspent. v0.11.1 Beam T24: 6.7k of 27.9k left.
+            Check(!EconomyDirector.IsEnergyGlut(6670, 27920, 0.3f, 5000), "setup: 6.7k left alone is not glut (24%)");
+            Check(EconomyDirector.IsEnergyGlut(6670 + 7500, 27920, 0.3f, 5000), "6.7k left + 7.5k spent on 30 Floating Plants: glut");
+
+            // v0.13.1: weapons that hit us count as known, decayed, never lowering what we saw.
+            var incoming = new Dictionary<string, float>();
+            var known = new Dictionary<string, int> { { "wea_Railgun", 30 } };
+            DefensePlanner.RememberIncoming(incoming, new Dictionary<string, int> { { "wea_Laser", 14 }, { "wea_Railgun", 10 }, { "?", 5 } }, 2f, 0.95f, known);
+            Check(known["wea_Laser"] == 7, "14 Laser impacts at 2 per weapon: 7 Lasers known; got " + (known.ContainsKey("wea_Laser") ? known["wea_Laser"] : -1));
+            Check(known["wea_Railgun"] == 30, "seen 30 Railguns stay 30 (10 impacts do not lower it)");
+            Check(!known.ContainsKey("?"), "unknown weapon ids are ignored");
+            var later = new Dictionary<string, int>();
+            DefensePlanner.RememberIncoming(incoming, new Dictionary<string, int>(), 2f, 0.95f, later);
+            Check(later.ContainsKey("wea_Laser") && later["wea_Laser"] == 7, "a quiet turn (the human pulses): still remembered (7 x 0.95)");
+            DefensePlanner.RememberIncoming(incoming, null, 2f, 0.5f, later);
+            Check(later["wea_Laser"] == 7, "known is never lowered by the memory");
+            var lighter = new Dictionary<string, float> { { "wea_Laser", 7f } };
+            var lighterKnown = new Dictionary<string, int>();
+            DefensePlanner.RememberIncoming(lighter, new Dictionary<string, int> { { "wea_Laser", 2 } }, 2f, 0.95f, lighterKnown);
+            Check(lighterKnown["wea_Laser"] == 7, "a lighter turn (2 impacts) does not wipe the memory of 7");
+            var fresh = new Dictionary<string, int>();
+            DefensePlanner.RememberIncoming(incoming, null, 2f, 0.5f, fresh);
+            Check(fresh.ContainsKey("wea_Laser") && fresh["wea_Laser"] == 2, "decay applies each turn (7 x 0.95 x 0.5 x 0.5 = 1.7)");
+            var counterKnown = new Dictionary<string, int>();
+            DefensePlanner.RememberIncoming(new Dictionary<string, float>(), new Dictionary<string, int> { { "wea_Laser", 28 } }, 2f, 0.95f, counterKnown);
+            Check(DefensePlanner.CounterDeficit(counterKnown, new Dictionary<string, int>(), new List<string> { "bui_ShieldDefense", "bui_KineticDefense" }) == "bui_ShieldDefense",
+                "v0.12.1: 28 Laser impacts and no Laser building ever seen -> a Shield is wanted");
         }
 
         // ---- v0.12: material budget, energy saturation, fire what can aim, reachability ----------------

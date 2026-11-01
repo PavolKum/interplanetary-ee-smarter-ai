@@ -38,6 +38,7 @@ namespace InterplanetaryAI
             public readonly Dictionary<string, int> VisibleWeapons = new Dictionary<string, int>(); // visible this turn, all enemies
             public readonly Dictionary<int, Dictionary<string, int>> VisibleByEnemy = new Dictionary<int, Dictionary<string, int>>();
             public readonly Dictionary<string, float> WeaponMemory = new Dictionary<string, float>();
+            public readonly Dictionary<string, float> IncomingMemory = new Dictionary<string, float>(); // v0.13.1: weapon type -> estimated count from impacts
             public int LastNukeHitTurn = -1000; // v0.8: last turn a Nuclear Missile reached our planet
             // v0.6: enemy defenses once seen, per enemy (a Kinetic wall seen at T24 is still there when counterintel hides it)
             public readonly Dictionary<int, Dictionary<string, float>> DefenseMemory = new Dictionary<int, Dictionary<string, float>>();
@@ -136,6 +137,12 @@ namespace InterplanetaryAI
                 // Known weapons = visible now or remembered from earlier sight, per living enemy (fair: our own
                 // past observations; eliminations are public).
                 DefensePlanner.Remember(state.WeaponMemory, state.VisibleByEnemy, alive, Math.Max(0f, Math.Min(1f, Plugin.WeaponMemoryDecay.Value)), state.EnemyWeapons);
+                // v0.13.1: weapon types that hit us last action phase count as known even when their buildings stay hidden.
+                if (Plugin.IncomingImpactsPerWeapon.Value > 0f)
+                {
+                    DefensePlanner.RememberIncoming(state.IncomingMemory, Plugin.Ledger.LastDefender(me.PlayerID).ImpactsByWeapon,
+                        Plugin.IncomingImpactsPerWeapon.Value, Math.Max(0f, Math.Min(1f, Plugin.WeaponMemoryDecay.Value)), state.EnemyWeapons);
+                }
                 state.OwnDefenses.Clear();
                 state.DefensesQueued.Clear();
                 foreach (BaseBuilding building in me.BuildingHandler.Buildings)

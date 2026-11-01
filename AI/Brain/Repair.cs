@@ -8,7 +8,7 @@ namespace InterplanetaryAI.Brain
     // building). A repair restores full HP for a flat cost (repair_cost_energy 100 + repair_cost_material 100-1000).
     public sealed class RepairCandidate
     {
-        public int Priority;     // lower first: 0 weapons, 1 defenses, 2 power, 3 intel, 4 mines, 5 other
+        public int Priority;     // lower first: 0 weapons, 1 defenses, 2 power, 3 intel, 4 mines, 5 other, 6 unpowered
         public float HpShare;    // current / max HP
         public int Energy;
         public int Material;

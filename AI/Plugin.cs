@@ -22,7 +22,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.13.0";
+        public const string VERSION = "0.13.1";
 
         internal static ManualLogSource Log;
 
@@ -110,6 +110,8 @@ namespace InterplanetaryAI
         internal static ConfigEntry<float> RepairEnergyShare;
         internal static ConfigEntry<int> RepairsPerTurn;
         internal static ConfigEntry<float> RepairBelowHpShare;
+        internal static ConfigEntry<float> RepairMaterialShare;
+        internal static ConfigEntry<float> IncomingImpactsPerWeapon;
         internal static ConfigEntry<bool> CounterResearch;
         internal static ConfigEntry<bool> StrategyEnabled;
         internal static ConfigEntry<int> StrikeEvery;
@@ -350,6 +352,9 @@ namespace InterplanetaryAI
             RepairEnergyShare = Config.Bind("Director", "RepairEnergyShare", 0.25f, "v0.13: most of a turn's energy spent on repairs.");
             RepairsPerTurn = Config.Bind("Director", "RepairsPerTurn", 40, "v0.13: most repairs a turn. 0 = off.");
             RepairBelowHpShare = Config.Bind("Director", "RepairBelowHpShare", 0.8f, "v0.13: repair a building at or below this share of its HP (a repair costs the same whatever the damage).");
+            RepairMaterialShare = Config.Bind("Director", "RepairMaterialShare", 0.5f, "v0.13.1: most of the material stock spent on repairs in a turn.");
+            IncomingImpactsPerWeapon = Config.Bind("Director", "IncomingImpactsPerWeapon", 2f,
+                "v0.13.1: weapon types that hit us count as known enemy weapons (for counter-defenses and counter research) even when their buildings are hidden: impacts / this, remembered with WeaponMemoryDecay. 0 = off.");
             MaterialReserve = Config.Bind("Director", "MaterialReserve", 15000,
                 "v0.12: once the planet will run dry within BankWarningTurns, the economy keeps this much material back for defenses, weapons and rebuilding. 0 = off.");
             SellDryMinesPerTurn = Config.Bind("Director", "SellDryMinesPerTurn", 10,

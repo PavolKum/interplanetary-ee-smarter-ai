@@ -287,6 +287,40 @@ namespace InterplanetaryAI.Brain
             return pass;
         }
 
+        // v0.13.1 (Sol v0.13 #4): an unobserved weapon inherits the observed pass of a weapon the same defenses stop
+        // (at >= minChance): Railgun interception is evidence about Coilcannons (both stopped by Kinetic), not about Missiles.
+        // Without it an untested type counts as passing completely and displaces the real counter.
+        public static void ShareObservedPass(Dictionary<string, float> observedPass, IEnumerable<string> weaponIds,
+            Dictionary<string, Dictionary<string, float>> counters, float minChance)
+        {
+            if (observedPass == null || observedPass.Count == 0) return;
+            List<KeyValuePair<string, float>> seen = new List<KeyValuePair<string, float>>(observedPass);
+            foreach (string weapon in weaponIds)
+            {
+                if (observedPass.ContainsKey(weapon)) continue;
+                string stoppers = Stoppers(weapon, counters, minChance);
+                if (stoppers.Length == 0) continue;
+                float shared = -1f;
+                foreach (KeyValuePair<string, float> s in seen)
+                {
+                    if (Stoppers(s.Key, counters, minChance) == stoppers) shared = shared < 0f ? s.Value : Math.Min(shared, s.Value);
+                }
+                if (shared >= 0f) observedPass[weapon] = shared;
+            }
+        }
+
+        private static string Stoppers(string weapon, Dictionary<string, Dictionary<string, float>> counters, float minChance)
+        {
+            List<string> ids = new List<string>();
+            foreach (KeyValuePair<string, Dictionary<string, float>> defense in counters)
+            {
+                float p;
+                if (defense.Value.TryGetValue(weapon, out p) && p >= minChance) ids.Add(defense.Key);
+            }
+            ids.Sort(StringComparer.Ordinal);
+            return string.Join(",", ids.ToArray());
+        }
+
         // perSlot (v0.13): with a cap on aimed weapons the cap, not the cost, binds - rank by damage through per weapon.
         // v0.12.1: 30 Railguns per AI (pass 0.41-0.55 observed) into a human with Kinetic only and no Ion Defense.
         public static float WeaponScore(WeaponStats w, Dictionary<string, int> targetDefenses, Dictionary<string, Dictionary<string, float>> counters, float coverageFull, float firingCostTurns,

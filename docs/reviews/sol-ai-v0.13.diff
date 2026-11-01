@@ -1,0 +1,449 @@
+diff --git a/AI/Brain/Director.cs b/AI/Brain/Director.cs
+index e6331b5..8620ff1 100644
+--- a/AI/Brain/Director.cs
++++ b/AI/Brain/Director.cs
+@@ -134,6 +134,14 @@ namespace InterplanetaryAI.Brain
+             return o.Kind != OptionKind.Project && o.EnergyGain > 0f && o.MaterialGain <= 0f && o.ScienceGain <= 0f;
+         }
+ 
++        // v0.13: an option whose only gain is extracted material (a mine, a material yield upgrade or project). In material
++        // glut it only drains the fixed planet pool faster: v0.12.1 Clowrus queued 14-30 Mines a turn T21-T26 while its stock
++        // grew 38.6k -> 96.2k unused, and still ran its planet dry at T28. Planet-saving options (refinery) are kept.
++        public static bool IsExtractionOnly(EconOption o)
++        {
++            return !o.SavesReserve && o.MaterialGain > 0f && o.EnergyGain <= 0f && o.ScienceGain <= 0f;
++        }
++
+         // v0.12: material per turn the planet and the bank can supply until horizonTurn (at least minTurns ahead).
+         // -1 = unlimited planet.
+         public static float SustainableMaterialIncome(int planetMaterial, int stock, bool limited, int turn, int horizonTurn, int minTurns)
+@@ -193,6 +201,7 @@ namespace InterplanetaryAI.Brain
+             {
+                 if (o.Energy > b.EnergyBudget || o.Material > materialBudget) continue;
+                 if (saturated && IsEnergyOnly(o)) continue;
++                if (b.MaterialGlut && IsExtractionOnly(o)) continue;
+                 if (o.NeedsSlot && slotsLeft <= 0) continue;
+                 float score = Score(o, wE, wM, eFactor, b.ScienceWeight, mFactor);
+                 if (score > bestScore)
+@@ -278,24 +287,27 @@ namespace InterplanetaryAI.Brain
+             return pass;
+         }
+ 
++        // perSlot (v0.13): with a cap on aimed weapons the cap, not the cost, binds - rank by damage through per weapon.
++        // v0.12.1: 30 Railguns per AI (pass 0.41-0.55 observed) into a human with Kinetic only and no Ion Defense.
+         public static float WeaponScore(WeaponStats w, Dictionary<string, int> targetDefenses, Dictionary<string, Dictionary<string, float>> counters, float coverageFull, float firingCostTurns,
+-            Dictionary<string, float> observedPass = null)
++            Dictionary<string, float> observedPass = null, bool perSlot = false)
+         {
+             float pass = PassChance(w.WeaponId, targetDefenses, counters, coverageFull, observedPass);
++            if (perSlot) return w.Damage * pass;
+             float cost = w.BuildMaterial + 0.5f * w.BuildEnergy + firingCostTurns * w.FiringEnergy;
+             return w.Damage * pass / Math.Max(1f, cost);
+         }
+ 
+         // Human-like variety: pick among the weapons scoring at least `band` of the best, weighted by score squared.
+         public static WeaponStats PickWeapon(IList<WeaponStats> weapons, Dictionary<string, int> targetDefenses, Dictionary<string, Dictionary<string, float>> counters,
+-            float coverageFull, float firingCostTurns, float band, Random rng, Dictionary<string, float> observedPass = null)
++            float coverageFull, float firingCostTurns, float band, Random rng, Dictionary<string, float> observedPass = null, bool perSlot = false)
+         {
+             if (weapons.Count == 0) return null;
+             float[] scores = new float[weapons.Count];
+             float best = 0f;
+             for (int i = 0; i < weapons.Count; i++)
+             {
+-                scores[i] = WeaponScore(weapons[i], targetDefenses, counters, coverageFull, firingCostTurns, observedPass);
++                scores[i] = WeaponScore(weapons[i], targetDefenses, counters, coverageFull, firingCostTurns, observedPass, perSlot);
+                 best = Math.Max(best, scores[i]);
+             }
+             if (best <= 0f) return null;
+diff --git a/AI/Brain/Repair.cs b/AI/Brain/Repair.cs
+new file mode 100644
+index 0000000..c9ffc19
+--- /dev/null
++++ b/AI/Brain/Repair.cs
+@@ -0,0 +1,43 @@
++using System;
++using System.Collections.Generic;
++
++namespace InterplanetaryAI.Brain
++{
++    // v0.13 repair. The native AI never repairs (AIActions.RepairBuilding is an empty stub with no caller), so damage on AI
++    // buildings only accumulates, while a human repairs between strikes (v0.12.1: 11 AI strikes, the human never lost a
++    // building). A repair restores full HP for a flat cost (repair_cost_energy 100 + repair_cost_material 100-1000).
++    public sealed class RepairCandidate
++    {
++        public int Priority;     // lower first: 0 weapons, 1 defenses, 2 power, 3 intel, 4 mines, 5 other
++        public float HpShare;    // current / max HP
++        public int Energy;
++        public int Material;
++        public object Payload;   // adapter data (the building)
++    }
++
++    public static class RepairPlanner
++    {
++        // Damaged at or below maxHpShare, by priority then most damaged; as many as the budgets and maxCount allow.
++        // A candidate that does not fit is skipped (a cheaper one later in the order may still fit).
++        public static List<RepairCandidate> Pick(IList<RepairCandidate> candidates, int energyBudget, int materialBudget, int maxCount, float maxHpShare)
++        {
++            List<RepairCandidate> eligible = new List<RepairCandidate>();
++            foreach (RepairCandidate c in candidates)
++            {
++                if (c != null && c.HpShare < 1f && c.HpShare <= maxHpShare) eligible.Add(c);
++            }
++            eligible.Sort((a, b) => a.Priority != b.Priority ? a.Priority.CompareTo(b.Priority) : a.HpShare.CompareTo(b.HpShare));
++            List<RepairCandidate> picked = new List<RepairCandidate>();
++            int energy = Math.Max(0, energyBudget), material = Math.Max(0, materialBudget);
++            foreach (RepairCandidate c in eligible)
++            {
++                if (picked.Count >= maxCount) break;
++                if (c.Energy > energy || c.Material > material) continue;
++                energy -= c.Energy;
++                material -= c.Material;
++                picked.Add(c);
++            }
++            return picked;
++        }
++    }
++}
+diff --git a/AI/DirectorPatches.cs b/AI/DirectorPatches.cs
+index e7a8d79..75cf3af 100644
+--- a/AI/DirectorPatches.cs
++++ b/AI/DirectorPatches.cs
+@@ -103,6 +103,7 @@ namespace InterplanetaryAI
+             public int MaterialReserve;             // material the economy may not spend this turn
+             public bool EnergySaturated;
+             public int SoldMines, SoldMaterial;
++            public int Repaired, RepairEnergy, RepairMaterial; // v0.13
+             public int AimedWeapons;                // own weapons needing a trajectory (not lasers, not superweapons), queued included
+             // across turns
+             public int WaterCooldownUntil;
+@@ -216,6 +217,11 @@ namespace InterplanetaryAI
+                 d.MaterialReserve = EconomyDirector.EconomyReserve(res.PlanetMaterial, drain, limited, Plugin.BankWarningTurns.Value, Plugin.MaterialReserve.Value);
+                 int[] sold;
+                 if (s_soldThisTurn.TryGetValue(me.PlayerID, out sold) && sold[0] == turn) { d.SoldMines = sold[1]; d.SoldMaterial = sold[2]; }
++                int[] repaired;
++                if (s_repairedThisTurn.TryGetValue(me.PlayerID, out repaired) && repaired[0] == turn)
++                {
++                    d.Repaired = repaired[1]; d.RepairEnergy = repaired[2]; d.RepairMaterial = repaired[3];
++                }
+             }
+             catch (Exception e)
+             {
+@@ -325,6 +331,13 @@ namespace InterplanetaryAI
+                     target = planet.Player;
+                 }
+             }
++            // v0.13: weapons are chosen against the enemy the strategy committed to this turn (v0.12.1: the director chose
++            // against the other AI's defenses while every strike went at the human).
++            int commit = StrategyPatches.CommitTarget(me.PlayerID);
++            foreach (CelestialBody planet in core.EnemyPlanets)
++            {
++                if (commit >= 0 && planet.Player != null && planet.Player.PlayerID == commit) target = planet.Player;
++            }
+             if (target != null)
+             {
+                 d.TargetName = target.UserNickName;
+@@ -738,13 +751,77 @@ namespace InterplanetaryAI
+         // reconnection searches. Only leaves are sold: at most one power connection (a relay has two or more), no generation.
+         private static readonly Dictionary<int, int[]> s_soldThisTurn = new Dictionary<int, int[]>(); // player -> [turn, mines, material]
+ 
++        private static readonly Dictionary<int, int[]> s_repairedThisTurn = new Dictionary<int, int[]>(); // player -> [turn, n, energy, material]
++
+         private static void CoreBeginTurnPrefix(AICore __instance)
++        {
++            if (!Plugin.Active || !Plugin.DirectorEnabled.Value) return;
++            PlayerData me = __instance.PlayerData;
++            if (me == null || !me.AIPlayer) return;
++            SellDryMines(me);
++            RepairDamaged(me);
++        }
++
++        // v0.13: repair damaged buildings before the turn's resources are snapshotted, so construction plans with what is
++        // left. Weapons, then defenses, then power; most damaged first; at most RepairEnergyShare of this turn's energy.
++        private static void RepairDamaged(PlayerData me)
++        {
++            try
++            {
++                if (!Plugin.RepairEnabled.Value || Plugin.RepairsPerTurn.Value <= 0) return;
++                PlayerResourceHandler res = me.ResourceHandler;
++                bool dry = GameSessionManager.CurrentGameSettings.PlanetMaterial != -1 && res.PlanetMaterial <= 0;
++                List<RepairCandidate> candidates = new List<RepairCandidate>();
++                foreach (BaseBuilding b in me.BuildingHandler.Buildings)
++                {
++                    if (b == null || b.IsCity || b.BuildingData == null || b.CurrentState != BaseBuilding.BuildingState.Normal || b.Stats == null) continue;
++                    float max = b.Stats.MaxHP;
++                    if (max <= 0f || b.Stats.CurrentHP >= max) continue;
++                    BuildingData data = b.BuildingData;
++                    bool mine = Value(data.turn_yield_material) > 0;
++                    if (mine && dry) continue; // sold, not repaired
++                    int priority = data.weapon_functionality.IsValueSet ? 0
++                        : data.defense_functionality.IsValueSet ? 1
++                        : Value(data.turn_yield_energy) > 0 ? 2
++                        : Value(data.turn_yield_intel) > 0 || Value(data.turn_yield_counterintel) > 0 ? 3
++                        : mine ? 4 : 5;
++                    candidates.Add(new RepairCandidate
++                    {
++                        Priority = priority,
++                        HpShare = b.Stats.CurrentHP / max,
++                        Energy = Value(data.repair_cost_energy),
++                        Material = Value(data.repair_cost_material),
++                        Payload = b,
++                    });
++                }
++                if (candidates.Count == 0) return;
++                int energyBudget = (int)(Math.Max(0f, Plugin.RepairEnergyShare.Value) * res.Energy);
++                List<RepairCandidate> picked = RepairPlanner.Pick(candidates, energyBudget, res.Material, Plugin.RepairsPerTurn.Value, Plugin.RepairBelowHpShare.Value);
++                int n = 0, spentE = 0, spentM = 0;
++                foreach (RepairCandidate c in picked)
++                {
++                    if (!res.CheckEnergy(c.Energy) || !res.CheckMaterial(c.Material)) break;
++                    BaseBuilding b = (BaseBuilding)c.Payload;
++                    res.SpendEnergy(c.Energy);
++                    res.SpendMaterial(c.Material);
++                    me.BuildingHandler.RepairBuilding(b, () => { });
++                    n++;
++                    spentE += c.Energy;
++                    spentM += c.Material;
++                }
++                s_repairedThisTurn[me.PlayerID] = new[] { GameManager.CurrentTurn, n, spentE, spentM };
++            }
++            catch (Exception e)
++            {
++                ReportOnce("repair", e);
++            }
++        }
++
++        private static void SellDryMines(PlayerData me)
+         {
+             try
+             {
+-                if (!Plugin.Active || !Plugin.DirectorEnabled.Value || Plugin.SellDryMinesPerTurn.Value <= 0) return;
+-                PlayerData me = __instance.PlayerData;
+-                if (me == null || !me.AIPlayer) return;
++                if (Plugin.SellDryMinesPerTurn.Value <= 0) return;
+                 if (GameSessionManager.CurrentGameSettings.PlanetMaterial == -1 || me.ResourceHandler.PlanetMaterial > 0) return;
+                 List<BaseBuilding> dry = new List<BaseBuilding>();
+                 foreach (BaseBuilding b in me.BuildingHandler.Buildings)
+@@ -809,7 +886,9 @@ namespace InterplanetaryAI
+                     Damage = damage,
+                 });
+             }
+-            WeaponStats pick = EconomyDirector.PickWeapon(options, d.TargetDefenses, DefensePlanner.Counters, Plugin.DefensesForFullCover.Value, 4f, 0.6f, Plugin.Rng, d.ObservedPass);
++            // v0.13: with the aimed-weapon cap on, rank by damage through per weapon (the cap binds, not the cost).
++            WeaponStats pick = EconomyDirector.PickWeapon(options, d.TargetDefenses, DefensePlanner.Counters, Plugin.DefensesForFullCover.Value, 4f, 0.6f, Plugin.Rng, d.ObservedPass,
++                Plugin.MaxWeapons.Value > 0);
+             if (pick == null) return false;
+             if (!QueueBuilding(construction, core, d, buildings.GetBuilding(pick.BuildingId), "weapon")) return false;
+             d.Upkeep += pick.FiringEnergy;
+@@ -1798,6 +1877,7 @@ namespace InterplanetaryAI
+                 .Bool("holdingFire", d.HoldingFire).Int("releasedEnergy", d.ReleasedEnergy).Bool("materialGlut", d.MaterialGlut).Bool("energyGlut", d.EnergyGlut)
+                 .Num("sustainableMaterial", d.SustainableMaterial).Bool("energySaturated", d.EnergySaturated).Int("materialReserve", d.MaterialReserve)
+                 .Int("soldMines", d.SoldMines).Int("soldMaterial", d.SoldMaterial).Int("aimedWeapons", d.AimedWeapons)
++                .Int("repaired", d.Repaired).Int("repairEnergy", d.RepairEnergy).Int("repairMaterial", d.RepairMaterial)
+                 .Int("refunds", d.Refunds).Map("placementFailures", d.PlacementFailures).Int("steps", d.Steps)
+                 .Map("queued", d.Actions).ToString());
+         }
+diff --git a/AI/Plugin.cs b/AI/Plugin.cs
+index 4d38b99..3e7646c 100644
+--- a/AI/Plugin.cs
++++ b/AI/Plugin.cs
+@@ -22,7 +22,7 @@ namespace InterplanetaryAI
+     {
+         public const string GUID = "pavol.interplanetary.ai";
+         public const string NAME = "Interplanetary EE: Smarter AI";
+-        public const string VERSION = "0.12.1";
++        public const string VERSION = "0.13.0";
+ 
+         internal static ManualLogSource Log;
+ 
+@@ -106,6 +106,10 @@ namespace InterplanetaryAI
+         internal static ConfigEntry<int> MaterialReserve;
+         internal static ConfigEntry<float> EnergySaturation;
+         internal static ConfigEntry<int> SellDryMinesPerTurn;
++        internal static ConfigEntry<bool> RepairEnabled;
++        internal static ConfigEntry<float> RepairEnergyShare;
++        internal static ConfigEntry<int> RepairsPerTurn;
++        internal static ConfigEntry<float> RepairBelowHpShare;
+         internal static ConfigEntry<bool> CounterResearch;
+         internal static ConfigEntry<bool> StrategyEnabled;
+         internal static ConfigEntry<int> StrikeEvery;
+@@ -134,7 +138,20 @@ namespace InterplanetaryAI
+         // v0.11: Experimental Matter Control (global material project; the human had it at T11) at #10: v0.10.1 AIs were
+         // material-bound with 8-59k energy unspent from T22. Railgun projectile techs (Magnetic Radiation Shielding,
+         // Ultracapacitors) ahead of Uranium Alloys. Ultrasonic Projection (Shield Defense) added; it was missing.
++        // v0.13: Orbital Assembly (Missile) at #13, right after the telescope tech: v0.12.1 AIs researched it at T21-22, after
++        // war began at T20, and filled the 30-weapon cap with Railguns into a Kinetic-only human.
+         private const string DefaultResearchPlan =
++            "tec_MassBiochemicalProcessing,tec_MolecularRecycling,tec_SmartGrids,tec_SuperTensileMaterials,tec_QuantumComputing,"
++            + "tec_4thGenNuclearReactors,tec_LosslessEnergyTransfer,tec_2ndGenComposites,tec_MaglevServos,tec_ExperimentalMatterControl,"
++            + "tec_SelfAdjustingOptics,tec_AdvancedSignalProcessing,tec_OrbitalAssembly,tec_Nanostructuring,tec_MicrowaveEnergyTranmission,"
++            + "tec_PlasmaChannelInduction,tec_MagneticRadiationShielding,tec_Ultracapacitors,tec_UraniumAlloys,tec_EmDrives,"
++            + "tec_ThermonuclearWarheads,tec_InductionCoils,tec_ZeroReluctanceEngineering,tec_MagneticSaturationElimination,tec_RoboticMining,"
++            + "tec_EarlyWarningAI,tec_UltrasonicProjection,tec_Metamaterials,tec_DesignerNanomaterials,tec_VerticalFarming,"
++            + "tec_QuantumCommunications,tec_AtmosphericInterferenceMitigation,tec_CompositeHeatCells,tec_Octaazacubane,tec_AdvancedGenetics,"
++            + "tec_SelfHealingMaterials,tec_AITargetTracking,tec_MultiChainedStages,tec_GammaRayLasers,tec_MassDrivers";
++
++        // v0.11 default, replaced on load if the config still holds it unchanged.
++        private const string V011ResearchPlan =
+             "tec_MassBiochemicalProcessing,tec_MolecularRecycling,tec_SmartGrids,tec_SuperTensileMaterials,tec_QuantumComputing,"
+             + "tec_4thGenNuclearReactors,tec_LosslessEnergyTransfer,tec_2ndGenComposites,tec_MaglevServos,tec_ExperimentalMatterControl,"
+             + "tec_SelfAdjustingOptics,tec_AdvancedSignalProcessing,tec_Nanostructuring,tec_MicrowaveEnergyTranmission,tec_OrbitalAssembly,"
+@@ -285,10 +302,10 @@ namespace InterplanetaryAI
+             ResearchPlan = Config.Bind("Research", "Plan", DefaultResearchPlan,
+                 "Tech IDs in order. Default (v0.3): the human's order from the 31 Oct 2026 win, economy first (material and energy projects, yield upgrades, Offshore Mine, Floating Plant), then the Nuclear Missile line, then the rest.");
+             if (ResearchPlan.Value == V02ResearchPlan || ResearchPlan.Value == V03ResearchPlan || ResearchPlan.Value == V04ResearchPlan
+-                || ResearchPlan.Value == V09ResearchPlan || ResearchPlan.Value == V010ResearchPlan)
++                || ResearchPlan.Value == V09ResearchPlan || ResearchPlan.Value == V010ResearchPlan || ResearchPlan.Value == V011ResearchPlan)
+             {
+                 ResearchPlan.Value = DefaultResearchPlan;
+-                Log.LogInfo("Research plan: replaced an unchanged older default with the v0.11 default.");
++                Log.LogInfo("Research plan: replaced an unchanged older default with the v0.13 default.");
+             }
+             if (Math.Abs(GrudgeWeight.Value - 0.6f) < 1e-4f)
+             {
+@@ -326,7 +343,13 @@ namespace InterplanetaryAI
+                 "v0.12: most aimed weapons (all but lasers and superweapons) per AI. The game's trajectory search is time-bound: v0.11.1 aimed 2-15 of ~50 at the human. Surplus goes to weapon upgrades. 0 = no cap.");
+             MaterialHorizonTurn = Config.Bind("Director", "MaterialHorizonTurn", 45,
+                 "v0.12: the planet's remaining material is budgeted to last until this turn. Energy income above EnergySaturation x what that material can use is not built. v0.11.1 AIs ran their planets dry at T26-27, the human at T38.");
+-            EnergySaturation = Config.Bind("Director", "EnergySaturation", 1.5f, "v0.12: see MaterialHorizonTurn. 0 = off.");
++            EnergySaturation = Config.Bind("Director", "EnergySaturation", 0f,
++                "v0.12: see MaterialHorizonTurn. 0 = off (v0.13 default: energy is the throughput that spends material; v0.12.1 capped it at 16-24k while 96k material sat unused). In material glut, extraction is not bought instead.");
++            RepairEnabled = Config.Bind("Director", "Repair", true,
++                "v0.13: repair damaged buildings at turn start (the game's own AI never repairs; a human does between strikes). Weapons, defenses, power first.");
++            RepairEnergyShare = Config.Bind("Director", "RepairEnergyShare", 0.25f, "v0.13: most of a turn's energy spent on repairs.");
++            RepairsPerTurn = Config.Bind("Director", "RepairsPerTurn", 40, "v0.13: most repairs a turn. 0 = off.");
++            RepairBelowHpShare = Config.Bind("Director", "RepairBelowHpShare", 0.8f, "v0.13: repair a building at or below this share of its HP (a repair costs the same whatever the damage).");
+             MaterialReserve = Config.Bind("Director", "MaterialReserve", 15000,
+                 "v0.12: once the planet will run dry within BankWarningTurns, the economy keeps this much material back for defenses, weapons and rebuilding. 0 = off.");
+             SellDryMinesPerTurn = Config.Bind("Director", "SellDryMinesPerTurn", 10,
+@@ -411,6 +434,15 @@ namespace InterplanetaryAI
+                 }
+                 migrated.Value = "0.12";
+             }
++            if (migrated.Value == "0.12")
++            {
++                if (Math.Abs(EnergySaturation.Value - 1.5f) < 1e-4f)
++                {
++                    EnergySaturation.Value = 0f; // v0.12.1: capped energy at 16-24k (v0.10.1 from the same save: 52-67k) while 96k material sat unused
++                    Log.LogInfo("EnergySaturation: replaced the unchanged default 1.5 with 0 (off, once).");
++                }
++                migrated.Value = "0.13";
++            }
+             DefensesPerTurn = Config.Bind("Director", "DefensesPerTurn", 3,
+                 "Defenses queued per turn when on target; more when behind (see DefenseCatchUpTurns).");
+             DefenseFloorShare = Config.Bind("Director", "DefenseFloorShare", 0.15f,
+diff --git a/AI/Tests/Program.cs b/AI/Tests/Program.cs
+index 0ba4e3b..af91be4 100644
+--- a/AI/Tests/Program.cs
++++ b/AI/Tests/Program.cs
+@@ -52,6 +52,7 @@ namespace InterplanetaryAI.Tests
+             MaterialGlutRules();
+             V011Rules();
+             V012Rules();
++            V013Rules();
+ 
+             Console.WriteLine(s_checks + " checks, " + s_failures + " failed");
+             return s_failures == 0 ? 0 : 1;
+@@ -311,7 +312,8 @@ namespace InterplanetaryAI.Tests
+             Check(Math.Abs(EconomyDirector.EnergyCostFactor(bal) - bal.GlutEnergyWeight) < 1e-6, "energy glut: energy cost at GlutEnergyWeight");
+             bal.MaterialGlut = true;
+             // v0.12 (was: energy wins): v0.11.1 turned the last planet material into ~180 Floating Plants with energy unspent.
+-            Check(EconomyDirector.Best(options, bal, 10) == material, "both gluts: energy gains are worthless, material wins");
++            // v0.13: and extraction is not bought in material glut either (it only drains the planet faster).
++            Check(EconomyDirector.Best(options, bal, 10) == null, "both gluts: energy gains worthless, extraction filtered: nothing");
+ 
+             // Counter research: Lasers known, no Shield buildable -> Shield tech first.
+             var countersWithShield = new Dictionary<string, Dictionary<string, float>>(counters);
+@@ -330,6 +332,68 @@ namespace InterplanetaryAI.Tests
+             Check(urgent.Count == 0, "a weapon no longer known (count 0) asks for nothing");
+         }
+ 
++        // ---- v0.13: repair, no extraction in material glut, weapons ranked per slot -------------------
++        private static void V013Rules()
++        {
++            // Repair: weapons, then defenses, then power; most damaged first; within budgets and count.
++            RepairCandidate mineHit = new RepairCandidate { Priority = 4, HpShare = 0.2f, Energy = 100, Material = 150 };
++            RepairCandidate railHit = new RepairCandidate { Priority = 0, HpShare = 0.5f, Energy = 100, Material = 100 };
++            RepairCandidate railBad = new RepairCandidate { Priority = 0, HpShare = 0.3f, Energy = 100, Material = 100 };
++            RepairCandidate kinetic = new RepairCandidate { Priority = 1, HpShare = 0.6f, Energy = 100, Material = 100 };
++            RepairCandidate scratched = new RepairCandidate { Priority = 0, HpShare = 0.9f, Energy = 100, Material = 100 };
++            RepairCandidate whole = new RepairCandidate { Priority = 0, HpShare = 1f, Energy = 100, Material = 100 };
++            var all = new List<RepairCandidate> { mineHit, railHit, railBad, kinetic, scratched, whole };
++            List<RepairCandidate> got = RepairPlanner.Pick(all, 10000, 10000, 40, 0.8f);
++            Check(got.Count == 4 && got[0] == railBad && got[1] == railHit && got[2] == kinetic && got[3] == mineHit,
++                "order: weapons (most damaged first), defense, mine; 90% and full HP skipped; got " + got.Count);
++            got = RepairPlanner.Pick(all, 250, 10000, 40, 0.8f);
++            Check(got.Count == 2 && got[0] == railBad && got[1] == railHit, "energy for two repairs: the two weapons");
++            got = RepairPlanner.Pick(all, 10000, 10000, 1, 0.8f);
++            Check(got.Count == 1 && got[0] == railBad, "maxCount 1: the most damaged weapon");
++            RepairCandidate pricey = new RepairCandidate { Priority = 0, HpShare = 0.1f, Energy = 100, Material = 1000 };
++            got = RepairPlanner.Pick(new List<RepairCandidate> { pricey, kinetic }, 10000, 500, 40, 0.8f);
++            Check(got.Count == 1 && got[0] == kinetic, "one that does not fit is skipped, a cheaper one still fits");
++            got = RepairPlanner.Pick(all, 10000, 10000, 40, 0.95f);
++            Check(got.Contains(scratched), "threshold 0.95 includes the 90% one");
++
++            // Material glut: no extraction (mines, material upgrades/projects); plants, Trials and refineries stay.
++            EconOption mine = new EconOption { Id = "mine", Kind = OptionKind.Producer, Energy = 300, Material = 300, MaterialGain = 175f, NeedsSlot = true };
++            EconOption matUp = new EconOption { Id = "mup", Kind = OptionKind.Upgrade, Energy = 50, Material = 200, MaterialGain = 120f };
++            EconOption plant = new EconOption { Id = "np", Kind = OptionKind.Plant, Energy = 250, Material = 450, EnergyGain = 200f };
++            EconOption refinery = new EconOption { Id = "ref", Kind = OptionKind.Upgrade, Energy = 50, Material = 200, MaterialGain = 60f, SavesReserve = true };
++            EconOption trials = new EconOption { Id = "trials", Kind = OptionKind.Project, Energy = 150, Material = 300, EnergyGain = 3000f, MaterialGain = -500f };
++            // v0.12.1 Clowrus T23: 21.2k energy, 26.8k material income, 57.3k stock, material glut.
++            EconomyBalance glut = new EconomyBalance { EnergyIncome = 21246, MaterialIncome = 26813, TargetRatio = 0.6f, WeaponUpkeep = 3000,
++                EnergyBudget = 20000, MaterialBudget = 57340, MaterialGlut = true };
++            Check(EconomyDirector.Best(new List<EconOption> { mine }, glut, 10) == null, "material glut: no Mine");
++            Check(EconomyDirector.Best(new List<EconOption> { matUp }, glut, 10) == null, "material glut: no material yield upgrade");
++            Check(EconomyDirector.Best(new List<EconOption> { mine, plant }, glut, 10) == plant, "material glut: the plant");
++            Check(EconomyDirector.Best(new List<EconOption> { refinery }, glut, 10) == refinery, "material glut: a planet-saving refinery stays");
++            Check(EconomyDirector.Best(new List<EconOption> { trials }, glut, 10) == trials, "material glut: Reactor Trials stays");
++            EconOption mixed = new EconOption { Id = "mix", Kind = OptionKind.Project, Energy = 150, Material = 300, EnergyGain = 500f, MaterialGain = 500f };
++            Check(EconomyDirector.Best(new List<EconOption> { mixed }, glut, 10) == mixed, "material glut: an option that also gains energy stays");
++            glut.MaterialGlut = false;
++            glut.EnergyIncome = 5000;
++            Check(EconomyDirector.Best(new List<EconOption> { mine }, glut, 10) == mine, "setup: without glut the Mine is bought");
++
++            // Weapons per slot: v0.12.1 observed Railgun pass ~0.45 at a human with Kinetic only.
++            WeaponStats rail = new WeaponStats { BuildingId = "bui_Railgun", WeaponId = "wea_Railgun", BuildEnergy = 200, BuildMaterial = 200, FiringEnergy = 100, Damage = 375f };
++            WeaponStats missile = new WeaponStats { BuildingId = "bui_Missile", WeaponId = "wea_Missile", BuildEnergy = 250, BuildMaterial = 450, FiringEnergy = 300, Damage = 455f };
++            var observed = new Dictionary<string, float> { { "wea_Railgun", 0.45f } };
++            var none = new Dictionary<string, int>();
++            // Unseen defenses, no shots yet: by cost the cheap Railgun wins; per slot the Missile's damage does.
++            float rCost = EconomyDirector.WeaponScore(rail, none, EnhancedCounters(), 10f, 4f);
++            float mCost = EconomyDirector.WeaponScore(missile, none, EnhancedCounters(), 10f, 4f);
++            Check(rCost > mCost, "setup: by cost, nothing observed, the Railgun wins (" + rCost + " vs " + mCost + ")");
++            Check(EconomyDirector.WeaponScore(missile, none, EnhancedCounters(), 10f, 4f, null, true) > EconomyDirector.WeaponScore(rail, none, EnhancedCounters(), 10f, 4f, null, true),
++                "per slot, nothing observed: the Missile");
++            float rSlot = EconomyDirector.WeaponScore(rail, none, EnhancedCounters(), 10f, 4f, observed, true);
++            float mSlot = EconomyDirector.WeaponScore(missile, none, EnhancedCounters(), 10f, 4f, observed, true);
++            Check(mSlot > rSlot && Math.Abs(rSlot - 375f * 0.45f) < 0.01f, "per slot: Missile (455 through) beats Railgun (169 through)");
++            WeaponStats only = EconomyDirector.PickWeapon(new List<WeaponStats> { rail, missile }, none, EnhancedCounters(), 10f, 4f, 0.6f, new Random(1), observed, true);
++            Check(only == missile, "per slot with band 0.6: only the Missile qualifies (169 < 0.6 x 455)");
++        }
++
+         // ---- v0.12: material budget, energy saturation, fire what can aim, reachability ----------------
+         private static void V012Rules()
+         {
+@@ -378,7 +442,10 @@ namespace InterplanetaryAI.Tests
+             EconOption trials = new EconOption { Id = "trials", Kind = OptionKind.Project, Energy = 150, Material = 300, EnergyGain = 3000f, MaterialGain = -500f };
+             EconomyBalance sat = new EconomyBalance { EnergyIncome = 20118, MaterialIncome = 16193, TargetRatio = 0.6f, WeaponUpkeep = 6000,
+                 SustainableMaterialIncome = 9300f, EnergyBudget = 20000, MaterialBudget = 23000, MaterialGlut = true };
+-            Check(EconomyDirector.Best(new List<EconOption> { plant, mineUp }, sat, 10) == mineUp, "saturated + material glut: no Floating Plant");
++            Check(EconomyDirector.Best(new List<EconOption> { plant, mineUp }, sat, 10) == null, "saturated + material glut: no Floating Plant, no extraction");
++            sat.MaterialGlut = false;
++            Check(EconomyDirector.Best(new List<EconOption> { plant, mineUp }, sat, 10) == mineUp, "saturated, no glut: the material option, not the plant");
++            sat.MaterialGlut = true;
+             Check(EconomyDirector.Best(new List<EconOption> { plant }, sat, 10) == null, "saturated: a plant alone is not bought");
+             Check(EconomyDirector.Best(new List<EconOption> { energyUp }, sat, 10) == null, "saturated: an energy yield upgrade is not bought");
+             Check(EconomyDirector.Best(new List<EconOption> { trials }, sat, 10) == trials, "saturated: Reactor Trials still can be (Sol #5)");
+diff --git a/AI/tools/live_monitor.py b/AI/tools/live_monitor.py
+index 380f1f3..692b031 100644
+--- a/AI/tools/live_monitor.py
++++ b/AI/tools/live_monitor.py
+@@ -110,6 +110,7 @@ def main():
+                       f"{' keepM ' + str(r.get('materialReserve')) if r.get('materialReserve') else ''}"
+                       f"{' SOLD ' + str(r.get('soldMines')) + ' mines +' + str(r.get('soldMaterial')) + 'M' if r.get('soldMines') else ''}"
+                       f" aimedW {r.get('aimedWeapons', '?')}"
++                      f"{' REP ' + str(r.get('repaired')) + ' (-' + str(r.get('repairEnergy')) + 'E -' + str(r.get('repairMaterial')) + 'M)' if r.get('repaired') else ''}"
+                       f" | {describe_queued(r.get('queued') or {})} | unspent E{r['energyLeft']}"
+                       + (f" | placement gave up {fails}" if fails else ""), flush=True)
+             elif kind == "fire":

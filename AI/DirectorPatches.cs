@@ -10,6 +10,7 @@ using Interplanetary.GameEngine;
 using Interplanetary.GameSession;
 using Interplanetary.PlayerDataManagement;
 using Interplanetary.Prefabs;
+using Interplanetary.Weapons;
 using InterplanetaryAI.Brain;
 using TJR_Engine.FileManagement;
 using UnityEngine;
@@ -104,6 +105,7 @@ namespace InterplanetaryAI
             public bool EnergySaturated;
             public int SoldMines, SoldMaterial;
             public int Repaired, RepairEnergy, RepairMaterial; // v0.13
+            public int PowerEnergySpent;  // v0.13.1: energy spent this turn on energy-only purchases (plants, energy upgrades)
             public int AimedWeapons;                // own weapons needing a trajectory (not lasers, not superweapons), queued included
             // across turns
             public int WaterCooldownUntil;
@@ -189,7 +191,9 @@ namespace InterplanetaryAI
             int waterCooldown = d.WaterCooldownUntil;
             // v0.11 carried from the turn just before: unspent energy (energy glut) and abandoned placements (a full planet).
             bool consecutive = d.Turn == turn - 1;
-            int lastLeft = consecutive ? d.EndEnergyLeft : 0, lastBudget = consecutive ? d.TurnStartEnergy : 0;
+            // v0.13.1 (Sol v0.13 #1): energy spent on more energy counts as unspent, else buying plants hides the glut that
+            // should stop them (v0.11.1 Beam T24: 6.7k of 27.9k left = 24%, under the 30% threshold, while it bought plants).
+            int lastLeft = consecutive ? d.EndEnergyLeft + d.PowerEnergySpent : 0, lastBudget = consecutive ? d.TurnStartEnergy : 0;
             // A throttled type stays throttled while its placements still fail (a capped turn has at most two failures).
             Dictionary<string, int> lastAbandons = new Dictionary<string, int>();
             if (consecutive)
@@ -355,6 +359,22 @@ namespace InterplanetaryAI
                     {
                         float prior = EconomyDirector.PassChance(seen.Key, d.TargetDefenses, DefensePlanner.Counters, Plugin.DefensesForFullCover.Value);
                         d.ObservedPass[seen.Key] = EconomyDirector.BlendedPass(seen.Value[0], seen.Value[1], prior, Plugin.ObservedPriorWeight.Value);
+                    }
+                    // v0.13.1: untested weapon types stopped by the same defenses inherit that evidence (Sol v0.13 #4).
+                    try
+                    {
+                        List<string> weaponIds = new List<string>();
+                        BuildingsData all = GameDataFileManager.GetDataFile<BuildingsData>();
+                        foreach (string id in all.GetBuildingIds())
+                        {
+                            BuildingData bd = all.GetBuilding(id);
+                            if (bd != null && bd.weapon_functionality.IsValueSet) weaponIds.Add(bd.weapon_functionality.Value);
+                        }
+                        EconomyDirector.ShareObservedPass(d.ObservedPass, weaponIds, DefensePlanner.Counters, 0.5f);
+                    }
+                    catch (Exception e)
+                    {
+                        ReportOnce("share-observed-pass", e);
                     }
                 }
             }
@@ -772,6 +792,13 @@ namespace InterplanetaryAI
                 PlayerResourceHandler res = me.ResourceHandler;
                 bool dry = GameSessionManager.CurrentGameSettings.PlanetMaterial != -1 && res.PlanetMaterial <= 0;
                 List<RepairCandidate> candidates = new List<RepairCandidate>();
+                int firingUpkeep = 0; // v0.13.1 (Sol v0.13 #5): this turn's firing energy is not repair money
+                foreach (WeaponGameplayData w in me.WeaponHandler.Weapons)
+                {
+                    if (w == null || w.Building == null || w.WeaponData == null || w.Building.CurrentState != BaseBuilding.BuildingState.Normal) continue;
+                    if (w.Building.Power == null || !w.Building.Power.HasPower) continue;
+                    firingUpkeep += w.WeaponData.firing_cost_energy.IsValueSet ? w.WeaponData.firing_cost_energy.Value : 0;
+                }
                 foreach (BaseBuilding b in me.BuildingHandler.Buildings)
                 {
                     if (b == null || b.IsCity || b.BuildingData == null || b.CurrentState != BaseBuilding.BuildingState.Normal || b.Stats == null) continue;
@@ -780,7 +807,10 @@ namespace InterplanetaryAI
                     BuildingData data = b.BuildingData;
                     bool mine = Value(data.turn_yield_material) > 0;
                     if (mine && dry) continue; // sold, not repaired
-                    int priority = data.weapon_functionality.IsValueSet ? 0
+                    bool generator = b.Power != null && b.Power.CanPotentiallyGeneratesPower;
+                    bool unpowered = !generator && b.Power != null && !b.Power.HasPower;
+                    int priority = unpowered ? 6 // repairing it does nothing until it has power again
+                        : data.weapon_functionality.IsValueSet ? 0
                         : data.defense_functionality.IsValueSet ? 1
                         : Value(data.turn_yield_energy) > 0 ? 2
                         : Value(data.turn_yield_intel) > 0 || Value(data.turn_yield_counterintel) > 0 ? 3
@@ -795,8 +825,9 @@ namespace InterplanetaryAI
                     });
                 }
                 if (candidates.Count == 0) return;
-                int energyBudget = (int)(Math.Max(0f, Plugin.RepairEnergyShare.Value) * res.Energy);
-                List<RepairCandidate> picked = RepairPlanner.Pick(candidates, energyBudget, res.Material, Plugin.RepairsPerTurn.Value, Plugin.RepairBelowHpShare.Value);
+                int energyBudget = (int)Math.Min(Math.Max(0f, Plugin.RepairEnergyShare.Value) * res.Energy, Math.Max(0, res.Energy - firingUpkeep));
+                int materialBudget = (int)(Math.Max(0f, Math.Min(1f, Plugin.RepairMaterialShare.Value)) * res.Material);
+                List<RepairCandidate> picked = RepairPlanner.Pick(candidates, energyBudget, materialBudget, Plugin.RepairsPerTurn.Value, Plugin.RepairBelowHpShare.Value);
                 int n = 0, spentE = 0, spentM = 0;
                 foreach (RepairCandidate c in picked)
                 {
@@ -804,7 +835,7 @@ namespace InterplanetaryAI
                     BaseBuilding b = (BaseBuilding)c.Payload;
                     res.SpendEnergy(c.Energy);
                     res.SpendMaterial(c.Material);
-                    me.BuildingHandler.RepairBuilding(b, () => { });
+                    me.BuildingHandler.RepairBuilding(b, b.RefreshBuildingIcon);
                     n++;
                     spentE += c.Energy;
                     spentM += c.Material;
@@ -886,9 +917,11 @@ namespace InterplanetaryAI
                     Damage = damage,
                 });
             }
-            // v0.13: with the aimed-weapon cap on, rank by damage through per weapon (the cap binds, not the cost).
+            // v0.13.1 (Sol v0.13 #3): rank by damage through per weapon only when weapon slots bind (70% of the cap reached)
+            // or energy does not (energy glut); otherwise firing energy binds and cost-effectiveness ranks.
+            bool slotsBind = Plugin.MaxWeapons.Value > 0 && (d.AimedWeapons >= 0.7f * Plugin.MaxWeapons.Value || d.EnergyGlut);
             WeaponStats pick = EconomyDirector.PickWeapon(options, d.TargetDefenses, DefensePlanner.Counters, Plugin.DefensesForFullCover.Value, 4f, 0.6f, Plugin.Rng, d.ObservedPass,
-                Plugin.MaxWeapons.Value > 0);
+                slotsBind);
             if (pick == null) return false;
             if (!QueueBuilding(construction, core, d, buildings.GetBuilding(pick.BuildingId), "weapon")) return false;
             d.Upkeep += pick.FiringEnergy;
@@ -939,6 +972,7 @@ namespace InterplanetaryAI
                         d.EnergyIncome += best.EnergyGain;
                         d.MaterialIncome += best.MaterialGain;
                     }
+                    if (EconomyDirector.IsEnergyOnly(best)) d.PowerEnergySpent += best.Energy;
                     return true;
                 }
                 options.Remove(best);
@@ -1813,6 +1847,7 @@ namespace InterplanetaryAI
             core.Resources.Energy += energy;
             core.Resources.Material += material;
             if (!(data.distribute_power.IsValueSet && data.distribute_power.Value)) d.SlotsLeft++;
+            else d.PowerEnergySpent = Math.Max(0, d.PowerEnergySpent - energy); // a refunded plant was not spent on energy
             d.Refunds++;
             d.Reopened = true;
             Record(d, "abandoned:" + id);
