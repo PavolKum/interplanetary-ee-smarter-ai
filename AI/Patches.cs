@@ -500,32 +500,52 @@ namespace InterplanetaryAI
         {
             __state = -1;
             if (!Plugin.Active) return true;
+            PlayerData me = null;
+            string reason = null, destName = "";
             try
             {
-                PlayerData me = s_handlerPlayer != null ? s_handlerPlayer.GetValue(__instance) as PlayerData : null;
-                if (me == null || !me.AIPlayer) return true;
+                me = s_handlerPlayer != null ? s_handlerPlayer.GetValue(__instance) as PlayerData : null;
+                if (me == null || !me.AIPlayer) return true; // the human's handler: untouched
                 __state = me.ResourceHandler.Energy;
                 if (!Plugin.BlindArtillery.Value || !IsGuided(weapon)) return true;
                 CelestialBody dest = trajectory != null ? trajectory.HitCelestialBody : null;
-                if (dest == null || dest.Player == null || dest.Player == me || StrikeCandidateCount(me, dest.Player) > 0) return true;
-                Dictionary<WeaponGameplayData, PlayerWeaponTargetingResult> results =
-                    s_handlerResults != null ? s_handlerResults.GetValue(__instance) as Dictionary<WeaponGameplayData, PlayerWeaponTargetingResult> : null;
-                if (results == null) return true;
-                PlayerWeaponTargetingResult r;
-                if (!results.TryGetValue(weapon, out r)) { r = new PlayerWeaponTargetingResult(weapon); results.Add(weapon, r); }
-                r.IsFirstPhaseTargeted = false;
-                __result = r;
-                __state = -2;
-                Plugin.WriteDecision(new Json().Str("e", "fire-refused").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName)
-                    .Str("wid", weapon.WeaponData != null ? weapon.WeaponData.id.Value : "").Str("destination", dest.Player.UserNickName)
-                    .Str("reason", "no-visible-candidate").ToString());
-                return false;
+                if (dest == null || dest.Player == null || dest.Player == me) return true; // not an enemy planet: no second phase
+                destName = dest.Player.UserNickName;
+                if (StrikeCandidateCount(me, dest.Player) > 0) return true;
+                reason = "no-visible-candidate";
             }
             catch (Exception e)
             {
                 ReportOnce("fire-guard", e);
-                return true;
+                if (me == null || !me.AIPlayer) return true;
+                reason = "guard-error"; // an AI guided shot we could not check: fail closed
             }
+            // Refusal is authoritative once decided: native's own refusal state (no payment), whatever the bookkeeping does.
+            __state = -2;
+            try
+            {
+                Dictionary<WeaponGameplayData, PlayerWeaponTargetingResult> results =
+                    s_handlerResults != null ? s_handlerResults.GetValue(__instance) as Dictionary<WeaponGameplayData, PlayerWeaponTargetingResult> : null;
+                PlayerWeaponTargetingResult r = null;
+                if (results != null && !results.TryGetValue(weapon, out r)) { r = new PlayerWeaponTargetingResult(weapon); results.Add(weapon, r); }
+                if (r != null) r.IsFirstPhaseTargeted = false;
+                __result = r;
+            }
+            catch (Exception e)
+            {
+                ReportOnce("fire-refuse", e);
+            }
+            try
+            {
+                Plugin.WriteDecision(new Json().Str("e", "fire-refused").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName)
+                    .Str("wid", weapon != null && weapon.WeaponData != null ? weapon.WeaponData.id.Value : "").Str("destination", destName)
+                    .Str("reason", reason).ToString());
+            }
+            catch (Exception e)
+            {
+                ReportOnce("fire-refused-log", e);
+            }
+            return false;
         }
 
         private static void CompleteFirstPhasePostfix(PlayerWeaponHandler __instance, WeaponGameplayData weapon, TrajectoryCalculationResults trajectory,

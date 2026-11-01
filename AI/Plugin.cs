@@ -13,6 +13,8 @@ using Interplanetary.AI.Construction;
 using Interplanetary.GameEngine;
 using Interplanetary.GameSession;
 using Interplanetary.PlayerDataManagement;
+using Interplanetary.Weapons;
+using Interplanetary.Weapons.Trajectories;
 using InterplanetaryAI.Brain;
 
 namespace InterplanetaryAI
@@ -660,7 +662,9 @@ namespace InterplanetaryAI
             patched += TryPatch(typeof(AICore), "Initialize", null, "CoreInitializePostfix");
             patched += TryPatch(typeof(AIWeaponTargeting), "BeginTurn", null, "TargetingBeginTurnPostfix");
             patched += TryPatch(typeof(AIWeaponTargetingGoal), "BeginTurn", null, "GoalBeginTurnPostfix");
-            patched += TryPatch(typeof(PlayerWeaponHandler), "CompleteFirstPhaseTargeting", "CompleteFirstPhasePrefix", "CompleteFirstPhasePostfix"); // v0.16
+            // v0.16 (Sol re-check round 2): two overloads exist; patch the trajectory one explicitly.
+            patched += TryPatch(typeof(PlayerWeaponHandler), "CompleteFirstPhaseTargeting", "CompleteFirstPhasePrefix", "CompleteFirstPhasePostfix", null,
+                new[] { typeof(WeaponGameplayData), typeof(float), typeof(float), typeof(TrajectoryCalculationResults) });
             int holdHook = TryPatch(typeof(AIWeaponTargetingGoal), "TargetWeapons", "GoalTargetWeaponsPrefix", "GoalTargetWeaponsPostfix");
             HoldHookPatched = holdHook == 1; // without it the strategy never holds fire (nothing would stop the shots)
             patched += holdHook;
@@ -682,12 +686,12 @@ namespace InterplanetaryAI
                 + "; lasers " + (EnableLasers.Value ? laserPatches + " of 5 patches" : "off"));
         }
 
-        private int TryPatch(Type type, string method, string prefix, string postfix, Type patchClass = null)
+        private int TryPatch(Type type, string method, string prefix, string postfix, Type patchClass = null, Type[] args = null)
         {
             if (patchClass == null) patchClass = typeof(AiPatches);
             try
             {
-                MethodInfo target = AccessTools.Method(type, method);
+                MethodInfo target = args != null ? AccessTools.Method(type, method, args) : AccessTools.Method(type, method);
                 if (target == null)
                 {
                     Log.LogError("Hook target not found: " + type.Name + "." + method + " - that behaviour stays native.");

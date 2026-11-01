@@ -1,0 +1,304 @@
+diff --git a/AI/DirectorPatches.cs b/AI/DirectorPatches.cs
+index 848b7a4..def2997 100644
+--- a/AI/DirectorPatches.cs
++++ b/AI/DirectorPatches.cs
+@@ -129,6 +129,7 @@ namespace InterplanetaryAI
+             public int TargetCandidates;
+             public int ForwardDefenseNeed;
+             public int RepairHeld;                 // energy repairs left for the defense reserve this turn
++            public int ReserveWanted;              // defense reserve asked for before the recovery cap
+             public int DefenseUpgradesThisTurn;
+             public int GuidedRefused;              // guided weapons not bought: no city visible to strike
+             public bool GuidedThreat;     // v0.15: an enemy guided weapon (Missile, MIRV, Nuke) seen or landed
+@@ -629,6 +630,7 @@ namespace InterplanetaryAI
+                 // Under a nuke threat every working anti-nuke defense gets one 200-energy roll (Terra v0.8 #5).
+                 if (d.NukeThreat) reserve = Math.Max(reserve, (int)Math.Min(d.AntiNukeOwned * 200f, 0.4f * d.EnergyIncome));
+                 reserve = Math.Max(0, Math.Min(reserve, core.Resources.Energy));
++                d.ReserveWanted = reserve; // v0.16: what the defense wanted before the recovery cap (logged with the shortfall)
+                 reserve = EconomyDirector.CapReserveForRecovery(reserve, core.Resources.Energy, d.EnergyIncome, Plugin.DefenseRecoveryShare.Value);
+                 if (economy.BuyPending && !economy.Bought) reserve = Math.Min(reserve, Math.Max(0, core.Resources.Energy - economy.GoalEnergyCost));
+                 core.Resources.Energy -= reserve;
+@@ -1108,8 +1110,12 @@ namespace InterplanetaryAI
+                 // v0.16 item 6 (council N5): repairs ran before the defense reserve and took its room (T26: 3,600 E of
+                 // repairs, reserve clipped to 3,080 before an 83-impact volley). The observed and forward defense need now
+                 // comes off the repair budget first.
++                // v0.16 (Sol v0.16 re-check #2): repairs get only what is left after firing, the recovery floor AND the
++                // intended defense reserve: repairRoom = energy - firing - recovery - protectedDefense.
+                 int defenseHold = RepairDefenseHold(me, firingUpkeep);
+-                int energyBudget = (int)Math.Min(Math.Max(0f, Plugin.RepairEnergyShare.Value) * res.Energy, Math.Max(0, res.Energy - firingUpkeep - defenseHold));
++                float recovery = Math.Max(0f, Plugin.DefenseRecoveryShare.Value) * res.EnergyProductionPerTurn;
++                int repairRoom = (int)Math.Max(0f, res.Energy - firingUpkeep - recovery - defenseHold);
++                int energyBudget = (int)Math.Min(Math.Max(0f, Plugin.RepairEnergyShare.Value) * res.Energy, repairRoom);
+                 int materialBudget = (int)(Math.Max(0f, Math.Min(1f, Plugin.RepairMaterialShare.Value)) * res.Material);
+                 List<RepairCandidate> picked = RepairPlanner.Pick(candidates, energyBudget, materialBudget, Plugin.RepairsPerTurn.Value, Plugin.RepairBelowHpShare.Value);
+                 int n = 0, spentE = 0, spentM = 0;
+@@ -1183,10 +1189,20 @@ namespace InterplanetaryAI
+                 float income = me.ResourceHandler.EnergyProductionPerTurn;
+                 float observed = EconomyDirector.ObservedDefenseNeed(fresh.EnergySpent, fresh.NoResource, fresh.Impacts - fresh.NoEligibleDefense, 100f,
+                     Plugin.DefenseObservedMargin.Value);
++                // Own defenses counted now (the same filter as construction's ledger count); the rest of the planned inputs
++                // from last turn's director state, the only state that exists before AICore.BeginTurn.
++                int ownDefenses = 0;
++                foreach (BaseBuilding b in me.BuildingHandler.Buildings)
++                {
++                    if (b != null && !b.IsCity && b.BuildingData != null && b.BuildingData.defense_functionality.IsValueSet
++                        && b.CurrentState == BaseBuilding.BuildingState.Normal) ownDefenses++;
++                }
+                 float planned = prev != null
+-                    ? EconomyDirector.DefenseReserve(prev.OwnDefenses, prev.VisibleEnemyWeapons, Math.Max(1, prev.EnemiesAlive), prev.RecentDamage,
++                    ? EconomyDirector.DefenseReserve(ownDefenses, prev.VisibleEnemyWeapons, Math.Max(1, prev.EnemiesAlive), prev.RecentDamage,
+                         150f, 125f, Plugin.DefenseReserveShare.Value, income, 1f, observed, Plugin.DefenseHardCapShare.Value)
+                     : Math.Min(observed, Plugin.DefenseHardCapShare.Value * income);
++                // Construction's explicit Ion demand under a guided threat (StartConstruction), included here too.
++                if (prev != null && prev.NukeThreat) planned = Math.Max(planned, Math.Min(prev.AntiNukeOwned * 200f, 0.4f * income));
+                 float hold = Math.Max(planned, ForwardNeed(me, fresh));
+                 float room = me.ResourceHandler.Energy - firingUpkeep - Math.Max(0f, Plugin.DefenseRecoveryShare.Value) * income;
+                 return (int)Math.Max(0f, Math.Min(hold, room));
+@@ -2694,7 +2710,8 @@ namespace InterplanetaryAI
+                 .Int("intelUpgradesQueued", d.IntelUpgradesThisTurn).Int("intelBatchTurn", MemoryOf(core.PlayerData.PlayerID).Intel.BatchTurn)
+                 .Int("intelBatchBought", MemoryOf(core.PlayerData.PlayerID).Intel.BatchBought)
+                 .Bool("blind", d.Blind).Int("targetCandidates", d.TargetCandidates).Int("guidedRefused", d.GuidedRefused).Int("forwardDefenseNeed", d.ForwardDefenseNeed)
+-                .Int("repairHeld", d.RepairHeld).Int("defenseUpgrades", d.DefenseUpgradesThisTurn)
++                .Int("repairHeld", d.RepairHeld).Int("reserveWanted", d.ReserveWanted)
++                .Int("reserveShortfall", Math.Max(0, d.ReserveWanted - d.DefenseReserve)).Int("defenseUpgrades", d.DefenseUpgradesThisTurn)
+                 .Str("keyTechs", KeyTechs(core.PlayerData)).Str("upgradedDefenses", UpgradedDefenses(core.PlayerData))
+                 .Int("peakImpacts", MemoryOf(core.PlayerData.PlayerID).PeakImpacts)
+                 .Int("antiNukeProtecting", d.AntiNukeProtecting).Int("antiNukeWanted", d.AntiNukeWanted)
+diff --git a/AI/EconomyPatches.cs b/AI/EconomyPatches.cs
+index c322bb7..2bae6f7 100644
+--- a/AI/EconomyPatches.cs
++++ b/AI/EconomyPatches.cs
+@@ -519,7 +519,7 @@ namespace InterplanetaryAI
+                     string head = queue.Count > 0 ? queue[0] : null;
+                     HashSet<string> owned;
+                     bool ownedHead = head != null && ((s_ownedQueue.TryGetValue(pid, out owned) && owned.Contains(head))
+-                        || urgent.Contains(head) || s_defenseTechs.ContainsValue(head)); // v0.16 (Sol v0.16 M3): counter research kept
++                        || urgent.Contains(head)); // v0.16 (Sol v0.16 M3): the current counter research is kept
+                     bool planLeft = ResearchPlan.NextTarget(Plugin.ResearchPlanIds, id => SafeCompleted(tech, id, pid), id => s_refused.Contains(pid + ":" + id)) != null;
+                     if (head == null || ownedHead || !planLeft) return;
+                     guardHead = head;
+diff --git a/AI/Patches.cs b/AI/Patches.cs
+index ad40ad1..aa2daef 100644
+--- a/AI/Patches.cs
++++ b/AI/Patches.cs
+@@ -11,6 +11,7 @@ using Interplanetary.GameSession;
+ using Interplanetary.PlayerDataManagement;
+ using Interplanetary.Prefabs;
+ using Interplanetary.Weapons;
++using Interplanetary.Weapons.Trajectories;
+ using InterplanetaryAI.Brain;
+ 
+ namespace InterplanetaryAI
+@@ -372,13 +373,31 @@ namespace InterplanetaryAI
+             return n;
+         }
+ 
+-        private static int CandidatesFor(PlayerData me, AITrajectoryWeapon w, Dictionary<int, int> cache)
++        // v0.16 (Sol v0.16 re-check #3): the planet the selected trajectory actually hits, not the assigned enemy. A hit uses
++        // the primary trajectory's target or the stored secondary trajectory's planet; a planned miss uses its miss
++        // trajectory's planet (null = misses every planet).
++        private static CelestialBody Destination(AITrajectoryWeapon w, bool asMiss)
+         {
+-            if (w == null || w.TargetEnemy == null || w.TargetEnemy.Player == null) return -1;
+-            int id = w.TargetEnemy.Player.PlayerID, n;
++            if (w == null) return null;
++            if (asMiss)
++            {
++                AIStoredTrajectory miss = w.MissTrajectory;
++                return miss != null && miss.TrajectoryResults != null ? miss.TrajectoryResults.HitCelestialBody : null;
++            }
++            if (w.HasFoundPrimaryTargetTrajectory) return w.TargetEnemy;
++            AIStoredTrajectory hit = w.HitTrajectory;
++            return hit != null && hit.TrajectoryResults != null ? hit.TrajectoryResults.HitCelestialBody : null;
++        }
++
++        // Visible strike candidates at the weapon's destination: -1 = not an enemy planet (or unresolved).
++        private static int CandidatesFor(PlayerData me, AITrajectoryWeapon w, Dictionary<int, int> cache, bool asMiss = false)
++        {
++            CelestialBody dest = Destination(w, asMiss);
++            if (dest == null || dest.Player == null || dest.Player == me) return -1;
++            int id = dest.Player.PlayerID, n;
+             if (!cache.TryGetValue(id, out n))
+             {
+-                n = StrikeCandidateCount(me, w.TargetEnemy.Player);
++                n = StrikeCandidateCount(me, dest.Player);
+                 cache[id] = n;
+             }
+             return n;
+@@ -390,9 +409,9 @@ namespace InterplanetaryAI
+             Dictionary<int, int> cache)
+         {
+             int withheld = 0;
+-            Predicate<AITrajectoryWeapon> blind = w => IsGuidedTrajectory(w) && CandidatesFor(me, w, cache) == 0;
+-            if (hitting != null) withheld += hitting.RemoveAll(blind);
+-            if (missing != null) withheld += missing.RemoveAll(blind);
++            // A hit with an unresolved destination is withheld (fail closed); a miss only when it would land on a blind enemy.
++            if (hitting != null) withheld += hitting.RemoveAll(w => IsGuidedTrajectory(w) && CandidatesFor(me, w, cache) <= 0);
++            if (missing != null) withheld += missing.RemoveAll(w => IsGuidedTrajectory(w) && CandidatesFor(me, w, cache, true) == 0);
+             return withheld;
+         }
+ 
+@@ -450,13 +469,14 @@ namespace InterplanetaryAI
+                     WeaponGameplayData wd = w.TargetableWeapon != null ? w.TargetableWeapon.Weapon : null;
+                     int cost = wd != null && wd.Building != null && wd.Building.Stats != null && wd.Building.Stats.Weapons != null ? wd.Building.Stats.Weapons.EnergyFiringCost : 0;
+                     if (g) gE += cost; else uE += cost;
+-                    string name = w.TargetEnemy != null && w.TargetEnemy.Player != null ? w.TargetEnemy.Player.UserNickName : "?";
++                    CelestialBody dest = Destination(w, !hit);
++                    string name = dest != null && dest.Player != null ? dest.Player.UserNickName : "none";
+                     int sum;
+                     firingByTarget.TryGetValue(name, out sum);
+                     firingByTarget[name] = sum + cost;
+-                    candidatesByTarget[name] = CandidatesFor(me, w, cache);
++                    candidatesByTarget[name] = CandidatesFor(me, w, cache, !hit);
+                 }
+-                Plugin.WriteDecision(new Json().Str("e", "fire").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName)
++                Plugin.WriteDecision(new Json().Str("e", "fire-plan").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName)
+                     .Int("guidedQuota", quota != null ? quota[0] : -1).Int("unguidedQuota", quota != null ? quota[1] : -1)
+                     .Int("guidedHits", gh).Int("unguidedHits", uh).Int("guidedMisses", gm).Int("unguidedMisses", um)
+                     .Int("guidedFiringE", gE).Int("unguidedFiringE", uE).Int("withheldBlindPrecision", withheld)
+@@ -468,6 +488,67 @@ namespace InterplanetaryAI
+             }
+         }
+ 
++        // v0.16 (Sol v0.16 re-check #3/#4): the payment boundary. PlayerWeaponHandler.CompleteFirstPhaseTargeting checks the
++        // firing cost, marks the weapon targeted and spends. For an AI guided weapon whose completed trajectory lands on an
++        // enemy planet with no visible strike candidate, it is refused exactly as native refuses an unaffordable shot
++        // (IsFirstPhaseTargeted = false, nothing spent). Every successful AI payment is logged ("fire-paid").
++        private static readonly FieldInfo s_handlerPlayer = AccessTools.Field(typeof(PlayerWeaponHandler), "m_playerData");
++        private static readonly FieldInfo s_handlerResults = AccessTools.Field(typeof(PlayerWeaponHandler), "m_targetingResults");
++
++        private static bool CompleteFirstPhasePrefix(PlayerWeaponHandler __instance, WeaponGameplayData weapon, TrajectoryCalculationResults trajectory,
++            ref PlayerWeaponTargetingResult __result, out int __state)
++        {
++            __state = -1;
++            if (!Plugin.Active) return true;
++            try
++            {
++                PlayerData me = s_handlerPlayer != null ? s_handlerPlayer.GetValue(__instance) as PlayerData : null;
++                if (me == null || !me.AIPlayer) return true;
++                __state = me.ResourceHandler.Energy;
++                if (!Plugin.BlindArtillery.Value || !IsGuided(weapon)) return true;
++                CelestialBody dest = trajectory != null ? trajectory.HitCelestialBody : null;
++                if (dest == null || dest.Player == null || dest.Player == me || StrikeCandidateCount(me, dest.Player) > 0) return true;
++                Dictionary<WeaponGameplayData, PlayerWeaponTargetingResult> results =
++                    s_handlerResults != null ? s_handlerResults.GetValue(__instance) as Dictionary<WeaponGameplayData, PlayerWeaponTargetingResult> : null;
++                if (results == null) return true;
++                PlayerWeaponTargetingResult r;
++                if (!results.TryGetValue(weapon, out r)) { r = new PlayerWeaponTargetingResult(weapon); results.Add(weapon, r); }
++                r.IsFirstPhaseTargeted = false;
++                __result = r;
++                __state = -2;
++                Plugin.WriteDecision(new Json().Str("e", "fire-refused").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName)
++                    .Str("wid", weapon.WeaponData != null ? weapon.WeaponData.id.Value : "").Str("destination", dest.Player.UserNickName)
++                    .Str("reason", "no-visible-candidate").ToString());
++                return false;
++            }
++            catch (Exception e)
++            {
++                ReportOnce("fire-guard", e);
++                return true;
++            }
++        }
++
++        private static void CompleteFirstPhasePostfix(PlayerWeaponHandler __instance, WeaponGameplayData weapon, TrajectoryCalculationResults trajectory,
++            PlayerWeaponTargetingResult __result, int __state)
++        {
++            if (__state < 0 || __result == null || !__result.IsFirstPhaseTargeted) return;
++            try
++            {
++                PlayerData me = s_handlerPlayer.GetValue(__instance) as PlayerData;
++                CelestialBody dest = trajectory != null ? trajectory.HitCelestialBody : null;
++                bool enemyDest = dest != null && dest.Player != null && dest.Player != me;
++                Plugin.WriteDecision(new Json().Str("e", "fire-paid").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName)
++                    .Str("wid", weapon.WeaponData != null ? weapon.WeaponData.id.Value : "").Bool("guided", IsGuided(weapon))
++                    .Str("destination", enemyDest ? dest.Player.UserNickName : dest == null ? "none" : "own")
++                    .Int("candidates", enemyDest ? StrikeCandidateCount(me, dest.Player) : -1)
++                    .Int("energyPaid", Math.Max(0, __state - me.ResourceHandler.Energy)).ToString());
++            }
++            catch (Exception e)
++            {
++                ReportOnce("fire-paid-log", e);
++            }
++        }
++
+         // ---- what actually got fired; feeds reachability memory ---------------------------------
+ 
+         // Native bug: the hitting/missing lists are only rebuilt when a weapon registers a primary hit
+@@ -537,7 +618,7 @@ namespace InterplanetaryAI
+                         foreach (AITrajectoryWeapon w in allList)
+                         {
+                             WeaponGameplayData wd = w != null && w.TargetableWeapon != null ? w.TargetableWeapon.Weapon : null;
+-                            bool blindGuided = Plugin.BlindArtillery.Value && IsGuidedTrajectory(w) && CandidatesFor(me, w, cache) == 0;
++                            bool blindGuided = Plugin.BlindArtillery.Value && IsGuidedTrajectory(w) && CandidatesFor(me, w, cache) <= 0;
+                             if (wd == null || !registered.Contains(wd) || !IsOperational(me, wd) || blindGuided) excluded.Add(w);
+                         }
+                     }
+@@ -690,6 +771,9 @@ namespace InterplanetaryAI
+         private static bool SecondPhasePrefix(AIWeaponTargeting __instance, WeaponGameplayData weapon, CelestialBody targetPlanet)
+         {
+             if (!Plugin.Active || !Plugin.SmartStrikes.Value) return true;
++            // v0.16 (Sol v0.16 re-check #1): fail closed. Native selection accepts Shadow cities, so no path below returns to it.
++            bool queued = false;
++            AICore failCore = null;
+             PlayerData me = null, enemy = null;
+             List<BaseBuilding> buildings = new List<BaseBuilding>();
+             List<StrikeCandidate> candidates = new List<StrikeCandidate>();
+@@ -699,8 +783,9 @@ namespace InterplanetaryAI
+             try
+             {
+                 AICore core = (AICore)s_moduleCore.GetValue(__instance);
++                failCore = core;
+                 enemy = targetPlanet != null ? targetPlanet.Player : null;
+-                if (core == null || enemy == null) return true;
++                if (core == null || enemy == null) return false; // nothing information-free to aim at: no second phase
+                 me = core.PlayerData;
+                 ledger = VolleyLedger(me.PlayerID, GameManager.CurrentTurn);
+                 AddStrikeCandidates(me, enemy.BuildingHandler.GetBuildingsByType(BaseBuilding.BuildingFunctionalityType.City), true, ledger, buildings, candidates);
+@@ -712,16 +797,24 @@ namespace InterplanetaryAI
+                     // v0.16 (Sol v0.16 F1): native fallback picks among non-Invisible cities (Shadow included). Use the
+                     // information-free fallback instead: a random point on the planet's surface.
+                     core.Actions.SecondPhaseTargetWeapon(weapon, targetPlanet, UnityEngine.Random.onUnitSphere * targetPlanet.Radius);
++                    queued = true;
+                     LogStrike(me, enemy, weapon, null, null, 0f, 0, "random-surface");
+                     return false;
+                 }
+                 damage = candidates[pick].IsCity ? weapon.DamageModule.PopulationDamage : weapon.DamageModule.BuildingDamage;
+                 core.Actions.SecondPhaseTargetWeapon(weapon, targetPlanet, buildings[pick].transform.localPosition);
++                queued = true;
+             }
+             catch (Exception e)
+             {
+-                ReportOnce("strike", e); // no action was queued, so the native choice runs
+-                return true;
++                ReportOnce("strike", e);
++                // v0.16: never the native selector. If nothing was queued yet, the information-free random point.
++                if (!queued && failCore != null && targetPlanet != null)
++                {
++                    try { failCore.Actions.SecondPhaseTargetWeapon(weapon, targetPlanet, UnityEngine.Random.onUnitSphere * targetPlanet.Radius); }
++                    catch (Exception inner) { ReportOnce("strike-fallback", inner); }
++                }
++                return false;
+             }
+             // The strike is queued: never fall through to native from here (it would queue a second one).
+             try
+diff --git a/AI/Plugin.cs b/AI/Plugin.cs
+index c68268c..8f81ff2 100644
+--- a/AI/Plugin.cs
++++ b/AI/Plugin.cs
+@@ -660,6 +660,7 @@ namespace InterplanetaryAI
+             patched += TryPatch(typeof(AICore), "Initialize", null, "CoreInitializePostfix");
+             patched += TryPatch(typeof(AIWeaponTargeting), "BeginTurn", null, "TargetingBeginTurnPostfix");
+             patched += TryPatch(typeof(AIWeaponTargetingGoal), "BeginTurn", null, "GoalBeginTurnPostfix");
++            patched += TryPatch(typeof(PlayerWeaponHandler), "CompleteFirstPhaseTargeting", "CompleteFirstPhasePrefix", "CompleteFirstPhasePostfix"); // v0.16
+             int holdHook = TryPatch(typeof(AIWeaponTargetingGoal), "TargetWeapons", "GoalTargetWeaponsPrefix", "GoalTargetWeaponsPostfix");
+             HoldHookPatched = holdHook == 1; // without it the strategy never holds fire (nothing would stop the shots)
+             patched += holdHook;
+@@ -675,7 +676,7 @@ namespace InterplanetaryAI
+             patched += TryPatch(typeof(AIBuildingPlacementFinder), "Update", "FinderUpdatePrefix", null, typeof(DirectorPatches));
+             patched += TryPatch(typeof(PlayerDefenseHandler), "IsHitIntercepted", "BeforeIntercept", "AfterIntercept", typeof(LedgerPatches));
+             int laserPatches = EnableLasers.Value ? LaserPatches.Install(new Harmony(GUID + ".lasers")) : 0;
+-            Log.LogInfo(NAME + " " + VERSION + " loaded; " + patched + " of 15 hooks patched. Director " + (DirectorEnabled.Value ? "on" : "off")
++            Log.LogInfo(NAME + " " + VERSION + " loaded; " + patched + " of 16 hooks patched. Director " + (DirectorEnabled.Value ? "on" : "off")
+                 + ", war from turn " + WarFromTurn.Value + ". Accuracy by level: " + AccuracyByLevel.Value
+                 + "; research plan " + ResearchPlanIds.Count + " techs; superweapons " + Superweapons.Value
+                 + "; lasers " + (EnableLasers.Value ? laserPatches + " of 5 patches" : "off"));

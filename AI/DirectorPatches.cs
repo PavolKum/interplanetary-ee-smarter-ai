@@ -306,12 +306,6 @@ namespace InterplanetaryAI
                 d.MaterialReserve = EconomyDirector.EconomyReserve(res.PlanetMaterial, drain, limited, Plugin.BankWarningTurns.Value, Plugin.MaterialReserve.Value);
                 int[] sold;
                 if (s_soldThisTurn.TryGetValue(me.PlayerID, out sold) && sold[0] == turn) { d.SoldMines = sold[1]; d.SoldMaterial = sold[2]; }
-                int[] repaired;
-                if (s_repairedThisTurn.TryGetValue(me.PlayerID, out repaired) && repaired[0] == turn)
-                {
-                    d.Repaired = repaired[1]; d.RepairEnergy = repaired[2]; d.RepairMaterial = repaired[3];
-                    d.RepairHeld = repaired.Length > 4 ? repaired[4] : 0;
-                }
             }
             catch (Exception e)
             {
@@ -638,6 +632,9 @@ namespace InterplanetaryAI
                 d.DefenseReserve = reserve;
                 d.TurnStartEnergy = core.Resources.Energy;
             }
+            RepairAfterReserve(core, d);
+            d.TurnStartEnergy = core.Resources.Energy;
+            d.TurnStartMaterial = core.Resources.Material;
         }
 
         // Free power slots on buildings that distribute power, after this turn's power-line connections.
@@ -1051,7 +1048,6 @@ namespace InterplanetaryAI
         // reconnection searches. Only leaves are sold: at most one power connection (a relay has two or more), no generation.
         private static readonly Dictionary<int, int[]> s_soldThisTurn = new Dictionary<int, int[]>(); // player -> [turn, mines, material]
 
-        private static readonly Dictionary<int, int[]> s_repairedThisTurn = new Dictionary<int, int[]>(); // player -> [turn, n, energy, material]
 
         private static void CoreBeginTurnPrefix(AICore __instance)
         {
@@ -1059,28 +1055,24 @@ namespace InterplanetaryAI
             PlayerData me = __instance.PlayerData;
             if (me == null || !me.AIPlayer) return;
             SellDryMines(me);
-            RepairDamaged(me);
+            // v0.16 (Sol v0.16 re-check round 2): repairs moved to StartConstruction, after this turn's defense reserve.
         }
 
         // v0.13: repair damaged buildings before the turn's resources are snapshotted, so construction plans with what is
         // left. Weapons, then defenses, then power; most damaged first; at most RepairEnergyShare of this turn's energy.
-        private static void RepairDamaged(PlayerData me)
+        // v0.13 repairs; v0.16 (Sol v0.16 re-check round 2, F4): run inside StartConstruction, after this turn's defense reserve
+        // has been taken from the construction budget, so repairs and the reserve use ONE current-turn defense request.
+        // core.Resources is native's turn snapshot (firing already reserved, AIResources.BeginTurn); repairs leave the
+        // recovery floor and are charged to the snapshot and the queue allotment as well as to the player's stock.
+        private static void RepairAfterReserve(AICore core, DirectorState d)
         {
             try
             {
                 if (!Plugin.RepairEnabled.Value || Plugin.RepairsPerTurn.Value <= 0) return;
+                PlayerData me = core.PlayerData;
                 PlayerResourceHandler res = me.ResourceHandler;
                 bool dry = GameSessionManager.CurrentGameSettings.PlanetMaterial != -1 && res.PlanetMaterial <= 0;
                 List<RepairCandidate> candidates = new List<RepairCandidate>();
-                int firingUpkeep = 0; // v0.13.1 (Sol v0.13 #5): this turn's firing energy is not repair money
-                foreach (WeaponGameplayData w in me.WeaponHandler.Weapons)
-                {
-                    if (w == null || w.Building == null || w.WeaponData == null || w.Building.CurrentState != BaseBuilding.BuildingState.Normal) continue;
-                    // v0.16 (Sol v0.16 F4): native AIResources.BeginTurn reserves firing for every Normal weapon, powered or not.
-                    // v0.16 item 4 (council E5): live cost, upgrades (Triple Barrel x2.8) and global modifiers included.
-                    firingUpkeep += w.Building.Stats != null && w.Building.Stats.Weapons != null ? w.Building.Stats.Weapons.EnergyFiringCost
-                        : w.WeaponData.firing_cost_energy.IsValueSet ? w.WeaponData.firing_cost_energy.Value : 0;
-                }
                 foreach (BaseBuilding b in me.BuildingHandler.Buildings)
                 {
                     if (b == null || b.IsCity || b.BuildingData == null || b.CurrentState != BaseBuilding.BuildingState.Normal || b.Stats == null) continue;
@@ -1106,31 +1098,33 @@ namespace InterplanetaryAI
                         Payload = b,
                     });
                 }
+                d.RepairHeld = d.DefenseReserve;
                 if (candidates.Count == 0) return;
-                // v0.16 item 6 (council N5): repairs ran before the defense reserve and took its room (T26: 3,600 E of
-                // repairs, reserve clipped to 3,080 before an 83-impact volley). The observed and forward defense need now
-                // comes off the repair budget first.
-                // v0.16 (Sol v0.16 re-check #2): repairs get only what is left after firing, the recovery floor AND the
-                // intended defense reserve: repairRoom = energy - firing - recovery - protectedDefense.
-                int defenseHold = RepairDefenseHold(me, firingUpkeep);
-                float recovery = Math.Max(0f, Plugin.DefenseRecoveryShare.Value) * res.EnergyProductionPerTurn;
-                int repairRoom = (int)Math.Max(0f, res.Energy - firingUpkeep - recovery - defenseHold);
-                int energyBudget = (int)Math.Min(Math.Max(0f, Plugin.RepairEnergyShare.Value) * res.Energy, repairRoom);
-                int materialBudget = (int)(Math.Max(0f, Math.Min(1f, Plugin.RepairMaterialShare.Value)) * res.Material);
+                float recovery = Math.Max(0f, Plugin.DefenseRecoveryShare.Value) * d.EnergyIncome;
+                int energyBudget = (int)Math.Min(Math.Max(0f, Plugin.RepairEnergyShare.Value) * core.Resources.Energy,
+                    Math.Max(0f, core.Resources.Energy - recovery));
+                int materialBudget = (int)(Math.Max(0f, Math.Min(1f, Plugin.RepairMaterialShare.Value)) * core.Resources.Material);
                 List<RepairCandidate> picked = RepairPlanner.Pick(candidates, energyBudget, materialBudget, Plugin.RepairsPerTurn.Value, Plugin.RepairBelowHpShare.Value);
                 int n = 0, spentE = 0, spentM = 0;
                 foreach (RepairCandidate c in picked)
                 {
+                    if (c.Energy > core.Resources.Energy || c.Material > core.Resources.Material) break;
                     if (!res.CheckEnergy(c.Energy) || !res.CheckMaterial(c.Material)) break;
                     BaseBuilding b = (BaseBuilding)c.Payload;
                     res.SpendEnergy(c.Energy);
                     res.SpendMaterial(c.Material);
+                    core.Resources.Energy -= c.Energy;
+                    core.Resources.Material -= c.Material;
+                    core.Construction.ConstructionQueue.AllottedEnergy -= c.Energy;
+                    core.Construction.ConstructionQueue.AllottedMaterial -= c.Material;
                     me.BuildingHandler.RepairBuilding(b, b.RefreshBuildingIcon);
                     n++;
                     spentE += c.Energy;
                     spentM += c.Material;
                 }
-                s_repairedThisTurn[me.PlayerID] = new[] { GameManager.CurrentTurn, n, spentE, spentM, defenseHold };
+                d.Repaired = n;
+                d.RepairEnergy = spentE;
+                d.RepairMaterial = spentM;
             }
             catch (Exception e)
             {
@@ -1172,46 +1166,6 @@ namespace InterplanetaryAI
             }
             return ForwardDefense.Need(peak, share, LiveRollCost(me), Plugin.ForwardDefenseMargin.Value,
                 me.ResourceHandler.EnergyProductionPerTurn, Plugin.DefenseHardCapShare.Value);
-        }
-
-        // v0.16 (Sol v0.16 F4): repairs run in AICore.BeginTurn's prefix, before the ledger rolls in its postfix, so the
-        // phase that has just finished is still the pending one. The hold is the reserve construction will want (planned
-        // share, observed need, forward need; defense inputs from last turn's director state), leaving the recovery floor.
-        private static int RepairDefenseHold(PlayerData me, int firingUpkeep)
-        {
-            try
-            {
-                DefenderStats fresh = Plugin.Ledger.PendingDefender(me.PlayerID);
-                DirectorState prev;
-                s_states.TryGetValue(me.PlayerID, out prev);
-                bool defensive = GameManager.CurrentTurn >= Plugin.DefenseFromTurn.Value || fresh.EnemyImpacts > 0 || (prev != null && prev.Defensive);
-                if (!defensive) return 0;
-                float income = me.ResourceHandler.EnergyProductionPerTurn;
-                float observed = EconomyDirector.ObservedDefenseNeed(fresh.EnergySpent, fresh.NoResource, fresh.Impacts - fresh.NoEligibleDefense, 100f,
-                    Plugin.DefenseObservedMargin.Value);
-                // Own defenses counted now (the same filter as construction's ledger count); the rest of the planned inputs
-                // from last turn's director state, the only state that exists before AICore.BeginTurn.
-                int ownDefenses = 0;
-                foreach (BaseBuilding b in me.BuildingHandler.Buildings)
-                {
-                    if (b != null && !b.IsCity && b.BuildingData != null && b.BuildingData.defense_functionality.IsValueSet
-                        && b.CurrentState == BaseBuilding.BuildingState.Normal) ownDefenses++;
-                }
-                float planned = prev != null
-                    ? EconomyDirector.DefenseReserve(ownDefenses, prev.VisibleEnemyWeapons, Math.Max(1, prev.EnemiesAlive), prev.RecentDamage,
-                        150f, 125f, Plugin.DefenseReserveShare.Value, income, 1f, observed, Plugin.DefenseHardCapShare.Value)
-                    : Math.Min(observed, Plugin.DefenseHardCapShare.Value * income);
-                // Construction's explicit Ion demand under a guided threat (StartConstruction), included here too.
-                if (prev != null && prev.NukeThreat) planned = Math.Max(planned, Math.Min(prev.AntiNukeOwned * 200f, 0.4f * income));
-                float hold = Math.Max(planned, ForwardNeed(me, fresh));
-                float room = me.ResourceHandler.Energy - firingUpkeep - Math.Max(0f, Plugin.DefenseRecoveryShare.Value) * income;
-                return (int)Math.Max(0f, Math.Min(hold, room));
-            }
-            catch (Exception e)
-            {
-                ReportOnce("repair-defense-hold", e);
-                return 0;
-            }
         }
 
         private static void SellDryMines(PlayerData me)

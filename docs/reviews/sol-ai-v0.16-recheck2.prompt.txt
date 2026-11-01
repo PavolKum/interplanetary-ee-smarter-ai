@@ -1,0 +1,10 @@
+READ-ONLY re-check, round 2. Do not edit, create or delete any file. Stay inside this repository: any path outside it is auto-rejected and ends your run. Finish with the complete written report; include a line containing the word "verdict".
+
+Your round-1 re-check (docs/reviews/sol-ai-v0.16-recheck.md) returned DO NOT SHIP with four blockers: F1 fail-open, F4 repair arithmetic, F7 assigned-enemy vs destination, F7 paid energy; plus the summarizer regression. The round-2 fixes are in docs/reviews/sol-ai-v0.16-fixes2.diff (git diff f0179c0..46c28e9 -- AI); the disposition's last section maps each item to its fix. HEAD is 46c28e9. decompiled/ is the game source (authoritative). M1/M2/M4/M6 remainders are deferred to v0.16.1 by the disposition (you rated them non-blocking).
+
+Task, narrowly:
+1. For each of the four blockers and the summarizer regression: RESOLVED or NOT RESOLVED, with file:line evidence.
+2. The new CompleteFirstPhaseTargeting prefix/postfix (Patches.cs): does refusing a shot this way match native's own refusal path closely enough that AIActions/AITargetWeapons handle it (no exception, no stuck state, no double spend, no effect on the human player's handler)? Is the Harmony prefix signature (ref __result, out __state) valid with the postfix reading __state?
+3. Any new defect introduced by round 2 (null reference, exception in a hook, fairness leak).
+
+End with a verdict line: SHIP, SHIP AFTER FIXES (list), or DO NOT SHIP. Keep the report focused; under 1,500 words.

@@ -53,3 +53,12 @@
 | #5 summarizer crash | The new record is renamed from `fire` to `fire-plan`; the legacy `fire` schema is untouched |
 | M3 blanket exemption | `s_defenseTechs.ContainsValue` exemption removed; only the current counter research (`urgent`) is kept |
 | M1/M2/M4/M6 remainders | Deferred to v0.16.1 (non-blocking per re-check section 4) |
+
+## Re-check round 2 (docs/reviews/sol-ai-v0.16-recheck2.md, DO NOT SHIP: hook overload + F4 stale inputs) - fixes
+
+| Item | Fix |
+|---|---|
+| Payment hook lookup was ambiguous (two `CompleteFirstPhaseTargeting` overloads) | `TryPatch` takes explicit parameter types; the hook is registered as `(WeaponGameplayData, float, float, TrajectoryCalculationResults)`. In-game check: BepInEx must log "16 of 16 hooks patched" |
+| Guard failed open on an exception | An AI guided shot whose destination cannot be checked is refused (`guard-error`). Once decided, the refusal is authoritative; result bookkeeping and logging are isolated in their own try blocks |
+| F4 repairs used previous-turn inputs | Repairs moved out of the `AICore.BeginTurn` prefix into `StartConstruction`, after this turn's reserve (one current-turn defense request, with its Ion floor). Repairs spend from native's snapshot minus the recovery floor and are charged to the snapshot and the queue allotment. `RepairDefenseHold` was removed |
+| Laser payments not in the ledger | Accepted: lasers are off by default; `fire-paid` covers trajectory weapons |
