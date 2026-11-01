@@ -27,6 +27,7 @@ namespace InterplanetaryAI.Brain
         public Dictionary<string, float> Shots;    // weapon id -> projectiles that can reach it (null: the salvo's)
         public Dictionary<string, int[]> Observed; // weapon id -> our recent [impacts, intercepted] at it
         public int LowYieldTurns;                  // v0.12: consecutive turns our weapons aimed at it found almost no trajectory
+        public List<int> VisibleCityPops;          // v0.16: population of its cities we see NOW (intact, Visible); null/empty = none
 
         // outputs
         public float Arriving;     // projectiles expected to arrive (after accuracy)
@@ -83,6 +84,10 @@ namespace InterplanetaryAI.Brain
         // weapons aim at the committed target.
         public float ReturnFirePassShare = 0.6f;
         public float ReturnFireMinPassing = 4f;
+        // v0.16 item 4 (council S3): the visible-city precision exception to MinPassingShots.
+        public float PrecisionMinGuided = 6f;
+        public float PrecisionMinShare = 0.9f;
+        public float PrecisionKillShare = 1f;
     }
 
     public sealed class StrategyDecision
@@ -96,6 +101,11 @@ namespace InterplanetaryAI.Brain
         public float Passing;
         public float PassShare;
         public List<SalvoTarget> Targets = new List<SalvoTarget>();
+        // v0.16 item 4: the guided part of the salvo at the committed target, and whether the precision exception held
+        public int VisibleCities;
+        public float GuidedArriving, GuidedPassing;
+        public int SmallestVisibleCityPop;
+        public bool Precision;
     }
 
     public static class Strategy
@@ -173,6 +183,37 @@ namespace InterplanetaryAI.Brain
             target.Value = target.Passing; // Decide adds the leader term across targets
         }
 
+        // v0.16 item 4: guided-only estimate onto the committed target, and the precision predicate.
+        public static void EstimatePrecision(StrategyDecision d, SalvoTarget best, IDictionary<string, float> salvo, float accuracy,
+            Dictionary<string, Dictionary<string, float>> counters, StrategySettings s, IDictionary<string, float> accuracyById,
+            ICollection<string> guidedIds, float guidedPopDamage, bool guidedFunded)
+        {
+            d.VisibleCities = best.VisibleCityPops != null ? best.VisibleCityPops.Count : 0;
+            if (d.VisibleCities == 0 || guidedIds == null || guidedIds.Count == 0) return;
+            int smallest = int.MaxValue;
+            foreach (int pop in best.VisibleCityPops) if (pop > 0 && pop < smallest) smallest = pop;
+            d.SmallestVisibleCityPop = smallest == int.MaxValue ? 0 : smallest;
+            Dictionary<string, float> guidedSalvo = new Dictionary<string, float>();
+            foreach (KeyValuePair<string, float> pair in salvo) if (guidedIds.Contains(pair.Key)) guidedSalvo[pair.Key] = pair.Value;
+            Dictionary<string, float> guidedShots = null;
+            if (best.Shots != null)
+            {
+                guidedShots = new Dictionary<string, float>();
+                foreach (KeyValuePair<string, float> pair in best.Shots) if (guidedIds.Contains(pair.Key)) guidedShots[pair.Key] = pair.Value;
+            }
+            SalvoTarget g = new SalvoTarget
+            {
+                PlayerId = best.PlayerId, Name = best.Name, Score = best.Score, Defenses = best.Defenses, DefensesSeen = best.DefensesSeen,
+                EnergyKnown = best.EnergyKnown, EnergyProduction = best.EnergyProduction, Shots = guidedShots, Observed = best.Observed,
+            };
+            EstimateSalvo(guidedSalvo, g, accuracy, counters, s, accuracyById);
+            d.GuidedArriving = g.Arriving;
+            d.GuidedPassing = g.Passing;
+            float share = g.Arriving > 0f ? g.Passing / g.Arriving : 0f;
+            d.Precision = PrecisionOpportunity.Holds(d.VisibleCities, g.Passing, share, guidedPopDamage, d.SmallestVisibleCityPop, guidedFunded,
+                s.PrecisionMinGuided, s.PrecisionMinShare, s.PrecisionKillShare);
+        }
+
         // v0.12: at firing time, call the strike off when fewer than this many weapons found a trajectory onto the committed
         // target. The max-hold fallback fires whatever it has.
         public static float AbortThreshold(int weapons, StrategySettings s)
@@ -208,7 +249,7 @@ namespace InterplanetaryAI.Brain
         public static StrategyDecision Decide(int turn, bool war, IDictionary<string, float> salvo, float accuracy, IList<SalvoTarget> targets,
             Dictionary<string, Dictionary<string, float>> counters, int lastStrikeTurn, int holdTurns, int weapons, StrategySettings s,
             int lastCommitId = -1, int lastWeapons = -1, bool underAttack = false, IDictionary<string, float> accuracyById = null,
-            bool hitLastPhase = false)
+            bool hitLastPhase = false, ICollection<string> guidedIds = null, float guidedPopDamage = 0f, bool guidedFunded = false)
         {
             StrategyDecision d = new StrategyDecision { War = war, Shots = weapons };
             float maxScore = 0f;
@@ -242,6 +283,10 @@ namespace InterplanetaryAI.Brain
                 d.Reason = "peace";
                 return d;
             }
+            // v0.16 item 4 (council S3): the guided part of the salvo onto the cities of the committed target we see now.
+            // Match 16 held at T21 (9 Missiles, 7.65 through at 100%) and T22 (10.0 through) below MinPassingShots 12
+            // while two cities were visible; at T23 none was. Both lanes' conditions must hold (PrecisionOpportunity).
+            EstimatePrecision(d, best, salvo, accuracy, counters, s, accuracyById, guidedIds, guidedPopDamage, guidedFunded);
             bool pulseReady = turn - lastStrikeTurn >= Math.Max(1, s.StrikeEvery);
             bool saturated = d.Passing >= s.MinPassingShots && (d.PassShare >= s.MinPassShare || d.Passing >= s.BigSalvoShots);
             bool broken = d.PassShare >= s.BrokenPassShare && d.Passing >= s.MinPassingShots;
@@ -265,6 +310,12 @@ namespace InterplanetaryAI.Brain
                 // v0.15.2: trade blows instead of waiting for a bigger salvo (v0.15.3: the abort still applies).
                 d.Fire = true;
                 d.Reason = "return-fire";
+            }
+            else if (d.Precision && weapons >= s.MinWeapons)
+            {
+                // v0.16: a visible city with a credible kill does not wait for saturation or the pulse (subject to the abort).
+                d.Fire = true;
+                d.Reason = "precision";
             }
             else if (weapons >= s.MinWeapons && saturated && (pulseReady || broken))
             {

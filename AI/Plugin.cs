@@ -305,6 +305,7 @@ namespace InterplanetaryAI
         internal static ConfigEntry<float> ObservedPriorWeight;
         internal static ReachabilityMemory Reach;
         internal static readonly Dictionary<int, float> AccuracyCarry = new Dictionary<int, float>();
+        internal static readonly Dictionary<int, float> GuidedAccuracyCarry = new Dictionary<int, float>(); // v0.16 item 4
         internal static readonly System.Random Rng = new System.Random();
         internal static int LastTurnSeen;
 
@@ -659,6 +660,7 @@ namespace InterplanetaryAI
             patched += TryPatch(typeof(AICore), "Initialize", null, "CoreInitializePostfix");
             patched += TryPatch(typeof(AIWeaponTargeting), "BeginTurn", null, "TargetingBeginTurnPostfix");
             patched += TryPatch(typeof(AIWeaponTargetingGoal), "BeginTurn", null, "GoalBeginTurnPostfix");
+            patched += TryPatch(typeof(AIWeaponTargetingGoal), "DetermineShootingWeapons", "DetermineShootingPrefix", null); // v0.16 item 4
             int holdHook = TryPatch(typeof(AIWeaponTargetingGoal), "TargetWeapons", "GoalTargetWeaponsPrefix", "GoalTargetWeaponsPostfix");
             HoldHookPatched = holdHook == 1; // without it the strategy never holds fire (nothing would stop the shots)
             patched += holdHook;
@@ -674,7 +676,7 @@ namespace InterplanetaryAI
             patched += TryPatch(typeof(AIBuildingPlacementFinder), "Update", "FinderUpdatePrefix", null, typeof(DirectorPatches));
             patched += TryPatch(typeof(PlayerDefenseHandler), "IsHitIntercepted", "BeforeIntercept", "AfterIntercept", typeof(LedgerPatches));
             int laserPatches = EnableLasers.Value ? LaserPatches.Install(new Harmony(GUID + ".lasers")) : 0;
-            Log.LogInfo(NAME + " " + VERSION + " loaded; " + patched + " of 15 hooks patched. Director " + (DirectorEnabled.Value ? "on" : "off")
+            Log.LogInfo(NAME + " " + VERSION + " loaded; " + patched + " of 16 hooks patched. Director " + (DirectorEnabled.Value ? "on" : "off")
                 + ", war from turn " + WarFromTurn.Value + ". Accuracy by level: " + AccuracyByLevel.Value
                 + "; research plan " + ResearchPlanIds.Count + " techs; superweapons " + Superweapons.Value
                 + "; lasers " + (EnableLasers.Value ? laserPatches + " of 5 patches" : "off"));
@@ -728,6 +730,9 @@ namespace InterplanetaryAI
             StrategyCfg.AttritionLossShare = Clamp01(AttritionLossShare.Value);
             StrategyCfg.ReturnFirePassShare = Clamp01(ReturnFirePassShare.Value);
             StrategyCfg.ReturnFireMinPassing = Math.Max(0f, ReturnFireMinPassing.Value);
+            StrategyCfg.PrecisionMinGuided = Math.Max(0f, PrecisionMinGuided.Value);
+            StrategyCfg.PrecisionMinShare = Clamp01(PrecisionMinShare.Value);
+            StrategyCfg.PrecisionKillShare = Math.Max(0f, PrecisionKillShare.Value);
 
             Build.Growth = BuildPlanner.Parse(GrowthWeights.Value, Build.Growth);
             Build.Pressure = BuildPlanner.Parse(PressureWeights.Value, Build.Pressure);
@@ -778,6 +783,7 @@ namespace InterplanetaryAI
             Ledger.Clear();
             Reach.Clear();
             AccuracyCarry.Clear();
+            GuidedAccuracyCarry.Clear();
             LastTurnSeen = 0;
             EconomyPatches.Reset();
             StrategyPatches.Reset();

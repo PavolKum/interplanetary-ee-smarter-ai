@@ -503,9 +503,35 @@ namespace InterplanetaryAI
                 // (research progress is kept per technology).
                 bool preempt = urgent.Count > 0 && tech.IsTechQueued && !tech.GetTechnologyIsInQueue(urgent[0])
                     && s_preempted.Add(pid + ":" + urgent[0]);
-                if (tech.IsTechQueued && !preempt) return;
-                // Native urgent intel research (AIShortTermStrategy.IsMoreIntelTechRequired) goes first at queue boundaries.
-                if (!preempt && (bool)s_moreIntelTechRequired.Invoke(core.ShortTermStrategy, null)) return;
+                // v0.16 item 2 (council N1): native research fills an empty queue at the end of this BeginTurn, and v0.15 then
+                // left any non-empty queue alone. Match 16 researched five off-plan techs at T23-T27 that way (MassBio,
+                // Optics, Uranium Alloys, Induction Coils, MagRad), so Plasma came at T28 and the Ion prior never executed.
+                // A head the plan did not queue is replaced at the next boundary while the plan has work left (an
+                // off-plan head survives at most one turn). The mod's own counter research is plan-queued and kept.
+                string guardHead = null;
+                if (tech.IsTechQueued && !preempt)
+                {
+                    List<string> queue = tech.GetTechnologyQueueIdStringList();
+                    string head = queue.Count > 0 ? queue[0] : null;
+                    HashSet<string> owned;
+                    bool ownedHead = head != null && s_ownedQueue.TryGetValue(pid, out owned) && owned.Contains(head);
+                    bool planLeft = ResearchPlan.NextTarget(Plugin.ResearchPlanIds, id => SafeCompleted(tech, id, pid), id => s_refused.Contains(pid + ":" + id)) != null;
+                    if (head == null || ownedHead || !planLeft) return;
+                    guardHead = head;
+                    preempt = true;
+                }
+                // v0.16 item 2: native urgent intel research no longer jumps the plan (the plan has the Telescope techs);
+                // it is logged so the postgame can see what native wanted.
+                if (!preempt && (bool)s_moreIntelTechRequired.Invoke(core.ShortTermStrategy, null) && s_intelWantLogged.Add(pid + ":" + GameManager.CurrentTurn))
+                {
+                    Plugin.WriteDecision(new Json().Str("e", "research-guard").Int("t", GameManager.CurrentTurn).Str("ai", core.PlayerData.UserNickName)
+                        .Str("reason", "native-intel-wanted").ToString());
+                }
+                if (guardHead != null)
+                {
+                    Plugin.WriteDecision(new Json().Str("e", "research-guard").Int("t", GameManager.CurrentTurn).Str("ai", core.PlayerData.UserNickName)
+                        .Str("reason", "off-plan-head").Str("head", guardHead).ToString());
+                }
 
                 List<string> before = tech.GetTechnologyQueueIdStringList();
                 if (preempt) tech.SetTechnologyQueue(new string[0]);
@@ -537,6 +563,9 @@ namespace InterplanetaryAI
                     List<string> after = tech.GetTechnologyQueueIdStringList();
                     if (queued && after.Count > 0 && tech.IsTechnologyAvailable(after[0]))
                     {
+                        HashSet<string> owned;
+                        if (!s_ownedQueue.TryGetValue(pid, out owned)) { owned = new HashSet<string>(); s_ownedQueue[pid] = owned; }
+                        foreach (string q in after) owned.Add(q); // v0.16 item 2: what the plan queued (prerequisites included)
                         Plugin.WriteDecision(new Json().Str("e", "research").Int("t", GameManager.CurrentTurn).Str("ai", core.PlayerData.UserNickName)
                             .Str("target", next).Str("head", after[0]).Int("queueLength", after.Count).Bool("counter", urgent.Contains(next))
                             .Bool("preempted", preempt).ToString());
@@ -560,6 +589,8 @@ namespace InterplanetaryAI
         // "playerId:techId": refused for that AI only (Terra v0.11 #5: one AI's failure must not hide a tech from the others).
         private static readonly HashSet<string> s_refused = new HashSet<string>();
         private static readonly HashSet<string> s_preempted = new HashSet<string>(); // "playerId:techId" urgent preemptions done
+        private static readonly Dictionary<int, HashSet<string>> s_ownedQueue = new Dictionary<int, HashSet<string>>(); // v0.16 item 2
+        private static readonly HashSet<string> s_intelWantLogged = new HashSet<string>();
 
         // Enhanced ruleset (tech_unlocks.py): the tech that unlocks each defense building.
         private static readonly Dictionary<string, string> s_defenseTechs = new Dictionary<string, string>
@@ -580,6 +611,8 @@ namespace InterplanetaryAI
             States.Clear();
             s_refused.Clear();
             s_preempted.Clear();
+            s_ownedQueue.Clear();
+            s_intelWantLogged.Clear();
             DirectorPatches.Reset();
         }
 

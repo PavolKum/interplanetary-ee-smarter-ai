@@ -667,7 +667,7 @@ namespace InterplanetaryAI
             bool nativeMinimum = intel == IntelEvaluationState.BelowMinimum;
             MatchMemory memory = MemoryOf(core.PlayerData.PlayerID);
             bool wantVision = d.Blind || d.BlindEnemies > 0;
-            int bidAllowed = IntelBudget.Allowed(memory.Intel, d.Turn, wantVision, Plugin.IntelBidFromTurn.Value, Plugin.IntelBudgetShare.Value, 50f,
+            int bidAllowed = IntelBudget.Allowed(memory.Intel, d.Turn, wantVision, Plugin.IntelBidFromTurn.Value, Plugin.IntelBudgetShare.Value, 200f, // priced as an array (worst case)
                 Plugin.IntelBatch.Value, Plugin.IntelEvalTurns.Value, Plugin.IntelProbeMax.Value);
             if (d.Steps <= 1) d.IntelAllowed = bidAllowed;
             d.IntelPolicy = memory.Intel.Stopped ? "stop-loss" : bidAllowed > 0 ? "bid" : wantVision ? "wait" : "seeing";

@@ -272,6 +272,8 @@ namespace InterplanetaryAI
         internal static void ResetCombatMemory()
         {
             s_volley.Clear();
+            s_classQuota.Clear();
+            s_quotaLogged.Clear();
         }
 
         // ---- how many shots are planned to hit -------------------------------------------------
@@ -317,25 +319,80 @@ namespace InterplanetaryAI
                 if (live <= 0) return; // nothing operational: leave the native counts alone
                 float accuracy = Plugin.GuidedAccuracy.Value > 0f
                     ? AccuracyPlan.MixedRate(guided, Plugin.GuidedAccuracy.Value, unguided, levelAccuracy) : levelAccuracy;
-                float carry;
-                Plugin.AccuracyCarry.TryGetValue(me.PlayerID, out carry);
                 int nativeHits = __instance.Hits;
                 int slots = Math.Min(total, live);
-                int hits = Math.Min(slots, AccuracyPlan.PlannedHits(live, accuracy, ref carry));
+                // v0.16 item 4 (council: per-class quotas): planned hits per class, each with its own carry, so the 0.85
+                // guided rate goes to guided weapons. v0.15 set one mixed count and native took the first weapons with a
+                // trajectory, whichever class (T22's 0.827 was the 11/2 mix, not who hit). DetermineShootingPrefix puts
+                // the quota weapons first.
+                float guidedRate = Plugin.GuidedAccuracy.Value > 0f ? Plugin.GuidedAccuracy.Value : levelAccuracy;
+                float carry, guidedCarry;
+                Plugin.AccuracyCarry.TryGetValue(me.PlayerID, out carry);
+                Plugin.GuidedAccuracyCarry.TryGetValue(me.PlayerID, out guidedCarry);
+                int guidedHits = AccuracyPlan.PlannedHits(guided, guidedRate, ref guidedCarry);
+                int unguidedHits = AccuracyPlan.PlannedHits(unguided, levelAccuracy, ref carry);
                 Plugin.AccuracyCarry[me.PlayerID] = carry;
+                Plugin.GuidedAccuracyCarry[me.PlayerID] = guidedCarry;
+                int hits = Math.Min(slots, guidedHits + unguidedHits);
+                s_classQuota[__instance] = new[] { guidedHits, unguidedHits, GameManager.CurrentTurn };
 
                 __instance.Hits = hits;
                 __instance.Misses = slots - hits; // dead entries cannot fill a miss slot (Sol v0.15 #1)
 
                 Plugin.WriteDecision(new Json()
                     .Str("e", "accuracy").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName).Int("lvl", me.AILevel)
-                    .Num("acc", accuracy).Int("shots", total).Int("live", live).Int("guided", guided).Int("stale", stale).Int("nativeHits", nativeHits).Int("hits", hits).ToString());
+                    .Num("acc", accuracy).Int("shots", total).Int("live", live).Int("guided", guided).Int("stale", stale).Int("nativeHits", nativeHits).Int("hits", hits)
+                    .Int("guidedQuota", guidedHits).Int("unguidedQuota", unguidedHits).ToString());
             }
             catch (Exception e)
             {
                 ReportOnce("accuracy", e);
             }
         }
+
+        // v0.16 item 4: goal -> {guided hits, unguided hits, turn} planned in GoalBeginTurnPostfix.
+        private static readonly Dictionary<AIWeaponTargetingGoal, int[]> s_classQuota = new Dictionary<AIWeaponTargetingGoal, int[]>();
+
+        // v0.16 item 4: native DetermineShootingWeapons gives the Hits slots to the first weapons in its list that found a
+        // primary trajectory. Put up to the guided quota of guided weapons and the unguided quota of unguided weapons with a
+        // primary trajectory first; native then fills any shortfall from the rest, as before.
+        private static void DetermineShootingPrefix(AIWeaponTargetingGoal __instance)
+        {
+            if (!Plugin.Active || !Plugin.AccuracyOverride.Value) return;
+            try
+            {
+                int[] quota;
+                if (!s_classQuota.TryGetValue(__instance, out quota) || quota[2] != GameManager.CurrentTurn) return;
+                List<AITrajectoryWeapon> list = s_goalWeapons != null ? s_goalWeapons.GetValue(__instance) as List<AITrajectoryWeapon> : null;
+                if (list == null || list.Count == 0) return;
+                List<AITrajectoryWeapon> front = new List<AITrajectoryWeapon>(), rest = new List<AITrajectoryWeapon>();
+                int g = 0, u = 0;
+                foreach (AITrajectoryWeapon w in list)
+                {
+                    bool isGuided = w != null && w.TargetableWeapon != null && IsGuided(w.TargetableWeapon.Weapon);
+                    bool ready = w != null && w.HasFoundPrimaryTargetTrajectory;
+                    if (ready && isGuided && g < quota[0]) { front.Add(w); g++; }
+                    else if (ready && !isGuided && u < quota[1]) { front.Add(w); u++; }
+                    else rest.Add(w);
+                }
+                list.Clear();
+                list.AddRange(front);
+                list.AddRange(rest);
+                AICore core = (AICore)s_goalCore.GetValue(__instance);
+                if (core != null && core.PlayerData != null && s_quotaLogged.Add(core.PlayerData.PlayerID + ":" + GameManager.CurrentTurn))
+                {
+                    Plugin.WriteDecision(new Json().Str("e", "hit-quota").Int("t", GameManager.CurrentTurn).Str("ai", core.PlayerData.UserNickName)
+                        .Int("guidedQuota", quota[0]).Int("unguidedQuota", quota[1]).Int("guidedReady", g).Int("unguidedReady", u)
+                        .Int("hits", __instance.Hits).ToString());
+                }
+            }
+            catch (Exception e)
+            {
+                ReportOnce("hit-quota", e);
+            }
+        }
+
+        private static readonly HashSet<string> s_quotaLogged = new HashSet<string>();
 
         // ---- what actually got fired; feeds reachability memory ---------------------------------
 

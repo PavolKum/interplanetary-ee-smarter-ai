@@ -26,6 +26,7 @@ namespace InterplanetaryAI
             public int LastStrikeTurn = -1000;
             public int HoldTurns;
             public int ReleasedEnergy;
+            public float GuidedFiring, UnguidedFiring, ArtilleryProjectiles; // v0.16 item 4 (logged)
             public bool Reported;               // this turn's firing has been counted
             public int LastCommitId = -1;       // the enemy the weapons were pointed at last turn
             public int LastWeapons = -1;        // v0.14: live weapons counted at last turn's decision (attrition)
@@ -153,7 +154,8 @@ namespace InterplanetaryAI
             StrategyDecision decision;
             try
             {
-                bool war = EconomyDirector.WarPhase(turn, Plugin.WarFromTurn.Value, recentDamage, Plugin.WarDamageTrigger.Value);
+                // v0.16 item 4: the latched war turn (T16 with Orbital Assembly and WarMinIncome, else WarFallbackTurn).
+                bool war = EconomyDirector.WarPhase(turn, DirectorPatches.WarTurnFor(me, turn), recentDamage, Plugin.WarDamageTrigger.Value);
                 List<CelestialBody> planets = core.EnemyPlanets;
                 List<EnemyView> views = new List<EnemyView>();
                 foreach (CelestialBody planet in planets) views.Add(AiPatches.BuildEnemyView(me, planet.Player, turn));
@@ -167,19 +169,31 @@ namespace InterplanetaryAI
                 int weapons = 0;
                 HashSet<int> unreachable = new HashSet<int>();
                 HashSet<string> guidedIds = new HashSet<string>(); // v0.15.1 (Sol v0.15 #4)
+                float guidedPopSum = 0f, guidedFiring = 0f, unguidedFiring = 0f, artilleryProjectiles = 0f; // v0.16 item 4
+                int guidedCount = 0;
                 foreach (WeaponGameplayData weapon in me.WeaponHandler.Weapons)
                 {
                     if (weapon == null || weapon.IsLaser || weapon.WeaponData == null || weapon.Building == null) continue;
                     if (weapon.Building.CurrentState != BaseBuilding.BuildingState.Normal || !weapon.Building.Power.HasPower) continue;
                     weapons++;
                     string id = weapon.WeaponData.id.Value;
-                    if (AiPatches.IsGuided(weapon)) guidedIds.Add(id);
+                    bool guidedWeapon = AiPatches.IsGuided(weapon);
+                    if (guidedWeapon) guidedIds.Add(id);
+                    BuildingWeaponStats live = weapon.Building.Stats != null ? weapon.Building.Stats.Weapons : null;
+                    if (guidedWeapon)
+                    {
+                        guidedCount++;
+                        guidedPopSum += live != null ? live.PopulationDamage : (weapon.WeaponData.population_damage.IsValueSet ? weapon.WeaponData.population_damage.Value : 0);
+                        guidedFiring += live != null ? live.EnergyFiringCost : 0;
+                    }
+                    else unguidedFiring += live != null ? live.EnergyFiringCost : 0;
                     // Live counts, upgrades included (Terra v0.11 #2): ShootingModule / SurfaceModule are what the action phase fires.
                     int liveProjectiles = weapon.ShootingModule != null ? weapon.ShootingModule.ProjectileAmount : 0;
                     int liveFragments = weapon.SurfaceModule != null ? weapon.SurfaceModule.SplitFragments : 0;
                     if (liveProjectiles < 1) liveProjectiles = weapon.WeaponData.projectile_amount.IsValueSet ? weapon.WeaponData.projectile_amount.Value : 1;
                     if (liveFragments < 1) liveFragments = weapon.WeaponData.fragment_amount.IsValueSet ? weapon.WeaponData.fragment_amount.Value : 1;
                     float projectiles = Math.Max(1, liveProjectiles) * Math.Max(1, liveFragments);
+                    if (!guidedWeapon) artilleryProjectiles += projectiles;
                     Add(salvo, id, projectiles);
                     unreachable.Clear();
                     Plugin.Reach.FillUnreachable(AiPatches.WeaponKey(weapon), turn, unreachable);
@@ -211,8 +225,15 @@ namespace InterplanetaryAI
                     }
                     Dictionary<string, int> known;
                     economy.KnownDefenses.TryGetValue(view.PlayerId, out known);
+                    // v0.16 item 4: the cities of this enemy we see now, with their visible population (nothing remembered).
+                    List<int> visiblePops = new List<int>();
+                    foreach (BaseBuilding city in enemy.BuildingHandler.GetRemainingCities())
+                    {
+                        if (city != null && city.Stats != null && AiPatches.IsVisibleIntact(me, city)) visiblePops.Add(city.Stats.CurrentPopulation);
+                    }
                     targets.Add(new SalvoTarget
                     {
+                        VisibleCityPops = visiblePops,
                         PlayerId = view.PlayerId,
                         Name = view.Name,
                         Score = view.Score,
@@ -227,8 +248,15 @@ namespace InterplanetaryAI
                 }
                 bool underAttack = recentDamage > 0f || Plugin.Ledger.LastDefender(me.PlayerID).Impacts > 0;
                 bool hitLastPhase = Plugin.Ledger.LastDefender(me.PlayerID).EnemyImpacts > 0; // v0.15.3 (Sol v0.15.2 #2)
+                // v0.16 item 4 (S3): "funded" = the guided firing fits the war firing budget (WarUpkeepShare x income).
+                bool guidedFunded = guidedFiring <= Plugin.WarUpkeepShare.Value * me.ResourceHandler.EnergyProductionPerTurn;
+                float guidedPopDamage = guidedCount > 0 ? guidedPopSum / guidedCount : 0f;
                 decision = Strategy.Decide(turn, war, salvo, accuracy, targets, DefensePlanner.Counters, state.LastStrikeTurn, state.HoldTurns,
-                    weapons, Plugin.StrategyCfg, state.LastCommitId, state.LastWeapons, underAttack, accuracyById, hitLastPhase);
+                    weapons, Plugin.StrategyCfg, state.LastCommitId, state.LastWeapons, underAttack, accuracyById, hitLastPhase,
+                    guidedIds, guidedPopDamage, guidedFunded);
+                state.GuidedFiring = guidedFiring;
+                state.UnguidedFiring = unguidedFiring;
+                state.ArtilleryProjectiles = artilleryProjectiles;
                 state.LastWeapons = weapons;
                 if (!decision.Fire && !HoldAvailable)
                 {
@@ -348,6 +376,11 @@ namespace InterplanetaryAI
                     .Map("passingBy", passing).Map("arrivingBy", arriving).Map("eligibleBy", eligible).Map("rollsBy", rolls)
                     .Map("defensesBy", defenses).Map("scoreBy", score)
                     .Int("aimedAt", aimedBefore).Map("observedImpactsBy", observedImpacts).Map("observedInterceptedBy", observedIntercepted)
+                    // v0.16 item 4 gates: precision exception inputs; blind salvo firing energy and live artillery projectiles
+                    // (loss per 1,000 paid firing E is computed postgame against the human telemetry, never at runtime)
+                    .Bool("precision", d.Precision).Int("visibleCities", d.VisibleCities).Num("guidedArriving", d.GuidedArriving)
+                    .Num("guidedPassing", d.GuidedPassing).Int("smallestVisibleCityPop", d.SmallestVisibleCityPop)
+                    .Num("guidedFiring", state.GuidedFiring).Num("unguidedFiring", state.UnguidedFiring).Num("artilleryProjectiles", state.ArtilleryProjectiles)
                     .ToString());
             }
             catch (Exception e)

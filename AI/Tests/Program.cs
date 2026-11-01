@@ -1428,6 +1428,30 @@ namespace InterplanetaryAI.Tests
             Check(!PrecisionOpportunity.Holds(0, 7.65f, 1f, 150f, 300, true, 6f, 0.9f, 1f), "no city visible now: no precision fire");
             Check(!PrecisionOpportunity.Holds(2, 7.65f, 1f, 150f, 300, false, 6f, 0.9f, 1f), "unfunded: no precision fire");
             Check(!PrecisionOpportunity.Holds(2, 7.65f, 1f, 150f, 300, true, 6f, 0.9f, 0f), "killShare 0 = off");
+
+            // Item 4 through Strategy.Decide: match 16 T21, 9 Missiles at 0.85 onto a target with no Ion, two cities visible.
+            StrategySettings ps = new StrategySettings();
+            Dictionary<string, float> missiles = new Dictionary<string, float> { { "wea_Missile", 9f } };
+            Dictionary<string, float> guidedRate = new Dictionary<string, float> { { "wea_Missile", 0.85f } };
+            HashSet<string> guidedIds = new HashSet<string> { "wea_Missile" };
+            Func<List<int>, SalvoTarget> t21 = pops => new SalvoTarget
+            {
+                PlayerId = 0, Name = "human", Score = 1f, DefensesSeen = true, EnergyKnown = true, EnergyProduction = 20000f,
+                Defenses = new Dictionary<string, int> { { "bui_KineticDefense", 20 } }, VisibleCityPops = pops,
+            };
+            StrategyDecision pd = Strategy.Decide(21, true, missiles, 0.7f, new List<SalvoTarget> { t21(new List<int> { 500, 900 }) }, EnhancedCounters(),
+                -1000, 1, 9, ps, -1, -1, false, guidedRate, false, guidedIds, 150f, true);
+            Check(pd.Fire && pd.Reason == "precision", "T21: two visible cities, 7.65 guided through: precision fire; got " + pd.Reason + " " + pd.GuidedPassing);
+            Check(Math.Abs(pd.GuidedPassing - 7.65f) < 0.01f, "guided through = 9 x 0.85 (Kinetic does not stop Missiles); got " + pd.GuidedPassing);
+            pd = Strategy.Decide(21, true, missiles, 0.7f, new List<SalvoTarget> { t21(new List<int>()) }, EnhancedCounters(),
+                -1000, 1, 9, ps, -1, -1, false, guidedRate, false, guidedIds, 150f, true);
+            Check(!pd.Fire && pd.Reason == "below-saturation", "T23: no city visible: v0.15 hold stands; got " + pd.Reason);
+            pd = Strategy.Decide(21, true, missiles, 0.7f, new List<SalvoTarget> { t21(new List<int> { 500 }) }, EnhancedCounters(),
+                -1000, 1, 9, ps, -1, -1, false, guidedRate, false, guidedIds, 150f, false);
+            Check(!pd.Fire, "unfunded guided firing: hold");
+            pd = Strategy.Decide(21, true, missiles, 0.7f, new List<SalvoTarget> { t21(new List<int> { 500 }) }, EnhancedCounters(),
+                -1000, 1, 9, ps, -1, -1, false, guidedRate, false, null, 150f, true);
+            Check(!pd.Fire, "no guided weapons: no precision exception");
         }
 
         private static void Check(bool condition, string what)
