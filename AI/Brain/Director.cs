@@ -263,6 +263,17 @@ namespace InterplanetaryAI.Brain
             return Math.Max(0, Math.Min(deficit, cap - owned));
         }
 
+        // v0.15 intel sprint (Sol + Fable v0.14.2 audits): cities never move and a city seen once stays on the map as a Shadow
+        // that guided strikes can use; v0.14.1 Bolide built its first Telescopes at T16, after the human's first counterintel
+        // hub (T13), and never saw a city. While an enemy city has never been seen and turn <= untilTurn, intel may take up
+        // to sprintPerTurn buildings a turn until sprintBuildings stand; otherwise the normal per-turn limit.
+        public static int IntelPerTurnLimit(int unseenCities, int turn, int untilTurn, int intelBuildings, int sprintBuildings,
+            int sprintPerTurn, int normalPerTurn)
+        {
+            bool sprint = unseenCities > 0 && turn <= untilTurn && intelBuildings < sprintBuildings;
+            return sprint ? Math.Max(normalPerTurn, sprintPerTurn) : normalPerTurn;
+        }
+
         // Anti-nuke defenses wanted over each city.
         public static int AntiNukePerCity(bool nukeSeen, int turn, int priorTurn, int perCitySeen, int perCityPrior)
         {

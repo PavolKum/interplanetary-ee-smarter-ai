@@ -255,11 +255,29 @@ namespace InterplanetaryAI
                 PlayerData me = core.PlayerData;
                 if (!me.AIPlayer) return;
 
-                float accuracy = AccuracyPlan.ForLevel(Plugin.Accuracy, me.AILevel);
+                float levelAccuracy = AccuracyPlan.ForLevel(Plugin.Accuracy, me.AILevel);
+                // v0.15: live weapons only (the targeting list keeps destroyed entries, Sol + Fable v0.14.2 audits), guided
+                // ones at GuidedAccuracy (Pavol's measured Missile rate), unguided at the level rate.
+                int guided = 0, unguided = 0;
+                List<AITrajectoryWeapon> listed = s_goalWeapons != null ? s_goalWeapons.GetValue(__instance) as List<AITrajectoryWeapon> : null;
+                if (listed != null)
+                {
+                    foreach (AITrajectoryWeapon tw in listed)
+                    {
+                        WeaponGameplayData w = tw != null && tw.TargetableWeapon != null ? tw.TargetableWeapon.Weapon : null;
+                        if (w == null || w.Building == null || w.Building.CurrentState != BaseBuilding.BuildingState.Normal || !w.Building.Power.HasPower) continue;
+                        if (w.TargetingModule != null && w.TargetingModule.HasTargetingPhase(WeaponTargetingPhase.SecondPhaseTargeting)) guided++;
+                        else unguided++;
+                    }
+                }
+                int live = guided + unguided;
+                if (live <= 0) live = total;
+                float accuracy = Plugin.GuidedAccuracy.Value > 0f
+                    ? AccuracyPlan.MixedRate(guided, Plugin.GuidedAccuracy.Value, unguided, levelAccuracy) : levelAccuracy;
                 float carry;
                 Plugin.AccuracyCarry.TryGetValue(me.PlayerID, out carry);
                 int nativeHits = __instance.Hits;
-                int hits = AccuracyPlan.PlannedHits(total, accuracy, ref carry);
+                int hits = Math.Min(total, AccuracyPlan.PlannedHits(live, accuracy, ref carry));
                 Plugin.AccuracyCarry[me.PlayerID] = carry;
 
                 __instance.Hits = hits;
@@ -267,7 +285,7 @@ namespace InterplanetaryAI
 
                 Plugin.WriteDecision(new Json()
                     .Str("e", "accuracy").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName).Int("lvl", me.AILevel)
-                    .Num("acc", accuracy).Int("shots", total).Int("nativeHits", nativeHits).Int("hits", hits).ToString());
+                    .Num("acc", accuracy).Int("shots", total).Int("live", live).Int("guided", guided).Int("nativeHits", nativeHits).Int("hits", hits).ToString());
             }
             catch (Exception e)
             {
@@ -444,26 +462,49 @@ namespace InterplanetaryAI
 
         // ---- guided strikes: which building on the target planet --------------------------------
 
+        // v0.15 (Sol + Fable v0.14.2 audits): candidates are enemy cities we see now (live population) or saw before
+        // (Shadow: the frozen observation, never hidden live values; cities never move), plus visible weapon buildings.
+        // A per-volley ledger spreads the shots (VolleyPlanner). With no candidate the native choice runs; it also falls
+        // back to a random point on the planet when it knows nothing (AIWeaponTargeting.cs:483-497), so that is logged.
+        private static readonly Dictionary<int, KeyValuePair<int, Dictionary<string, float>>> s_volley = new Dictionary<int, KeyValuePair<int, Dictionary<string, float>>>();
+
+        private static Dictionary<string, float> VolleyLedger(int playerId, int turn)
+        {
+            KeyValuePair<int, Dictionary<string, float>> entry;
+            if (!s_volley.TryGetValue(playerId, out entry) || entry.Key != turn)
+            {
+                entry = new KeyValuePair<int, Dictionary<string, float>>(turn, new Dictionary<string, float>());
+                s_volley[playerId] = entry;
+            }
+            return entry.Value;
+        }
+
         private static bool SecondPhasePrefix(AIWeaponTargeting __instance, WeaponGameplayData weapon, CelestialBody targetPlanet)
         {
             if (!Plugin.Active || !Plugin.SmartStrikes.Value) return true;
-            PlayerData me, enemy;
-            List<BuildingView> views = new List<BuildingView>();
-            int pick;
+            PlayerData me = null, enemy = null;
+            List<BaseBuilding> buildings = new List<BaseBuilding>();
+            List<StrikeCandidate> candidates = new List<StrikeCandidate>();
+            Dictionary<string, float> ledger = null;
+            int pick = -1;
+            float damage = 0f;
             try
             {
                 AICore core = (AICore)s_moduleCore.GetValue(__instance);
                 enemy = targetPlanet != null ? targetPlanet.Player : null;
                 if (core == null || enemy == null) return true;
                 me = core.PlayerData;
-
-                List<BaseBuilding> buildings = new List<BaseBuilding>();
-                AddCandidates(me, enemy.BuildingHandler.GetBuildingsByType(BaseBuilding.BuildingFunctionalityType.City), true, buildings, views);
-                AddCandidates(me, enemy.BuildingHandler.GetBuildingsByType(BaseBuilding.BuildingFunctionalityType.Weapon), false, buildings, views);
-
-                pick = StrikePlanner.Choose(views, Plugin.WeaponBuildingShare.Value, Plugin.Rng);
-                if (pick < 0) return true; // nothing currently visible: native choice (it also aims at shadow intel)
-
+                ledger = VolleyLedger(me.PlayerID, GameManager.CurrentTurn);
+                AddStrikeCandidates(me, enemy.BuildingHandler.GetBuildingsByType(BaseBuilding.BuildingFunctionalityType.City), true, ledger, buildings, candidates);
+                AddStrikeCandidates(me, enemy.BuildingHandler.GetBuildingsByType(BaseBuilding.BuildingFunctionalityType.Weapon), false, ledger, buildings, candidates);
+                bool preferWeapon = Plugin.Rng.NextDouble() < Plugin.WeaponBuildingShare.Value;
+                pick = VolleyPlanner.Pick(candidates, Plugin.VolleyOverkill.Value, preferWeapon);
+                if (pick < 0)
+                {
+                    LogStrike(me, enemy, null, null, 0f, 0, "native-no-candidates");
+                    return true;
+                }
+                damage = candidates[pick].IsCity ? weapon.DamageModule.PopulationDamage : weapon.DamageModule.BuildingDamage;
                 core.Actions.SecondPhaseTargetWeapon(weapon, targetPlanet, buildings[pick].transform.localPosition);
             }
             catch (Exception e)
@@ -471,14 +512,14 @@ namespace InterplanetaryAI
                 ReportOnce("strike", e); // no action was queued, so the native choice runs
                 return true;
             }
-
             // The strike is queued: never fall through to native from here (it would queue a second one).
             try
             {
-                Plugin.WriteDecision(new Json()
-                    .Str("e", "strike").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName).Str("target", enemy.UserNickName)
-                    .Str("building", views[pick].IsCity ? "city" : "weapon").Int("durability", views[pick].CurrentHp).Int("maxDurability", views[pick].MaxHp)
-                    .Int("candidates", views.Count).ToString());
+                string key = buildings[pick].ObjectId.ToString();
+                float before;
+                ledger.TryGetValue(key, out before);
+                ledger[key] = before + damage;
+                LogStrike(me, enemy, buildings[pick], candidates[pick], damage, candidates.Count, "");
             }
             catch (Exception e)
             {
@@ -487,19 +528,56 @@ namespace InterplanetaryAI
             return false;
         }
 
-        private static void AddCandidates(PlayerData me, List<BaseBuilding> source, bool isCity, List<BaseBuilding> buildings, List<BuildingView> views)
+        private static void AddStrikeCandidates(PlayerData me, List<BaseBuilding> source, bool isCity, Dictionary<string, float> ledger,
+            List<BaseBuilding> buildings, List<StrikeCandidate> candidates)
         {
             if (source == null) return;
             foreach (BaseBuilding building in source)
             {
-                if (!IsVisibleIntact(me, building) || building.Stats == null) continue;
-                buildings.Add(building);
-                views.Add(new BuildingView
+                if (building == null) continue;
+                BuildingIntelVisibility vis = me.IntelHandler.GetBuildingVisibility(building);
+                float durability;
+                bool shadow = false;
+                if (vis == BuildingIntelVisibility.Visible)
                 {
-                    IsCity = isCity,
-                    CurrentHp = isCity ? building.Stats.CurrentPopulation : building.Stats.CurrentHP,
-                    MaxHp = isCity ? building.Stats.MaxPopulation : building.Stats.MaxHP,
-                });
+                    if (building.CurrentState != BaseBuilding.BuildingState.Normal || building.Stats == null) continue;
+                    durability = isCity ? building.Stats.CurrentPopulation : building.Stats.CurrentHP;
+                }
+                else if (vis == BuildingIntelVisibility.Shadow && isCity)
+                {
+                    ShadowBuildingFrozenState frozen = me.IntelHandler.IntelMemory != null ? me.IntelHandler.IntelMemory.GetShadowBuildingState(building) : null;
+                    if (frozen == null || frozen.BuildingState != BaseBuilding.BuildingState.Normal) continue;
+                    durability = frozen.HP;
+                    shadow = true;
+                }
+                else continue;
+                float allocated;
+                ledger.TryGetValue(building.ObjectId.ToString(), out allocated);
+                buildings.Add(building);
+                candidates.Add(new StrikeCandidate { IsCity = isCity, Shadow = shadow, Durability = durability, Allocated = allocated });
+            }
+        }
+
+        private static void LogStrike(PlayerData me, PlayerData enemy, BaseBuilding target, StrikeCandidate c, float damage, int count, string fallback)
+        {
+            try
+            {
+                Json j = new Json().Str("e", "strike").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName).Str("target", enemy.UserNickName)
+                    .Int("candidates", count);
+                if (target != null && c != null)
+                {
+                    j.Str("building", c.IsCity ? "city" : "weapon").Str("id", target.ObjectId.ToString()).Str("seen", c.Shadow ? "shadow" : "visible")
+                        .Int("durability", (int)c.Durability).Int("allocatedBefore", (int)c.Allocated).Int("damage", (int)damage);
+                }
+                else
+                {
+                    j.Str("building", "none").Str("fallback", fallback);
+                }
+                Plugin.WriteDecision(j.ToString());
+            }
+            catch (Exception e)
+            {
+                ReportOnce("strike-log", e);
             }
         }
 

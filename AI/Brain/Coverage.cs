@@ -245,6 +245,23 @@ namespace InterplanetaryAI.Brain
             return deficit;
         }
 
+        // v0.15: defenses that protect at least one city (same reach rule as CityProtectionDeficit). The anti-missile cap
+        // counts these, not every Ion on the planet: v0.14.1 had 7-29 Ions placed by value elsewhere, the planet-wide cap
+        // was always met, and 3 of 5 cities stood uncovered when the human's first 14-Missile volley took two of them.
+        public static int ProtectingCount(IList<Point> cities, IList<float> cityRadii, IList<Point> defenses, IList<float> defenseRadii)
+        {
+            int n = 0;
+            for (int j = 0; j < defenses.Count; j++)
+            {
+                for (int c = 0; c < cities.Count; c++)
+                {
+                    float reach = defenseRadii[j] - 0.5f * cityRadii[c];
+                    if (reach > 0f && cities[c].DistanceSquared(defenses[j]) < reach * reach) { n++; break; }
+                }
+            }
+            return n;
+        }
+
         // Share of the total value that is covered (for the decision log).
         public static float CoveredShare(IList<float> values, bool[] covered)
         {

@@ -148,6 +148,15 @@ namespace InterplanetaryAI.Brain
             return hits;
         }
 
+        // v0.15: guided weapons (second-phase targeting) plan hits at their own rate (Pavol, 2026-11-01: 0.85, his measured
+        // Missile rate - 60 of 71 shots hit the planet), unguided at the level rate. The quota is over live weapons only.
+        public static float MixedRate(int guided, float guidedRate, int unguided, float unguidedRate)
+        {
+            int n = Math.Max(0, guided) + Math.Max(0, unguided);
+            if (n == 0) return unguidedRate;
+            return (Math.Max(0, guided) * guidedRate + Math.Max(0, unguided) * unguidedRate) / n;
+        }
+
         public static float ForLevel(float[] byLevel, int level)
         {
             if (byLevel == null || byLevel.Length == 0) return 1f;
@@ -189,6 +198,53 @@ namespace InterplanetaryAI.Brain
             }
             if (weakestWeapon >= 0 && (weakestCity < 0 || rng.NextDouble() < weaponBuildingShare)) return weakestWeapon;
             return weakestCity;
+        }
+    }
+
+    // v0.15 (Sol + Fable v0.14.2 audits): a guided volley spreads its shots. v0.14.1 sent 8 Missiles at one 330 HP weapon
+    // (T22) because every targeting call saw the same unchanged durability. Each shot reserves its damage on the target it
+    // picks; a target is full once the reserved damage reaches overkill x its durability (interceptions, splash).
+    // Durability is live for Visible targets and the frozen observation for Shadows (never hidden live values).
+    public sealed class StrikeCandidate
+    {
+        public bool IsCity;
+        public bool Shadow;
+        public float Durability;   // population for cities, HP otherwise
+        public float Allocated;    // damage already reserved on it this volley
+    }
+
+    public static class VolleyPlanner
+    {
+        // Cities first unless the weapon share draw says otherwise: among targets not yet full, the one with the least
+        // durability left after reservations (finish kills first). When every target of a kind is full, the least
+        // over-reserved one of that kind. -1 when there are no candidates.
+        public static int Pick(IList<StrikeCandidate> candidates, float overkill, bool preferWeapon)
+        {
+            int city = Best(candidates, true, overkill), weapon = Best(candidates, false, overkill);
+            if (preferWeapon && weapon >= 0) return weapon;
+            return city >= 0 ? city : weapon;
+        }
+
+        private static int Best(IList<StrikeCandidate> candidates, bool cities, float overkill)
+        {
+            int open = -1, full = -1;
+            float openLeft = float.MaxValue, fullOver = float.MaxValue;
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                StrikeCandidate c = candidates[i];
+                if (c == null || c.IsCity != cities || c.Durability <= 0f) continue;
+                float left = c.Durability * Math.Max(1f, overkill) - c.Allocated;
+                if (left > 0f)
+                {
+                    float remaining = c.Durability - c.Allocated;
+                    if (remaining < openLeft) { openLeft = remaining; open = i; }
+                }
+                else if (-left < fullOver)
+                {
+                    fullOver = -left; full = i;
+                }
+            }
+            return open >= 0 ? open : full;
         }
     }
 

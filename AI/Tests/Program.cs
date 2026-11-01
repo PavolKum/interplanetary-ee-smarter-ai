@@ -54,6 +54,7 @@ namespace InterplanetaryAI.Tests
             V012Rules();
             V013Rules();
             V014Rules();
+            V015Rules();
 
             Console.WriteLine(s_checks + " checks, " + s_failures + " failed");
             return s_failures == 0 ? 0 : 1;
@@ -334,6 +335,55 @@ namespace InterplanetaryAI.Tests
         }
 
         // ---- v0.13: repair, no extraction in material glut, weapons ranked per slot -------------------
+        private static void V015Rules()
+        {
+            // Volley allocation: weakest city first, move on once overkill x durability is reserved, weapons on the share draw.
+            var c1 = new StrikeCandidate { IsCity = true, Durability = 600 };
+            var c2 = new StrikeCandidate { IsCity = true, Durability = 300, Shadow = true };
+            var w1 = new StrikeCandidate { IsCity = false, Durability = 330 };
+            var list = new List<StrikeCandidate> { c1, c2, w1 };
+            Check(VolleyPlanner.Pick(list, 1.25f, false) == 1, "weakest city first (shadow 300 before 600)");
+            Check(VolleyPlanner.Pick(list, 1.25f, true) == 2, "the weapon share draw picks the weapon");
+            c2.Allocated = 300;
+            Check(VolleyPlanner.Pick(list, 1.25f, false) == 1, "300 reserved on 300 x 1.25: still open");
+            c2.Allocated = 450;
+            Check(VolleyPlanner.Pick(list, 1.25f, false) == 0, "450 reserved >= 375: next city");
+            c1.Allocated = 800;
+            Check(VolleyPlanner.Pick(list, 1.25f, false) == 0, "all cities full: the least over-reserved (450-375=75 vs 800-750=50 -> city 600)");
+            Check(VolleyPlanner.Pick(new List<StrikeCandidate>(), 1.25f, false) == -1, "no candidates: -1 (native)");
+            Check(VolleyPlanner.Pick(new List<StrikeCandidate> { new StrikeCandidate { IsCity = true, Durability = 0 } }, 1.25f, false) == -1, "a dead city is no target");
+            // v0.14.1 T22: 8 Missiles (200) at 11 visible weapons of 330 HP all went at one; now at most 3 per weapon.
+            var weapons = new List<StrikeCandidate>();
+            for (int i = 0; i < 11; i++) weapons.Add(new StrikeCandidate { IsCity = false, Durability = 330 });
+            var hitsOn = new int[11];
+            for (int shot = 0; shot < 8; shot++)
+            {
+                int k = VolleyPlanner.Pick(weapons, 1.25f, true);
+                weapons[k].Allocated += 200; hitsOn[k]++;
+            }
+            int maxOn = 0, distinct = 0;
+            foreach (int h in hitsOn) { maxOn = Math.Max(maxOn, h); if (h > 0) distinct++; }
+            Check(maxOn <= 3 && distinct >= 3, "8 shots spread over >= 3 weapons, <= 3 each; got max " + maxOn + ", distinct " + distinct);
+
+            // Accuracy: guided at their own rate, unguided at the level rate, over live weapons.
+            Check(Math.Abs(AccuracyPlan.MixedRate(20, 0.85f, 0, 0.7f) - 0.85f) < 1e-4, "all guided: 0.85");
+            Check(Math.Abs(AccuracyPlan.MixedRate(10, 0.85f, 10, 0.7f) - 0.775f) < 1e-4, "half and half: 0.775");
+            Check(Math.Abs(AccuracyPlan.MixedRate(0, 0.85f, 0, 0.7f) - 0.7f) < 1e-4, "no live weapons: the level rate");
+
+            // Anti-missile cap counts defenses that protect a city.
+            var cities = new List<Point> { new Point(0, 0, 0) };
+            var cityR = new List<float> { 1.9f };
+            var ions = new List<Point> { new Point(3, 0, 0), new Point(5, 0, 0), new Point(0, 4.3f, 0) };
+            var ionR = new List<float> { 5.3f, 5.3f, 5.3f };
+            Check(DefenseCoverage.ProtectingCount(cities, cityR, ions, ionR) == 2, "Ions within 5.3 - 0.95 = 4.35 of the centre protect: 2 of 3");
+
+            // Intel sprint.
+            Check(EconomyDirector.IntelPerTurnLimit(5, 6, 14, 2, 6, 3, 2) == 3, "unseen cities, T6, 2 of 6: 3 a turn");
+            Check(EconomyDirector.IntelPerTurnLimit(5, 6, 14, 6, 6, 3, 2) == 2, "6 standing: back to the normal limit");
+            Check(EconomyDirector.IntelPerTurnLimit(5, 15, 14, 2, 6, 3, 2) == 2, "after the sprint turn: normal");
+            Check(EconomyDirector.IntelPerTurnLimit(0, 6, 14, 2, 6, 3, 2) == 2, "every city seen: normal");
+        }
+
         private static void V014Rules()
         {
             StrategySettings s = new StrategySettings { OverlapDefenses = 20f };

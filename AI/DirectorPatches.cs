@@ -106,6 +106,11 @@ namespace InterplanetaryAI
             public int SoldMines, SoldMaterial;
             public int Repaired, RepairEnergy, RepairMaterial; // v0.13
             public int PlantsQueued;      // v0.14.1: power-distributing buildings queued this turn
+            public int UnseenCities;      // v0.15: enemy cities our intel has never seen (not Visible, not Shadow)
+            public bool GuidedThreat;     // v0.15: an enemy guided weapon (Missile, MIRV, Nuke) seen or landed
+            public int AntiNukeProtecting; // v0.15: anti-missile defenses that protect at least one city
+            public int OwnIntel;
+            public int CityProjectsThisTurn;
             public int PowerEnergySpent;  // v0.13.1: energy spent this turn on energy-only purchases (plants, energy upgrades)
             public int AimedWeapons;                // own weapons needing a trajectory (not lasers, not superweapons), queued included
             // across turns
@@ -295,6 +300,36 @@ namespace InterplanetaryAI
             int knownNukes;
             economy.EnemyWeapons.TryGetValue(NuclearWeaponId, out knownNukes);
             d.NukeThreat = knownNukes > 0 || turn - economy.LastNukeHitTurn <= Plugin.NukeMemoryTurns.Value;
+            // v0.15 (Sol #1, Fable #2 of the v0.14.2 audits): any guided enemy weapon is a city threat. v0.14.1 saw 11 human
+            // Missiles at T22 with Ions over 2 of its 5 cities; the T23 volley of 14 took two cities. The per-city cover then
+            // applies to Missiles and MIRVs too (they land exactly where aimed, Kinetic does not stop them).
+            if (Plugin.GuidedCityCover.Value)
+            {
+                foreach (string guidedId in GuidedWeaponIds)
+                {
+                    int known, hits;
+                    economy.EnemyWeapons.TryGetValue(guidedId, out known);
+                    last.ImpactsByWeapon.TryGetValue(guidedId, out hits);
+                    if (known > 0 || hits > 0) { d.GuidedThreat = true; break; }
+                }
+                if (d.GuidedThreat) d.NukeThreat = true;
+            }
+            try
+            {
+                d.OwnIntel = me.ResourceHandler.Intel;
+                foreach (CelestialBody planet in core.EnemyPlanets)
+                {
+                    if (planet == null || planet.Player == null) continue;
+                    foreach (BaseBuilding city in planet.Player.BuildingHandler.GetRemainingCities())
+                    {
+                        if (city != null && me.IntelHandler.GetBuildingVisibility(city) == BuildingIntelVisibility.Invisible) d.UnseenCities++;
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                ReportOnce("unseen-cities", e);
+            }
             d.AntiNukeId = AntiNukeDefenseId();
             if (d.AntiNukeId != null && Plugin.AntiNukePerCity.Value > 0)
             {
@@ -321,10 +356,13 @@ namespace InterplanetaryAI
                 }
                 d.AntiNukeOwned = defensePoints.Count;
                 int deficit = DefenseCoverage.CityProtectionDeficit(cityPoints, cityRadii, defensePoints, defenseRadii, perCity, out d.CitiesProtected);
-                // Cap on every intact Ion, powered or not (Terra v0.8.2 #2); this turn's queue is checked in the step.
+                // v0.15: the cap counts defenses that protect a city (Ions placed elsewhere by value do not); a hard
+                // planet-wide cap of 4 x perCity x cities on every intact one stays as the runaway guard (Terra v0.8.2 #2).
+                d.AntiNukeProtecting = DefenseCoverage.ProtectingCount(cityPoints, cityRadii, defensePoints, defenseRadii);
                 d.AntiNukeIntact = intactAntiNuke;
-                d.AntiNukeWanted = EconomyDirector.AntiNukeMissing(deficit, intactAntiNuke, cityPoints.Count, perCity, 2f);
-                d.AntiNukeCap = (int)Math.Ceiling(2f * perCity * cityPoints.Count);
+                int hardCap = (int)Math.Ceiling(4f * perCity * cityPoints.Count);
+                d.AntiNukeWanted = intactAntiNuke >= hardCap ? 0 : EconomyDirector.AntiNukeMissing(deficit, d.AntiNukeProtecting, cityPoints.Count, perCity, 2f);
+                d.AntiNukeCap = hardCap;
             }
 
             // Weapon choice is made against the strongest visible economy: the enemy most worth hitting.
@@ -516,8 +554,10 @@ namespace InterplanetaryAI
             // 3. Intel until we can read every enemy's production and population (v0.4). Native intel need
             // counts only guided weapons, so a Railgun army stayed blind all game (31 Oct v0.3.1).
             IntelEvaluationState intel = IntelState(core);
-            bool intelRoom = d.IntelBuildings + d.IntelThisTurn < Plugin.MaxIntelBuildings.Value && d.IntelThisTurn < Plugin.IntelPerTurn.Value;
-            bool wantIntel = intel == IntelEvaluationState.BelowMinimum || d.BlindEnemies > 0;
+            int intelLimit = EconomyDirector.IntelPerTurnLimit(d.UnseenCities, d.Turn, Plugin.IntelSprintUntilTurn.Value, d.IntelBuildings + d.IntelThisTurn,
+                Plugin.IntelSprintBuildings.Value, Plugin.IntelSprintPerTurn.Value, Plugin.IntelPerTurn.Value);
+            bool intelRoom = d.IntelBuildings + d.IntelThisTurn < Plugin.MaxIntelBuildings.Value && d.IntelThisTurn < intelLimit;
+            bool wantIntel = intel == IntelEvaluationState.BelowMinimum || d.BlindEnemies > 0 || d.UnseenCities > 0;
             if (wantIntel && intelRoom && d.SlotsLeft > 0 && !d.FailedThisTurn.Contains("intel"))
             {
                 if (TryIntelBuilding(construction, core, d)) return true;
@@ -527,7 +567,8 @@ namespace InterplanetaryAI
             // 3b. Anti-nuke defenses over the cities (v0.8), on their own gate: nukes take cities, and cities decide the game.
             int ionsQueuedThisTurn = 0;
             if (d.AntiNukeId != null) economy.DefensesQueued.TryGetValue(d.AntiNukeId, out ionsQueuedThisTurn);
-            if (d.AntiNukeId != null && d.AntiNukeThisTurn < d.AntiNukeWanted && d.AntiNukeThisTurn < Math.Max(2, d.DefenseTurnCap)
+            int antiNukeTurnCap = d.GuidedThreat ? d.AntiNukeWanted : Math.Max(2, d.DefenseTurnCap); // v0.15: no throttle on city cover
+            if (d.AntiNukeId != null && d.AntiNukeThisTurn < d.AntiNukeWanted && d.AntiNukeThisTurn < antiNukeTurnCap
                 && d.AntiNukeIntact + ionsQueuedThisTurn < d.AntiNukeCap
                 && d.SlotsLeft > 0 && !d.FailedThisTurn.Contains("antinuke"))
             {
@@ -554,6 +595,15 @@ namespace InterplanetaryAI
             {
                 if (TryDefense(construction, core, economy, d)) return true;
                 d.FailedThisTurn.Add("defense");
+            }
+
+            // 4a. v0.15 (Fable #5/#12, Sol #2 of the v0.14.2 audits): counterintel city projects (Quantum Encryption Hub: +50
+            // counterintel per city, permanent, 150 energy / 200 material, unlocked by Self-Adjusting Optics). v0.14.1 never bought
+            // one; its counterintel stayed x1.0 until T22 while the human saw every city.
+            if (Plugin.CounterintelProjects.Value && d.Turn >= Plugin.CounterintelFromTurn.Value && d.CityProjectsThisTurn < 2 && !d.FailedThisTurn.Contains("city-project"))
+            {
+                if (TryCityProject(construction, core, d, "pro_CounterintelYieldPermanent1")) return true;
+                d.FailedThisTurn.Add("city-project");
             }
 
             // 4b. Counterintel: hides our buildings from enemy intel (the human who won built 18 Data Security Hubs).
@@ -682,6 +732,7 @@ namespace InterplanetaryAI
         }
 
         private const string NuclearWeaponId = "wea_NuclearMissile";
+        private static readonly string[] GuidedWeaponIds = { "wea_Missile", "wea_MIRV", "wea_NuclearMissile" };
 
         // The defense building that stops Nuclear Missiles best in the active ruleset (Ion in Enhanced), or null.
         private static string AntiNukeDefenseId()
@@ -1071,6 +1122,8 @@ namespace InterplanetaryAI
                     if (building.Upgrades.HasUpgrade(upgrade)) continue;
                     string key = building.ObjectId + ":" + upgrade.id.Value;
                     if (d.PlannedUpgradeKeys.Contains(key) || d.FailedThisTurn.Contains("upg:" + key)) continue;
+                    // v0.15: no intel-cutting upgrade (Telescope science x0.75 intel) while an enemy city is unseen or blind.
+                    if ((d.UnseenCities > 0 || d.BlindEnemies > 0) && FloatValue(upgrade.turn_yield_intel_multiplier, 1f) < 1f) continue;
                     float energyGain = baseEnergy * globalEnergy * energyMultiplier * (FloatValue(upgrade.turn_yield_energy_multiplier, 1f) - 1f);
                     float materialGain = baseMaterial * globalMaterial * materialMultiplier * (FloatValue(upgrade.turn_yield_material_multiplier, 1f) - 1f) * planetFactor;
                     bool savesReserve = false;
@@ -1209,6 +1262,42 @@ namespace InterplanetaryAI
                     Payload = project,
                 });
             }
+        }
+
+        // v0.15: queue one city project by id in the first city type that offers it and has a city with a free slot.
+        private static bool TryCityProject(AIConstruction construction, AICore core, DirectorState d, string projectId)
+        {
+            ProjectsData projectsData = GameDataFileManager.GetDataFile<ProjectsData>();
+            PlayerAvailableBuildings availableNow = core.PlayerData.BuildingHandler.AvailableBuildings;
+            HashSet<string> types = new HashSet<string>();
+            foreach (BaseBuilding city in core.PlayerData.BuildingHandler.GetRemainingCities())
+            {
+                if (city == null || city.CityData == null || !types.Add(city.CityData.id.Value)) continue;
+                foreach (ProjectData p in projectsData.GetAvailableCityProjects(city.CityData.id.Value))
+                {
+                    if (p == null || p.id.Value != projectId || !availableNow.IsProjectAvailable(p)) continue;
+                    AIProjectEntity entity = new AIProjectEntity(core, AIConstructionEntityValueType.EnergyGeneration, p, city.CityData);
+                    if (!HasCityForProject(construction, core, entity)) continue;
+                    if (QueueProject(construction, core, d, entity))
+                    {
+                        d.CityProjectsThisTurn++;
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        // v0.15 instrumentation: our cities' population, in building order ("620;540;0").
+        private static string OwnCityPopulations(PlayerData me)
+        {
+            List<string> parts = new List<string>();
+            foreach (BaseBuilding city in me.BuildingHandler.GetBuildingsByType(BaseBuilding.BuildingFunctionalityType.City))
+            {
+                if (city == null || city.Stats == null) continue;
+                parts.Add(city.CurrentState == BaseBuilding.BuildingState.Normal ? city.Stats.CurrentPopulation.ToString() : "x");
+            }
+            return string.Join(";", parts.ToArray());
         }
 
         private static bool HasCityForProject(AIConstruction construction, AICore core, AIProjectEntity project)
@@ -1937,6 +2026,9 @@ namespace InterplanetaryAI
                 .Int("soldMines", d.SoldMines).Int("soldMaterial", d.SoldMaterial).Int("aimedWeapons", d.AimedWeapons)
                 .Int("repaired", d.Repaired).Int("repairEnergy", d.RepairEnergy).Int("repairMaterial", d.RepairMaterial)
                 .Int("refunds", d.Refunds).Map("placementFailures", d.PlacementFailures).Int("steps", d.Steps)
+                .Int("unseenCities", d.UnseenCities).Int("ownIntel", d.OwnIntel).Bool("guidedThreat", d.GuidedThreat)
+                .Int("antiNukeProtecting", d.AntiNukeProtecting).Int("antiNukeWanted", d.AntiNukeWanted)
+                .Int("idleEnergy", core.Resources.Energy + d.DefenseReserve).Str("ownCityPop", OwnCityPopulations(core.PlayerData))
                 .Map("queued", d.Actions).ToString());
         }
 

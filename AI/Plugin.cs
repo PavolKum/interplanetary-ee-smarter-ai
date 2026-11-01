@@ -22,7 +22,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.14.2";
+        public const string VERSION = "0.15.0";
 
         internal static ManualLogSource Log;
 
@@ -104,6 +104,13 @@ namespace InterplanetaryAI
         internal static ConfigEntry<int> AiProcessorResources;
         internal static ConfigEntry<int> PlacementBackoffTurns;
         internal static ConfigEntry<int> ResearchQueueDepth;
+        internal static ConfigEntry<float> GuidedAccuracy;
+        internal static ConfigEntry<float> VolleyOverkill;
+        internal static ConfigEntry<bool> GuidedCityCover;
+        internal static ConfigEntry<int> IntelSprintUntilTurn;
+        internal static ConfigEntry<int> IntelSprintBuildings;
+        internal static ConfigEntry<int> IntelSprintPerTurn;
+        internal static ConfigEntry<bool> CounterintelProjects;
         internal static ConfigEntry<float> ReachFailMinShare;
         internal static ConfigEntry<int> MaxWeapons;
         internal static ConfigEntry<int> MaterialHorizonTurn;
@@ -146,7 +153,20 @@ namespace InterplanetaryAI
         // Ultracapacitors) ahead of Uranium Alloys. Ultrasonic Projection (Shield Defense) added; it was missing.
         // v0.13: Orbital Assembly (Missile) at #13, right after the telescope tech: v0.12.1 AIs researched it at T21-22, after
         // war began at T20, and filled the 30-weapon cap with Railguns into a Kinetic-only human.
+        // v0.15: Self-Adjusting Optics + Advanced Signal Processing (Telescope Array, 650 science) at #3-4, before the human's
+        // counterintel (v0.14.1: they were #11-12, first Telescopes at T16, the human's first hub at T13, no city ever seen).
         private const string DefaultResearchPlan =
+            "tec_MassBiochemicalProcessing,tec_MolecularRecycling,tec_SelfAdjustingOptics,tec_AdvancedSignalProcessing,tec_SmartGrids,"
+            + "tec_SuperTensileMaterials,tec_QuantumComputing,tec_4thGenNuclearReactors,tec_LosslessEnergyTransfer,tec_2ndGenComposites,"
+            + "tec_MaglevServos,tec_ExperimentalMatterControl,tec_OrbitalAssembly,tec_Nanostructuring,tec_MicrowaveEnergyTranmission,"
+            + "tec_PlasmaChannelInduction,tec_MagneticRadiationShielding,tec_Ultracapacitors,tec_UraniumAlloys,tec_EmDrives,"
+            + "tec_ThermonuclearWarheads,tec_InductionCoils,tec_ZeroReluctanceEngineering,tec_MagneticSaturationElimination,tec_RoboticMining,"
+            + "tec_EarlyWarningAI,tec_UltrasonicProjection,tec_Metamaterials,tec_DesignerNanomaterials,tec_VerticalFarming,"
+            + "tec_QuantumCommunications,tec_AtmosphericInterferenceMitigation,tec_CompositeHeatCells,tec_Octaazacubane,tec_AdvancedGenetics,"
+            + "tec_SelfHealingMaterials,tec_AITargetTracking,tec_MultiChainedStages,tec_GammaRayLasers,tec_MassDrivers";
+
+        // v0.13-v0.14 default, replaced on load if the config still holds it unchanged.
+        private const string V014ResearchPlan =
             "tec_MassBiochemicalProcessing,tec_MolecularRecycling,tec_SmartGrids,tec_SuperTensileMaterials,tec_QuantumComputing,"
             + "tec_4thGenNuclearReactors,tec_LosslessEnergyTransfer,tec_2ndGenComposites,tec_MaglevServos,tec_ExperimentalMatterControl,"
             + "tec_SelfAdjustingOptics,tec_AdvancedSignalProcessing,tec_OrbitalAssembly,tec_Nanostructuring,tec_MicrowaveEnergyTranmission,"
@@ -305,15 +325,29 @@ namespace InterplanetaryAI
 
             ResearchPlanEnabled = Config.Bind("Research", "UsePlan", true,
                 "Research the Plan list in order (prerequisites are queued automatically) instead of the native random focus. Native research resumes when the plan is done.");
+            GuidedAccuracy = Config.Bind("Strikes", "GuidedAccuracy", 0.85f,
+                "v0.15: planned hit rate for guided weapons (second-phase targeting: Missile, MIRV, Nuke). Pavol's decision: his own measured Missile rate (60 of 71 shots hit the planet, v0.14.1 match). Unguided weapons keep the level accuracy. 0 = use the level accuracy for all.");
+            VolleyOverkill = Config.Bind("Strikes", "VolleyOverkill", 1.25f,
+                "v0.15: a guided target counts as fully allocated once the damage aimed at it this volley reaches this multiple of its durability (population for cities, HP otherwise); further shots move to the next target.");
+            GuidedCityCover = Config.Bind("Director", "GuidedCityCover", true,
+                "v0.15: any enemy guided weapon (Missile, MIRV, Nuke) seen or landed triggers the per-city anti-missile cover (AntiNukePerCity defenses over each city), without the defense throttle. Off = Nuclear Missiles only (v0.14).");
+            IntelSprintUntilTurn = Config.Bind("Director", "IntelSprintUntilTurn", 14,
+                "v0.15: until this turn, while an enemy city has never been seen, intel buildings may be queued IntelSprintPerTurn a turn up to IntelSprintBuildings. Cities never move and once seen stay on the map for guided strikes. 0 = off.");
+            IntelSprintBuildings = Config.Bind("Director", "IntelSprintBuildings", 6,
+                "v0.15: intel buildings the sprint aims for (6 Telescopes x 8 intel = 48 >= a small city's 45 stealth before counterintel).");
+            IntelSprintPerTurn = Config.Bind("Director", "IntelSprintPerTurn", 3, "v0.15: intel buildings a turn during the sprint.");
+            CounterintelProjects = Config.Bind("Director", "CounterintelProjects", true,
+                "v0.15: buy the Quantum Encryption Hub city project (+50 counterintel per city, permanent) in every city, up to 2 a turn, from CounterintelFromTurn.");
             ResearchQueueDepth = Config.Bind("Research", "QueueDepth", 3,
                 "v0.14.1: plan targets queued at once (each with its prerequisites). The game spends science down the queue and banks the excess at its end; 1 = one target at a time (v0.13).");
             ResearchPlan = Config.Bind("Research", "Plan", DefaultResearchPlan,
                 "Tech IDs in order. Default (v0.3): the human's order from the 31 Oct 2026 win, economy first (material and energy projects, yield upgrades, Offshore Mine, Floating Plant), then the Nuclear Missile line, then the rest.");
             if (ResearchPlan.Value == V02ResearchPlan || ResearchPlan.Value == V03ResearchPlan || ResearchPlan.Value == V04ResearchPlan
-                || ResearchPlan.Value == V09ResearchPlan || ResearchPlan.Value == V010ResearchPlan || ResearchPlan.Value == V011ResearchPlan)
+                || ResearchPlan.Value == V09ResearchPlan || ResearchPlan.Value == V010ResearchPlan || ResearchPlan.Value == V011ResearchPlan
+                || ResearchPlan.Value == V014ResearchPlan)
             {
                 ResearchPlan.Value = DefaultResearchPlan;
-                Log.LogInfo("Research plan: replaced an unchanged older default with the v0.13 default.");
+                Log.LogInfo("Research plan: replaced an unchanged older default with the v0.15 default.");
             }
             if (Math.Abs(GrudgeWeight.Value - 0.6f) < 1e-4f)
             {
