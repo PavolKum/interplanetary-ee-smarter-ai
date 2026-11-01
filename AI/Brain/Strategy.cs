@@ -105,6 +105,7 @@ namespace InterplanetaryAI.Brain
         public int VisibleCities;
         public float GuidedArriving, GuidedPassing;
         public int SmallestVisibleCityPop;
+        public float GuidedPopDamage;
         public bool Precision;
     }
 
@@ -186,7 +187,7 @@ namespace InterplanetaryAI.Brain
         // v0.16 item 4: guided-only estimate onto the committed target, and the precision predicate.
         public static void EstimatePrecision(StrategyDecision d, SalvoTarget best, IDictionary<string, float> salvo, float accuracy,
             Dictionary<string, Dictionary<string, float>> counters, StrategySettings s, IDictionary<string, float> accuracyById,
-            ICollection<string> guidedIds, float guidedPopDamage, bool guidedFunded)
+            ICollection<string> guidedIds, float guidedPopDamage, bool guidedFunded, IDictionary<string, float> guidedPopDamageById = null)
         {
             d.VisibleCities = best.VisibleCityPops != null ? best.VisibleCityPops.Count : 0;
             if (d.VisibleCities == 0 || guidedIds == null || guidedIds.Count == 0) return;
@@ -207,6 +208,22 @@ namespace InterplanetaryAI.Brain
                 EnergyKnown = best.EnergyKnown, EnergyProduction = best.EnergyProduction, Shots = guidedShots, Observed = best.Observed,
             };
             EstimateSalvo(guidedSalvo, g, accuracy, counters, s, accuracyById);
+            // v0.16 (Sol v0.16 M1): population damage per shot from the guided weapons that reach THIS target, weighted by
+            // their shots (an unreachable heavy weapon must not inflate the kill estimate).
+            if (guidedPopDamageById != null)
+            {
+                Dictionary<string, float> reach = guidedShots ?? guidedSalvo;
+                float shots = 0f, weighted = 0f;
+                foreach (KeyValuePair<string, float> pair in reach)
+                {
+                    float dmg;
+                    if (!guidedPopDamageById.TryGetValue(pair.Key, out dmg)) continue;
+                    shots += pair.Value;
+                    weighted += pair.Value * dmg;
+                }
+                guidedPopDamage = shots > 0f ? weighted / shots : 0f;
+            }
+            d.GuidedPopDamage = guidedPopDamage;
             d.GuidedArriving = g.Arriving;
             d.GuidedPassing = g.Passing;
             float share = g.Arriving > 0f ? g.Passing / g.Arriving : 0f;
@@ -249,7 +266,8 @@ namespace InterplanetaryAI.Brain
         public static StrategyDecision Decide(int turn, bool war, IDictionary<string, float> salvo, float accuracy, IList<SalvoTarget> targets,
             Dictionary<string, Dictionary<string, float>> counters, int lastStrikeTurn, int holdTurns, int weapons, StrategySettings s,
             int lastCommitId = -1, int lastWeapons = -1, bool underAttack = false, IDictionary<string, float> accuracyById = null,
-            bool hitLastPhase = false, ICollection<string> guidedIds = null, float guidedPopDamage = 0f, bool guidedFunded = false)
+            bool hitLastPhase = false, ICollection<string> guidedIds = null, float guidedPopDamage = 0f, bool guidedFunded = false,
+            IDictionary<string, float> guidedPopDamageById = null)
         {
             StrategyDecision d = new StrategyDecision { War = war, Shots = weapons };
             float maxScore = 0f;
@@ -286,7 +304,7 @@ namespace InterplanetaryAI.Brain
             // v0.16 item 4 (council S3): the guided part of the salvo onto the cities of the committed target we see now.
             // Match 16 held at T21 (9 Missiles, 7.65 through at 100%) and T22 (10.0 through) below MinPassingShots 12
             // while two cities were visible; at T23 none was. Both lanes' conditions must hold (PrecisionOpportunity).
-            EstimatePrecision(d, best, salvo, accuracy, counters, s, accuracyById, guidedIds, guidedPopDamage, guidedFunded);
+            EstimatePrecision(d, best, salvo, accuracy, counters, s, accuracyById, guidedIds, guidedPopDamage, guidedFunded, guidedPopDamageById);
             bool pulseReady = turn - lastStrikeTurn >= Math.Max(1, s.StrikeEvery);
             bool saturated = d.Passing >= s.MinPassingShots && (d.PassShare >= s.MinPassShare || d.Passing >= s.BigSalvoShots);
             bool broken = d.PassShare >= s.BrokenPassShare && d.Passing >= s.MinPassingShots;

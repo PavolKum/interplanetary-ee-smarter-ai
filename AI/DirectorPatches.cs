@@ -48,6 +48,7 @@ namespace InterplanetaryAI
             public int TurnStartMaterial;
             public float EnergyIncome;
             public float MaterialIncome;
+            public float ScienceIncome = -1f;     // v0.16 (Sol v0.16 M2): projected science, this turn's queued projects included
             public float Upkeep;
             public int OwnDefenses;
             public int DesiredDefenses;
@@ -119,10 +120,13 @@ namespace InterplanetaryAI
             public int PermanentsBlocked;          // permanent project options refused by the slot policy this turn
             // v0.16 item 5: intel bid
             public int IntelAllowed;
+            public int IntelUpgradesThisTurn;      // Lidar upgrades queued this turn
+            public int IntelLidar;                 // intel buildings that have Lidar
             public string IntelPolicy = "";
             // v0.16 item 4/6
             public int WarTurn;
-            public bool Blind;                     // no enemy city visible now
+            public bool Blind;                     // no strike candidate visible now on the committed target (Sol v0.16 F6)
+            public int TargetCandidates;
             public int ForwardDefenseNeed;
             public int RepairHeld;                 // energy repairs left for the defense reserve this turn
             public int DefenseUpgradesThisTurn;
@@ -320,7 +324,16 @@ namespace InterplanetaryAI
                 if (building.CurrentState != BaseBuilding.BuildingState.Normal) continue;
                 d.NonCityBuildings++;
                 if (Value(building.BuildingData.turn_yield_counterintel) > 0) d.OwnCounterintel++;
-                if (Value(building.BuildingData.turn_yield_intel) > 0) d.IntelBuildings++;
+                if (Value(building.BuildingData.turn_yield_intel) > 0)
+                {
+                    d.IntelBuildings++;
+                    try
+                    {
+                        UpgradeData lidar = GameDataFileManager.GetDataFile<UpgradesData>().GetUpgrade(LidarUpgrade);
+                        if (lidar != null && building.Upgrades != null && building.Upgrades.HasUpgrade(lidar)) d.IntelLidar++;
+                    }
+                    catch (Exception e) { ReportOnce("lidar-count", e); }
+                }
             }
             d.WarTurn = WarTurnFor(me, turn); // v0.16 item 4: T16 with Orbital Assembly and WarMinIncome, else WarFallbackTurn
             d.War = EconomyDirector.WarPhase(turn, d.WarTurn, recentDamage, Plugin.WarDamageTrigger.Value);
@@ -412,6 +425,7 @@ namespace InterplanetaryAI
             {
                 ReportOnce("visible-cities", e);
             }
+            // v0.16 (Sol v0.16 F6): blind = no strike candidate on the committed target (set after targeting below).
             d.Blind = d.VisibleEnemyCities == 0;
             d.AntiNukeId = AntiNukeDefenseId();
             if (d.AntiNukeId != null && Plugin.AntiNukePerCity.Value > 0)
@@ -475,6 +489,15 @@ namespace InterplanetaryAI
                     bestEconomy = view.Economy;
                     target = planet.Player;
                 }
+            }
+            try
+            {
+                d.TargetCandidates = TargetCandidates(core);
+                d.Blind = d.TargetCandidates == 0;
+            }
+            catch (Exception e)
+            {
+                ReportOnce("target-candidates", e);
             }
             // v0.16 item 5: credit this turn's energy to the intel budget once, then judge an open batch on what we see now.
             if (memory.CreditedTurn != turn)
@@ -600,7 +623,7 @@ namespace InterplanetaryAI
                 int reserve = EconomyDirector.DefenseReserve(d.OwnDefenses, d.VisibleEnemyWeapons, d.EnemiesAlive, d.RecentDamage,
                     150f, 125f, Plugin.DefenseReserveShare.Value, d.EnergyIncome, 1f, d.ObservedDefenseNeed, Plugin.DefenseHardCapShare.Value);
                 // v0.16 item 6: the largest volley seen so far is expected again (the observed need lags one phase).
-                d.ForwardDefenseNeed = ForwardNeed(core.PlayerData);
+                d.ForwardDefenseNeed = ForwardNeed(core.PlayerData, Plugin.Ledger.LastDefender(core.PlayerData.PlayerID));
                 reserve = Math.Max(reserve, d.ForwardDefenseNeed);
                 reserve = Math.Max(0, Math.Min(reserve, core.Resources.Energy));
                 // Under a nuke threat every working anti-nuke defense gets one 200-energy roll (Terra v0.8 #5).
@@ -667,23 +690,29 @@ namespace InterplanetaryAI
             bool nativeMinimum = intel == IntelEvaluationState.BelowMinimum;
             MatchMemory memory = MemoryOf(core.PlayerData.PlayerID);
             bool wantVision = d.Blind || d.BlindEnemies > 0;
-            int bidAllowed = IntelBudget.Allowed(memory.Intel, d.Turn, wantVision, Plugin.IntelBidFromTurn.Value, Plugin.IntelBudgetShare.Value, 200f, // priced as an array (worst case)
+            int bidAllowed = IntelBudget.Allowed(memory.Intel, d.Turn, wantVision, Plugin.IntelBidFromTurn.Value, Plugin.IntelBudgetShare.Value, 50f, // cheapest candidate; arrays re-checked at 200
                 Plugin.IntelBatch.Value, Plugin.IntelEvalTurns.Value, Plugin.IntelProbeMax.Value);
             if (d.Steps <= 1) d.IntelAllowed = bidAllowed;
             d.IntelPolicy = memory.Intel.Stopped ? "stop-loss" : bidAllowed > 0 ? "bid" : wantVision ? "wait" : "seeing";
-            bool nativeRoom = nativeMinimum && d.IntelThisTurn < Plugin.IntelPerTurn.Value;
+            // v0.16 (Sol v0.16 F5): native minimum gets priority but stays inside the budget share; its spend never opens or
+            // restarts a bid batch. Each candidate is priced at its own cost (Lidar 50 E, an array 200 E).
+            bool nativeRoom = nativeMinimum && d.IntelThisTurn + d.IntelUpgradesThisTurn < Plugin.IntelPerTurn.Value
+                && IntelBudget.BudgetRoom(memory.Intel, Plugin.IntelBudgetShare.Value, 50f);
             bool intelGuarded = EconomyDirector.IntelGuarded(nativeMinimum, wantVision, d.IntelThisTurn);
             bool intelEnergy = EconomyDirector.IntelEnergyAllowed(intelGuarded, core.Resources.Energy, Plugin.IntelSprintEnergyReserve.Value);
             if ((nativeRoom || bidAllowed > 0) && intelEnergy && !d.FailedThisTurn.Contains("intel"))
             {
                 int energyBefore = core.Resources.Energy;
-                // Lidar first while bidding: +4 intel for 50 E (an array is 8 intel for 200 E; council N9).
-                bool bought = !nativeRoom && TryIntelUpgrade(construction, core, d);
-                if (!bought && d.IntelBuildings + d.IntelThisTurn < Plugin.MaxIntelBuildings.Value && d.SlotsLeft > 0)
+                // Lidar first: +4 intel for 50 E (an array is 8 intel for 200 E; council N9).
+                bool bought = TryIntelUpgrade(construction, core, d);
+                if (!bought && d.IntelBuildings + d.IntelThisTurn < Plugin.MaxIntelBuildings.Value && d.SlotsLeft > 0
+                    && IntelBudget.BudgetRoom(memory.Intel, Plugin.IntelBudgetShare.Value, 200f))
                     bought = TryIntelBuilding(construction, core, d);
                 if (bought)
                 {
-                    IntelBudget.Record(memory.Intel, d.Turn, energyBefore - core.Resources.Energy, d.VisibleEnemyCities, d.BlindEnemies);
+                    int spent = energyBefore - core.Resources.Energy;
+                    if (bidAllowed > 0) IntelBudget.Record(memory.Intel, d.Turn, spent, d.VisibleEnemyCities, d.BlindEnemies);
+                    else IntelBudget.RecordSpend(memory.Intel, spent);
                     return true;
                 }
                 d.FailedThisTurn.Add("intel");
@@ -755,6 +784,13 @@ namespace InterplanetaryAI
             // Before WarFromTurn, war means retaliation for damage taken: a smaller weapon upkeep.
             float upkeepCap = (d.Turn >= d.WarTurn ? Plugin.WarUpkeepShare.Value : Plugin.RetaliationUpkeepShare.Value) * d.EnergyIncome;
             bool underSpendShare = d.WeaponEnergySpent < Plugin.WarSpendShare.Value * d.TurnStartEnergy;
+            // v0.16 (Sol v0.16 M5): blind, the artillery package is funded before more plain weapons take the upkeep room.
+            if (d.War && d.Blind && Plugin.BlindArtillery.Value && Plugin.WeaponUpgradesEnabled.Value && !d.FailedThisTurn.Contains("blind-artillery")
+                && d.WeaponUpgradesThisTurn < Plugin.WeaponUpgradesPerTurn.Value)
+            {
+                if (TryBlindArtilleryUpgrade(construction, core, d, upkeepCap)) return true;
+                d.FailedThisTurn.Add("blind-artillery");
+            }
             if (d.War && underSpendShare && !d.FailedThisTurn.Contains("weapon"))
             {
                 if (TryWeapon(construction, core, d, upkeepCap)) return true;
@@ -779,13 +815,7 @@ namespace InterplanetaryAI
             // 6. Economy: the best-value upgrade, project or building.
             if (TryEconomy(construction, core, economy, d)) return true;
 
-            // 7. Preferred intel once at war.
-            if (d.War && intel == IntelEvaluationState.BelowPreferred && d.PreferredIntelAttempts < 1 && d.SlotsLeft > 0
-                && d.IntelBuildings + d.IntelThisTurn < Plugin.MaxIntelBuildings.Value && d.IntelThisTurn < Plugin.IntelPerTurn.Value)
-            {
-                d.PreferredIntelAttempts++;
-                if (TryIntelBuilding(construction, core, d)) return true;
-            }
+            // 7. v0.16 (Sol v0.16 F5): the separate preferred-intel purchase is gone; it bypassed the budget and the stop-loss.
 
             // 8. Energy left over at war: more weapons (energy does not carry to the next turn).
             if (d.War && !d.FailedThisTurn.Contains("weapon-sink"))
@@ -800,6 +830,13 @@ namespace InterplanetaryAI
 
         private static bool TryBuySuperweapon(AIConstruction construction, AICore core, EconomyPatches.AiEconomyState economy, DirectorState d)
         {
+            // v0.16 (Sol v0.16 F6): a Nuclear Missile is a precision weapon; no purchase while the target offers no candidate.
+            if (Plugin.BlindArtillery.Value && d.Blind && economy.Goal != null && economy.Goal.Building != null
+                && economy.Goal.Building.weapon_functionality.IsValueSet && IsPrecisionWeapon(economy.Goal.Building.weapon_functionality.Value))
+            {
+                d.GuidedRefused++;
+                return false;
+            }
             if (!construction.IsEntityAvailable(economy.Goal)) return false;
             if (core.Resources.Material < economy.GoalMaterialCost) return false;
             if (core.Resources.Energy < economy.GoalEnergyCost)
@@ -868,7 +905,7 @@ namespace InterplanetaryAI
                 if (d.PlannedUpgradeKeys.Contains(b.ObjectId + ":" + LidarUpgrade)) continue;
                 if (QueueUpgrade(construction, core, d, b, lidar))
                 {
-                    d.IntelThisTurn++;
+                    d.IntelUpgradesThisTurn++; // v0.16 (Sol v0.16 F5): not counted as a building
                     return true;
                 }
             }
@@ -898,9 +935,25 @@ namespace InterplanetaryAI
         private static readonly string[] GuidedWeaponIds = { "wea_Missile", "wea_MIRV", "wea_NuclearMissile" };
 
         // v0.16 item 4: weapons whose value is second-phase targeting onto a visible target (MIRV has no second phase).
-        private static bool IsPrecisionWeapon(string weaponId)
+        internal static bool IsPrecisionWeapon(string weaponId)
         {
             return weaponId == "wea_Missile" || weaponId == "wea_NuclearMissile";
+        }
+
+        // v0.16 (Sol v0.16 F6): visible strike candidates on the enemy the strategy committed to; with no commitment, the
+        // most any enemy offers. Precision purchases (ordinary and superweapon) need at least one.
+        internal static int TargetCandidates(AICore core)
+        {
+            PlayerData me = core.PlayerData;
+            int commit = StrategyPatches.CommitTarget(me.PlayerID), best = 0;
+            foreach (CelestialBody planet in core.EnemyPlanets)
+            {
+                if (planet == null || planet.Player == null) continue;
+                int n = AiPatches.StrikeCandidateCount(me, planet.Player);
+                if (commit >= 0 && planet.Player.PlayerID == commit) return n;
+                best = Math.Max(best, n);
+            }
+            return best;
         }
 
         // The defense building that stops Nuclear Missiles best in the active ruleset (Ion in Enhanced), or null.
@@ -1021,7 +1074,7 @@ namespace InterplanetaryAI
                 foreach (WeaponGameplayData w in me.WeaponHandler.Weapons)
                 {
                     if (w == null || w.Building == null || w.WeaponData == null || w.Building.CurrentState != BaseBuilding.BuildingState.Normal) continue;
-                    if (w.Building.Power == null || !w.Building.Power.HasPower) continue;
+                    // v0.16 (Sol v0.16 F4): native AIResources.BeginTurn reserves firing for every Normal weapon, powered or not.
                     // v0.16 item 4 (council E5): live cost, upgrades (Triple Barrel x2.8) and global modifiers included.
                     firingUpkeep += w.Building.Stats != null && w.Building.Stats.Weapons != null ? w.Building.Stats.Weapons.EnergyFiringCost
                         : w.WeaponData.firing_cost_energy.IsValueSet ? w.WeaponData.firing_cost_energy.Value : 0;
@@ -1055,7 +1108,7 @@ namespace InterplanetaryAI
                 // v0.16 item 6 (council N5): repairs ran before the defense reserve and took its room (T26: 3,600 E of
                 // repairs, reserve clipped to 3,080 before an 83-impact volley). The observed and forward defense need now
                 // comes off the repair budget first.
-                int defenseHold = RepairDefenseHold(me);
+                int defenseHold = RepairDefenseHold(me, firingUpkeep);
                 int energyBudget = (int)Math.Min(Math.Max(0f, Plugin.RepairEnergyShare.Value) * res.Energy, Math.Max(0, res.Energy - firingUpkeep - defenseHold));
                 int materialBudget = (int)(Math.Max(0f, Math.Min(1f, Plugin.RepairMaterialShare.Value)) * res.Material);
                 List<RepairCandidate> picked = RepairPlanner.Pick(candidates, energyBudget, materialBudget, Plugin.RepairsPerTurn.Value, Plugin.RepairBelowHpShare.Value);
@@ -1089,6 +1142,7 @@ namespace InterplanetaryAI
             {
                 if (b == null || b.IsCity || b.BuildingData == null || !b.BuildingData.defense_functionality.IsValueSet) continue;
                 if (b.CurrentState != BaseBuilding.BuildingState.Normal || b.Stats == null || b.Stats.Defenses == null) continue;
+                if (b.Power == null || !b.Power.HasPower) continue; // v0.16 (Sol v0.16 M6): working defenses only
                 int cost = b.Stats.Defenses.EnergyActivationCost;
                 if (cost <= 0) continue;
                 sum += cost;
@@ -1099,10 +1153,9 @@ namespace InterplanetaryAI
 
         // v0.16 item 6: the defense demand the evidence supports (the last phase's need, or the largest volley seen so far),
         // bounded by DefenseHardCapShare. Planned shares are not held back from repairs; only observed fire is.
-        internal static int ForwardNeed(PlayerData me)
+        internal static int ForwardNeed(PlayerData me, DefenderStats last)
         {
             if (Plugin.ForwardDefenseMargin.Value <= 0f) return 0;
-            DefenderStats last = Plugin.Ledger.LastDefender(me.PlayerID);
             MatchMemory m = MemoryOf(me.PlayerID);
             int peak = m.PeakImpacts;
             float share = m.PeakEligibleShare;
@@ -1115,19 +1168,28 @@ namespace InterplanetaryAI
                 me.ResourceHandler.EnergyProductionPerTurn, Plugin.DefenseHardCapShare.Value);
         }
 
-        private static int RepairDefenseHold(PlayerData me)
+        // v0.16 (Sol v0.16 F4): repairs run in AICore.BeginTurn's prefix, before the ledger rolls in its postfix, so the
+        // phase that has just finished is still the pending one. The hold is the reserve construction will want (planned
+        // share, observed need, forward need; defense inputs from last turn's director state), leaving the recovery floor.
+        private static int RepairDefenseHold(PlayerData me, int firingUpkeep)
         {
             try
             {
-                DefenderStats last = Plugin.Ledger.LastDefender(me.PlayerID);
-                bool defensive = GameManager.CurrentTurn >= Plugin.DefenseFromTurn.Value || last.EnemyImpacts > 0;
+                DefenderStats fresh = Plugin.Ledger.PendingDefender(me.PlayerID);
+                DirectorState prev;
+                s_states.TryGetValue(me.PlayerID, out prev);
+                bool defensive = GameManager.CurrentTurn >= Plugin.DefenseFromTurn.Value || fresh.EnemyImpacts > 0 || (prev != null && prev.Defensive);
                 if (!defensive) return 0;
                 float income = me.ResourceHandler.EnergyProductionPerTurn;
-                float observed = EconomyDirector.ObservedDefenseNeed(last.EnergySpent, last.NoResource, last.Impacts - last.NoEligibleDefense, 100f,
+                float observed = EconomyDirector.ObservedDefenseNeed(fresh.EnergySpent, fresh.NoResource, fresh.Impacts - fresh.NoEligibleDefense, 100f,
                     Plugin.DefenseObservedMargin.Value);
-                float hold = Math.Max(observed, ForwardNeed(me));
-                if (Plugin.DefenseHardCapShare.Value > 0f) hold = Math.Min(hold, Plugin.DefenseHardCapShare.Value * income);
-                return (int)Math.Max(0f, hold);
+                float planned = prev != null
+                    ? EconomyDirector.DefenseReserve(prev.OwnDefenses, prev.VisibleEnemyWeapons, Math.Max(1, prev.EnemiesAlive), prev.RecentDamage,
+                        150f, 125f, Plugin.DefenseReserveShare.Value, income, 1f, observed, Plugin.DefenseHardCapShare.Value)
+                    : Math.Min(observed, Plugin.DefenseHardCapShare.Value * income);
+                float hold = Math.Max(planned, ForwardNeed(me, fresh));
+                float room = me.ResourceHandler.Energy - firingUpkeep - Math.Max(0f, Plugin.DefenseRecoveryShare.Value) * income;
+                return (int)Math.Max(0f, Math.Min(hold, room));
             }
             catch (Exception e)
             {
@@ -1272,6 +1334,7 @@ namespace InterplanetaryAI
                         // v0.16 item 1: production, not investment utility (v0.15 added SSTAR's 0.6-span utility here).
                         d.EnergyIncome += best.NextTurnEnergy;
                         d.MaterialIncome += best.NextTurnMaterial;
+                        if (d.ScienceIncome >= 0f) d.ScienceIncome += best.NextTurnScience;
                     }
                     if (EconomyDirector.IsEnergyOnly(best)) d.PowerEnergySpent += best.Energy;
                     return true;
@@ -1492,8 +1555,10 @@ namespace InterplanetaryAI
                 // Local multiplier: that city's science (population x its rate, Terra v0.9 #5); global: all science.
                 float thisCityScience;
                 if (!cityScience.TryGetValue(project.City.id.Value, out thisCityScience)) thisCityScience = res.ScienceProductionPerTurn / (float)cities;
+                // v0.16 (Sol v0.16 M2): a global science multiplier (Jamming) compounds on this turn's projected science.
+                if (d.ScienceIncome < 0f) d.ScienceIncome = res.ScienceProductionPerTurn;
                 float scienceGain = thisCityScience * (FloatValue(p.turn_yield_science_multiplier, 1f) - 1f)
-                    + res.ScienceProductionPerTurn * (FloatValue(p.turn_yield_science_multiplier_global, 1f) - 1f);
+                    + d.ScienceIncome * (FloatValue(p.turn_yield_science_multiplier_global, 1f) - 1f);
                 if (energyGain * span <= 0f && materialGain * span <= 0f && scienceGain <= 0f) continue;
                 options.Add(new EconOption
                 {
@@ -1506,6 +1571,7 @@ namespace InterplanetaryAI
                     ScienceGain = scienceGain * span,
                     IncomeEnergy = energyGain,
                     IncomeMaterial = materialGain,
+                    IncomeScience = scienceGain,
                     Payload = project,
                 });
             }
@@ -1564,8 +1630,24 @@ namespace InterplanetaryAI
         private static int CityFreeSlots(AIConstruction construction, BaseBuilding city)
         {
             if (city == null || city.Projects == null) return 0;
-            return Math.Max(0, city.Projects.FreeSlots - construction.ConstructionQueue.GetQueuedProjectsCount(city));
+            // v0.16 (Sol v0.16 F3): as native AIProjectConstruction.HasCityFreeSlots: free slots minus projects committed
+            // as actions this turn (m_projectsInstalledThisTurn) minus projects still queued.
+            int committed = 0;
+            try
+            {
+                Dictionary<BaseBuilding, List<ProjectData>> installing = s_projectsInstalling != null
+                    ? s_projectsInstalling.GetValue(construction.Projects) as Dictionary<BaseBuilding, List<ProjectData>> : null;
+                List<ProjectData> list;
+                if (installing != null && installing.TryGetValue(city, out list) && list != null) committed = list.Count;
+            }
+            catch (Exception e)
+            {
+                ReportOnce("committed-projects", e);
+            }
+            return Math.Max(0, city.Projects.FreeSlots - committed - construction.ConstructionQueue.GetQueuedProjectsCount(city));
         }
+
+        private static readonly FieldInfo s_projectsInstalling = AccessTools.Field(typeof(AIProjectConstruction), "m_projectsInstalledThisTurn");
 
         // v0.16 item 1: installed (and queued) permanent, Jamming and SSTAR projects over our living cities, and the slot
         // picture logged every turn (council gate: free / reserved capacity per city).
@@ -1591,13 +1673,53 @@ namespace InterplanetaryAI
                     d.PermanentProjects += permanent;
                     d.ProjectSlotsFree += free;
                     d.ProjectSlotsTotal += total;
-                    parts.Add(free + "/" + total + ":" + permanent + ":" + temporary);
+                    parts.Add(city.ObjectId + "=" + free + "/" + total + ":" + permanent + ":" + temporary);
                 }
                 d.ProjectSlots = string.Join(";", parts.ToArray());
             }
             catch (Exception e)
             {
                 ReportOnce("count-projects", e);
+            }
+        }
+
+        // v0.16 gate logging (Sol v0.16 section 5): completion of the techs the gates name.
+        private static readonly string[] s_gateTechs = { "tec_ExperimentalMatterControl", "tec_MicrowaveEnergyTranmission", LosslessTech,
+            "tec_MaglevServos", "tec_PlasmaChannelInduction", OrbitalAssemblyTech, "tec_EarlyWarningAI", "tec_Ultracapacitors", "tec_CompositeHeatCells" };
+
+        private static string KeyTechs(PlayerData me)
+        {
+            List<string> done = new List<string>();
+            foreach (string id in s_gateTechs) if (TechDone(me, id)) done.Add(id.Substring(4));
+            return string.Join(",", done.ToArray());
+        }
+
+        // v0.16 gate logging: powered defenses by installed upgrade ("upg_KineticRange1=12;upg_KineticEnergyCostDown1=20;powered=31").
+        private static string UpgradedDefenses(PlayerData me)
+        {
+            try
+            {
+                Dictionary<string, int> counts = new Dictionary<string, int>();
+                int powered = 0;
+                UpgradesData upgrades = GameDataFileManager.GetDataFile<UpgradesData>();
+                List<UpgradeData> watched = new List<UpgradeData>();
+                foreach (string id in IdList(Plugin.DefenseUpgradeIds.Value)) { UpgradeData u = upgrades.GetUpgrade(id); if (u != null) watched.Add(u); }
+                foreach (BaseBuilding b in me.BuildingHandler.Buildings)
+                {
+                    if (b == null || b.IsCity || b.BuildingData == null || !b.BuildingData.defense_functionality.IsValueSet) continue;
+                    if (b.CurrentState != BaseBuilding.BuildingState.Normal || b.Power == null || !b.Power.HasPower || b.Upgrades == null) continue;
+                    powered++;
+                    foreach (UpgradeData u in watched) if (b.Upgrades.HasUpgrade(u)) Increment(counts, u.id.Value);
+                }
+                List<string> parts = new List<string>();
+                foreach (KeyValuePair<string, int> pair in counts) parts.Add(pair.Key + "=" + pair.Value);
+                parts.Add("powered=" + powered);
+                return string.Join(";", parts.ToArray());
+            }
+            catch (Exception e)
+            {
+                ReportOnce("upgraded-defenses", e);
+                return "";
             }
         }
 
@@ -1775,9 +1897,14 @@ namespace InterplanetaryAI
             core.Resources.Energy -= project.EnergyCost;
             core.Resources.Material -= project.MaterialCost;
             // v0.16 item 1: queued projects count against the slot policy for the rest of the turn.
+            int freeBefore = CityFreeSlots(construction, city) + 1; // the queue now holds this project
             if (IsPermanent(project.Project)) d.PermanentProjects++;
             if (project.Project.id.Value == JammingProject) d.JammingActive++;
             if (project.Project.id.Value == SstarProject) d.SstarActive++;
+            Plugin.WriteDecision(new Json().Str("e", "project").Int("t", d.Turn).Str("ai", core.PlayerData.UserNickName)
+                .Str("project", project.Project.id.Value).Str("city", city.ObjectId.ToString()).Bool("permanent", IsPermanent(project.Project))
+                .Int("cityFreeBefore", freeBefore).Int("reserve", Plugin.ProjectSlotReserve.Value).Bool("lossless", d.LosslessDone)
+                .Int("permanentsAfter", d.PermanentProjects).Int("jammingAfter", d.JammingActive).Int("sstarAfter", d.SstarActive).ToString());
             Record(d, "project:" + project.Project.id.Value);
             return true;
         }
@@ -1809,6 +1936,7 @@ namespace InterplanetaryAI
                 {
                     if (b == null || b.IsCity || b.BuildingData == null || !b.BuildingData.defense_functionality.IsValueSet) continue;
                     if (b.CurrentState != BaseBuilding.BuildingState.Normal || b.Upgrades == null || b.Upgrades.HasUpgrade(upgrade)) continue;
+                    if (b.Power == null || !b.Power.HasPower) continue; // v0.16 (Sol v0.16 M6)
                     if (d.PlannedUpgradeKeys.Contains(b.ObjectId + ":" + upgradeId)) continue;
                     if (!upgrades.GetAvailableBuildingUpgrades(b.BuildingData.id.Value).Contains(upgrade)) continue;
                     if (QueueUpgrade(construction, core, d, b, upgrade))
@@ -1846,6 +1974,9 @@ namespace InterplanetaryAI
                     if (delta > 0f && d.Upkeep + delta > upkeepCap) continue;
                     if (QueueUpgrade(construction, core, d, b, upgrade))
                     {
+                        List<UpgradeEffect> planned; // v0.16 (Sol v0.16 M5): same bookkeeping as the generic planner
+                        if (!d.PlannedWeaponEffects.TryGetValue(b, out planned)) { planned = new List<UpgradeEffect>(); d.PlannedWeaponEffects[b] = planned; }
+                        planned.Add(EffectOf(upgrade));
                         d.Upkeep += Math.Max(0f, delta);
                         d.WeaponUpgradesThisTurn++;
                         d.WeaponUpgradeMaterial += material;
@@ -2559,9 +2690,12 @@ namespace InterplanetaryAI
                 .Str("intelPolicy", d.IntelPolicy).Int("intelAllowed", d.IntelAllowed)
                 .Num("intelSpent", MemoryOf(core.PlayerData.PlayerID).Intel.SpentEnergy).Num("intelCredited", MemoryOf(core.PlayerData.PlayerID).Intel.CreditedEnergy)
                 .Int("intelFailedBatches", MemoryOf(core.PlayerData.PlayerID).Intel.FailedBatches).Str("intelVerdict", MemoryOf(core.PlayerData.PlayerID).Intel.LastVerdict)
-                .Int("intelProbes", MemoryOf(core.PlayerData.PlayerID).Intel.Probes)
-                .Bool("blind", d.Blind).Int("guidedRefused", d.GuidedRefused).Int("forwardDefenseNeed", d.ForwardDefenseNeed)
+                .Int("intelProbes", MemoryOf(core.PlayerData.PlayerID).Intel.Probes).Int("intelLidar", d.IntelLidar)
+                .Int("intelUpgradesQueued", d.IntelUpgradesThisTurn).Int("intelBatchTurn", MemoryOf(core.PlayerData.PlayerID).Intel.BatchTurn)
+                .Int("intelBatchBought", MemoryOf(core.PlayerData.PlayerID).Intel.BatchBought)
+                .Bool("blind", d.Blind).Int("targetCandidates", d.TargetCandidates).Int("guidedRefused", d.GuidedRefused).Int("forwardDefenseNeed", d.ForwardDefenseNeed)
                 .Int("repairHeld", d.RepairHeld).Int("defenseUpgrades", d.DefenseUpgradesThisTurn)
+                .Str("keyTechs", KeyTechs(core.PlayerData)).Str("upgradedDefenses", UpgradedDefenses(core.PlayerData))
                 .Int("peakImpacts", MemoryOf(core.PlayerData.PlayerID).PeakImpacts)
                 .Int("antiNukeProtecting", d.AntiNukeProtecting).Int("antiNukeWanted", d.AntiNukeWanted)
                 .Int("minCityCover", d.MinCityCover).Int("antiNukeNearCities", d.AntiNukeNearCities).Int("antiNukePerCity", d.AntiNukePerCityNow)

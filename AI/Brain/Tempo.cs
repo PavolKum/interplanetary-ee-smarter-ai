@@ -95,6 +95,19 @@ namespace InterplanetaryAI.Brain
             return batch;
         }
 
+        // v0.16 (Sol v0.16 F5): one spend policy for every intel purchase. Native minimum intel skips the bid's timing and
+        // batches but not the budget share.
+        public static bool BudgetRoom(IntelBidState s, float budgetShare, float cost)
+        {
+            return budgetShare <= 0f || s.SpentEnergy + Math.Max(0f, cost) <= budgetShare * s.CreditedEnergy;
+        }
+
+        // Spend outside a bid batch (native minimum): counted against the budget, never opens or restarts a batch.
+        public static void RecordSpend(IntelBidState s, float energy)
+        {
+            s.SpentEnergy += Math.Max(0f, energy);
+        }
+
         public static void Record(IntelBidState s, int turn, float energy, int visibleCities, int blindEnemies)
         {
             s.SpentEnergy += Math.Max(0f, energy);

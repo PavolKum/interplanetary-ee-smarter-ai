@@ -1456,6 +1456,33 @@ namespace InterplanetaryAI.Tests
             pd = Strategy.Decide(22, true, mixed, 0.7f, new List<SalvoTarget> { t21(new List<int> { 500 }) }, EnhancedCounters(),
                 -1000, 1, 29, ps, -1, -1, false, guidedRate, false, guidedIds, 150f, true);
             Check(Math.Abs(pd.GuidedPassing - 7.65f) < 0.01f, "mixed salvo: only the Missiles count as guided through; got " + pd.GuidedPassing);
+
+            // Sol v0.16 M1: the kill estimate uses the guided weapons that reach THIS target, weighted by their shots.
+            SalvoTarget reach = t21(new List<int> { 1500 });
+            reach.Shots = new Dictionary<string, float> { { "wea_Missile", 9f } }; // the Nuclear Missile cannot reach it
+            Dictionary<string, float> withNuke = new Dictionary<string, float> { { "wea_Missile", 9f }, { "wea_NuclearMissile", 1f } };
+            HashSet<string> bothGuided = new HashSet<string> { "wea_Missile", "wea_NuclearMissile" };
+            Dictionary<string, float> popById = new Dictionary<string, float> { { "wea_Missile", 150f }, { "wea_NuclearMissile", 5000f } };
+            pd = Strategy.Decide(21, true, withNuke, 0.7f, new List<SalvoTarget> { reach }, EnhancedCounters(),
+                -1000, 1, 10, ps, -1, -1, false, guidedRate, false, bothGuided, (9f * 150f + 5000f) / 10f, true, popById);
+            Check(Math.Abs(pd.GuidedPopDamage - 150f) < 0.01f && !pd.Precision,
+                "an unreachable Nuke does not inflate the kill estimate (150 per shot, 1,147 < 1,500); got " + pd.GuidedPopDamage);
+
+            // Sol v0.16 F5: one budget boundary; native minimum spend never opens a batch.
+            IntelBidState b5 = new IntelBidState { CreditedEnergy = 5000f };
+            Check(IntelBudget.BudgetRoom(b5, 0.1f, 500f) && !IntelBudget.BudgetRoom(b5, 0.1f, 501f), "budget room is 10% of credited energy");
+            IntelBudget.RecordSpend(b5, 300f);
+            Check(b5.SpentEnergy == 300f && b5.BatchBought == 0 && b5.BatchTurn == -1000, "minimum spend counts, opens no batch");
+            Check(!IntelBudget.BudgetRoom(b5, 0.1f, 201f), "minimum spend reduces the room for everything");
+
+            // Sol v0.16 F4: the pending phase is the one that has just finished, before Roll.
+            DefenseLedger fresh = new DefenseLedger(2);
+            fresh.Roll(7);
+            fresh.Record(7, 2, "wea_Railgun", false, 0, 1, 0, 0, true);
+            fresh.Record(7, 2, "wea_Railgun", true, 0, 0, 0, 150, true);
+            Check(fresh.PendingDefender(7).Impacts == 2 && fresh.LastDefender(7).Impacts == 0, "repairs see the fresh phase; LastDefender is the older one until Roll");
+            fresh.Roll(7);
+            Check(fresh.LastDefender(7).Impacts == 2 && fresh.PendingDefender(7).Impacts == 0, "after Roll the fresh phase becomes LastDefender");
         }
 
         private static void Check(bool condition, string what)

@@ -170,6 +170,7 @@ namespace InterplanetaryAI
                 HashSet<int> unreachable = new HashSet<int>();
                 HashSet<string> guidedIds = new HashSet<string>(); // v0.15.1 (Sol v0.15 #4)
                 float guidedPopSum = 0f, guidedFiring = 0f, unguidedFiring = 0f, artilleryProjectiles = 0f; // v0.16 item 4
+                Dictionary<string, float> popSumById = new Dictionary<string, float>(), countById = new Dictionary<string, float>(); // Sol v0.16 M1
                 int guidedCount = 0;
                 foreach (WeaponGameplayData weapon in me.WeaponHandler.Weapons)
                 {
@@ -183,7 +184,10 @@ namespace InterplanetaryAI
                     if (guidedWeapon)
                     {
                         guidedCount++;
-                        guidedPopSum += live != null ? live.PopulationDamage : (weapon.WeaponData.population_damage.IsValueSet ? weapon.WeaponData.population_damage.Value : 0);
+                        float pop = live != null ? live.PopulationDamage : (weapon.WeaponData.population_damage.IsValueSet ? weapon.WeaponData.population_damage.Value : 0);
+                        guidedPopSum += pop;
+                        Add(popSumById, id, pop);
+                        Add(countById, id, 1f);
                         guidedFiring += live != null ? live.EnergyFiringCost : 0;
                     }
                     else unguidedFiring += live != null ? live.EnergyFiringCost : 0;
@@ -253,7 +257,7 @@ namespace InterplanetaryAI
                 float guidedPopDamage = guidedCount > 0 ? guidedPopSum / guidedCount : 0f;
                 decision = Strategy.Decide(turn, war, salvo, accuracy, targets, DefensePlanner.Counters, state.LastStrikeTurn, state.HoldTurns,
                     weapons, Plugin.StrategyCfg, state.LastCommitId, state.LastWeapons, underAttack, accuracyById, hitLastPhase,
-                    guidedIds, guidedPopDamage, guidedFunded);
+                    guidedIds, guidedPopDamage, guidedFunded, AverageById(popSumById, countById));
                 state.GuidedFiring = guidedFiring;
                 state.UnguidedFiring = unguidedFiring;
                 state.ArtilleryProjectiles = artilleryProjectiles;
@@ -379,7 +383,7 @@ namespace InterplanetaryAI
                     // v0.16 item 4 gates: precision exception inputs; blind salvo firing energy and live artillery projectiles
                     // (loss per 1,000 paid firing E is computed postgame against the human telemetry, never at runtime)
                     .Bool("precision", d.Precision).Int("visibleCities", d.VisibleCities).Num("guidedArriving", d.GuidedArriving)
-                    .Num("guidedPassing", d.GuidedPassing).Int("smallestVisibleCityPop", d.SmallestVisibleCityPop)
+                    .Num("guidedPassing", d.GuidedPassing).Int("smallestVisibleCityPop", d.SmallestVisibleCityPop).Num("guidedPopDamage", d.GuidedPopDamage)
                     .Num("guidedFiring", state.GuidedFiring).Num("unguidedFiring", state.UnguidedFiring).Num("artilleryProjectiles", state.ArtilleryProjectiles)
                     .ToString());
             }
@@ -387,6 +391,24 @@ namespace InterplanetaryAI
             {
                 ReportOnce("strategy-log", e);
             }
+        }
+
+        private static Dictionary<string, float> AverageById(Dictionary<string, float> sums, Dictionary<string, float> counts)
+        {
+            Dictionary<string, float> avg = new Dictionary<string, float>();
+            foreach (KeyValuePair<string, float> pair in sums)
+            {
+                float n;
+                if (counts.TryGetValue(pair.Key, out n) && n > 0f) avg[pair.Key] = pair.Value / n;
+            }
+            return avg;
+        }
+
+        // v0.16 (Sol v0.16 M1): on a precision strike the second phase goes for the visible city, not the optional weapon pick.
+        internal static bool PrecisionStrike(int playerId)
+        {
+            StrategyDecision d = Latest(playerId);
+            return d != null && d.Fire && d.Reason == "precision";
         }
 
         private static void ReportOnce(string hook, Exception e)

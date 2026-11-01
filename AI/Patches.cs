@@ -217,9 +217,13 @@ namespace InterplanetaryAI
                 {
                     // Population is a city's durability; the overlay shows the total and the city count together.
                     view.CityPopulation = Math.Max(0, theirs.TotalPopulation);
-                    view.VisibleCities = enemy.BuildingHandler.GetRemainingCities().Count; // as the overlay counts
                 }
             }
+            // v0.16 (Sol v0.16 F2, Pavol's P2): cities we see NOW, not the surviving-city total the overlay shows behind the
+            // population gate (v0.15 read GetRemainingCities().Count there: 5 at T22 while 2 were targetable).
+            int seenNow = 0;
+            foreach (BaseBuilding city in enemy.BuildingHandler.GetRemainingCities()) if (IsVisibleIntact(me, city)) seenNow++;
+            view.VisibleCities = seenNow;
             view.Grudge = Plugin.Grudges.Get(me.PlayerID, enemy.PlayerID, turn);
             return view;
         }
@@ -273,7 +277,6 @@ namespace InterplanetaryAI
         {
             s_volley.Clear();
             s_classQuota.Clear();
-            s_quotaLogged.Clear();
         }
 
         // ---- how many shots are planned to hit -------------------------------------------------
@@ -323,7 +326,7 @@ namespace InterplanetaryAI
                 int slots = Math.Min(total, live);
                 // v0.16 item 4 (council: per-class quotas): planned hits per class, each with its own carry, so the 0.85
                 // guided rate goes to guided weapons. v0.15 set one mixed count and native took the first weapons with a
-                // trajectory, whichever class (T22's 0.827 was the 11/2 mix, not who hit). DetermineShootingPrefix puts
+                // trajectory, whichever class (T22's 0.827 was the 11/2 mix, not who hit). EnforceClassQuota (at firing) holds
                 // the quota weapons first.
                 float guidedRate = Plugin.GuidedAccuracy.Value > 0f ? Plugin.GuidedAccuracy.Value : levelAccuracy;
                 float carry, guidedCarry;
@@ -353,46 +356,117 @@ namespace InterplanetaryAI
         // v0.16 item 4: goal -> {guided hits, unguided hits, turn} planned in GoalBeginTurnPostfix.
         private static readonly Dictionary<AIWeaponTargetingGoal, int[]> s_classQuota = new Dictionary<AIWeaponTargetingGoal, int[]>();
 
-        // v0.16 item 4: native DetermineShootingWeapons gives the Hits slots to the first weapons in its list that found a
-        // primary trajectory. Put up to the guided quota of guided weapons and the unguided quota of unguided weapons with a
-        // primary trajectory first; native then fills any shortfall from the rest, as before.
-        private static void DetermineShootingPrefix(AIWeaponTargetingGoal __instance)
+        private static bool IsGuidedTrajectory(AITrajectoryWeapon w)
         {
-            if (!Plugin.Active || !Plugin.AccuracyOverride.Value) return;
-            try
+            return w != null && w.TargetableWeapon != null && IsGuided(w.TargetableWeapon.Weapon);
+        }
+
+        // v0.16 (Sol v0.16 F1/F7): strike candidates a precision weapon could take on this enemy NOW: intact cities and
+        // weapon buildings in the Visible state. Shadow records do not count (decision-record-r2 1.10).
+        internal static int StrikeCandidateCount(PlayerData me, PlayerData enemy)
+        {
+            if (me == null || enemy == null) return 0;
+            int n = 0;
+            foreach (BaseBuilding b in enemy.BuildingHandler.GetBuildingsByType(BaseBuilding.BuildingFunctionalityType.City)) if (IsVisibleIntact(me, b)) n++;
+            foreach (BaseBuilding b in enemy.BuildingHandler.GetBuildingsByType(BaseBuilding.BuildingFunctionalityType.Weapon)) if (IsVisibleIntact(me, b)) n++;
+            return n;
+        }
+
+        private static int CandidatesFor(PlayerData me, AITrajectoryWeapon w, Dictionary<int, int> cache)
+        {
+            if (w == null || w.TargetEnemy == null || w.TargetEnemy.Player == null) return -1;
+            int id = w.TargetEnemy.Player.PlayerID, n;
+            if (!cache.TryGetValue(id, out n))
             {
-                int[] quota;
-                if (!s_classQuota.TryGetValue(__instance, out quota) || quota[2] != GameManager.CurrentTurn) return;
-                List<AITrajectoryWeapon> list = s_goalWeapons != null ? s_goalWeapons.GetValue(__instance) as List<AITrajectoryWeapon> : null;
-                if (list == null || list.Count == 0) return;
-                List<AITrajectoryWeapon> front = new List<AITrajectoryWeapon>(), rest = new List<AITrajectoryWeapon>();
-                int g = 0, u = 0;
-                foreach (AITrajectoryWeapon w in list)
-                {
-                    bool isGuided = w != null && w.TargetableWeapon != null && IsGuided(w.TargetableWeapon.Weapon);
-                    bool ready = w != null && w.HasFoundPrimaryTargetTrajectory;
-                    if (ready && isGuided && g < quota[0]) { front.Add(w); g++; }
-                    else if (ready && !isGuided && u < quota[1]) { front.Add(w); u++; }
-                    else rest.Add(w);
-                }
-                list.Clear();
-                list.AddRange(front);
-                list.AddRange(rest);
-                AICore core = (AICore)s_goalCore.GetValue(__instance);
-                if (core != null && core.PlayerData != null && s_quotaLogged.Add(core.PlayerData.PlayerID + ":" + GameManager.CurrentTurn))
-                {
-                    Plugin.WriteDecision(new Json().Str("e", "hit-quota").Int("t", GameManager.CurrentTurn).Str("ai", core.PlayerData.UserNickName)
-                        .Int("guidedQuota", quota[0]).Int("unguidedQuota", quota[1]).Int("guidedReady", g).Int("unguidedReady", u)
-                        .Int("hits", __instance.Hits).ToString());
-                }
+                n = StrikeCandidateCount(me, w.TargetEnemy.Player);
+                cache[id] = n;
             }
-            catch (Exception e)
+            return n;
+        }
+
+        // v0.16 (Sol v0.16 F7): a guided weapon whose target enemy offers no visible strike candidate would land on a random
+        // point (match 16: 45 such strikes). It is withheld; its firing energy stays unspent for defense rolls.
+        private static int WithholdBlindPrecision(PlayerData me, List<AITrajectoryWeapon> hitting, List<AITrajectoryWeapon> missing,
+            Dictionary<int, int> cache)
+        {
+            int withheld = 0;
+            Predicate<AITrajectoryWeapon> blind = w => IsGuidedTrajectory(w) && CandidatesFor(me, w, cache) == 0;
+            if (hitting != null) withheld += hitting.RemoveAll(blind);
+            if (missing != null) withheld += missing.RemoveAll(blind);
+            return withheld;
+        }
+
+        // v0.16 (Sol v0.16 F8): enforce the per-class planned hits on the final firing lists. Native selection fills the
+        // combined Hits count from either class; here a class above its quota moves its extra hits to (verified) misses,
+        // and a class below it is filled only from its own weapons with a trajectory.
+        private static void EnforceClassQuota(int[] quota, List<AITrajectoryWeapon> all, List<AITrajectoryWeapon> hitting,
+            List<AITrajectoryWeapon> missing, CelestialBody ownPlanet, HashSet<AITrajectoryWeapon> excluded)
+        {
+            if (quota == null || hitting == null || all == null) return;
+            for (int c = 0; c < 2; c++)
             {
-                ReportOnce("hit-quota", e);
+                bool guidedClass = c == 0;
+                List<AITrajectoryWeapon> classHits = hitting.FindAll(w => IsGuidedTrajectory(w) == guidedClass);
+                for (int i = classHits.Count - 1; i >= quota[c] && i >= 0; i--)
+                {
+                    AITrajectoryWeapon extra = classHits[i];
+                    hitting.Remove(extra);
+                    if (missing != null && Plugin.FireMisses.Value && !missing.Contains(extra) && IsSafeNearMiss(extra, ownPlanet)) missing.Add(extra);
+                }
+                int need = quota[c] - Math.Min(classHits.Count, quota[c]);
+                for (int pass = 0; pass < 2 && need > 0; pass++)
+                {
+                    foreach (AITrajectoryWeapon w in all)
+                    {
+                        if (need <= 0) break;
+                        if (w == null || IsGuidedTrajectory(w) != guidedClass || hitting.Contains(w) || (excluded != null && excluded.Contains(w))) continue;
+                        bool ok = pass == 0 ? w.HasFoundPrimaryTargetTrajectory : w.HasFoundSecondaryTargetTrajectory;
+                        if (!ok) continue;
+                        if (missing != null) missing.Remove(w);
+                        hitting.Add(w);
+                        need--;
+                    }
+                }
             }
         }
 
-        private static readonly HashSet<string> s_quotaLogged = new HashSet<string>();
+        // v0.16 (Sol v0.16 F7/F8 logging): what is committed to fire this turn, by class and target, with live firing cost.
+        // Written at the firing point after withholding and quotas, before the abort check (an abort writes its own record).
+        private static void LogFiring(PlayerData me, int[] quota, List<AITrajectoryWeapon> hitting, List<AITrajectoryWeapon> missing,
+            int withheld, Dictionary<int, int> cache)
+        {
+            try
+            {
+                int gh = 0, uh = 0, gm = 0, um = 0, gE = 0, uE = 0;
+                Dictionary<string, int> firingByTarget = new Dictionary<string, int>(), candidatesByTarget = new Dictionary<string, int>();
+                List<AITrajectoryWeapon> fired = new List<AITrajectoryWeapon>();
+                if (hitting != null) fired.AddRange(hitting);
+                if (missing != null) fired.AddRange(missing);
+                foreach (AITrajectoryWeapon w in fired)
+                {
+                    bool g = IsGuidedTrajectory(w);
+                    bool hit = hitting != null && hitting.Contains(w);
+                    if (g) { if (hit) gh++; else gm++; } else { if (hit) uh++; else um++; }
+                    WeaponGameplayData wd = w.TargetableWeapon != null ? w.TargetableWeapon.Weapon : null;
+                    int cost = wd != null && wd.Building != null && wd.Building.Stats != null && wd.Building.Stats.Weapons != null ? wd.Building.Stats.Weapons.EnergyFiringCost : 0;
+                    if (g) gE += cost; else uE += cost;
+                    string name = w.TargetEnemy != null && w.TargetEnemy.Player != null ? w.TargetEnemy.Player.UserNickName : "?";
+                    int sum;
+                    firingByTarget.TryGetValue(name, out sum);
+                    firingByTarget[name] = sum + cost;
+                    candidatesByTarget[name] = CandidatesFor(me, w, cache);
+                }
+                Plugin.WriteDecision(new Json().Str("e", "fire").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName)
+                    .Int("guidedQuota", quota != null ? quota[0] : -1).Int("unguidedQuota", quota != null ? quota[1] : -1)
+                    .Int("guidedHits", gh).Int("unguidedHits", uh).Int("guidedMisses", gm).Int("unguidedMisses", um)
+                    .Int("guidedFiringE", gE).Int("unguidedFiringE", uE).Int("withheldBlindPrecision", withheld)
+                    .Map("firingEBy", firingByTarget).Map("candidatesBy", candidatesByTarget).ToString());
+            }
+            catch (Exception e)
+            {
+                ReportOnce("fire-log", e);
+            }
+        }
 
         // ---- what actually got fired; feeds reachability memory ---------------------------------
 
@@ -443,6 +517,39 @@ namespace InterplanetaryAI
             catch (Exception e)
             {
                 ReportOnce("refresh-firing-list", e);
+            }
+            // v0.16 (Sol v0.16 F7, F8): withhold blind precision weapons, enforce the per-class hits, log what is committed.
+            try
+            {
+                AICore shooter = (AICore)s_goalCore.GetValue(__instance);
+                List<AITrajectoryWeapon> hitList = (List<AITrajectoryWeapon>)s_goalHitting.GetValue(__instance);
+                List<AITrajectoryWeapon> missList = (List<AITrajectoryWeapon>)s_goalMissing.GetValue(__instance);
+                List<AITrajectoryWeapon> allList = s_goalWeapons != null ? s_goalWeapons.GetValue(__instance) as List<AITrajectoryWeapon> : null;
+                if (shooter != null && hitList != null)
+                {
+                    PlayerData me = shooter.PlayerData;
+                    Dictionary<int, int> cache = new Dictionary<int, int>();
+                    int withheld = Plugin.BlindArtillery.Value ? WithholdBlindPrecision(me, hitList, missList, cache) : 0;
+                    HashSet<AITrajectoryWeapon> excluded = new HashSet<AITrajectoryWeapon>();
+                    HashSet<WeaponGameplayData> registered = RegisteredWeapons(me);
+                    if (allList != null)
+                    {
+                        foreach (AITrajectoryWeapon w in allList)
+                        {
+                            WeaponGameplayData wd = w != null && w.TargetableWeapon != null ? w.TargetableWeapon.Weapon : null;
+                            bool blindGuided = Plugin.BlindArtillery.Value && IsGuidedTrajectory(w) && CandidatesFor(me, w, cache) == 0;
+                            if (wd == null || !registered.Contains(wd) || !IsOperational(me, wd) || blindGuided) excluded.Add(w);
+                        }
+                    }
+                    int[] quota;
+                    if (!Plugin.AccuracyOverride.Value || !s_classQuota.TryGetValue(__instance, out quota) || quota[2] != GameManager.CurrentTurn) quota = null;
+                    if (quota != null) EnforceClassQuota(quota, allList, hitList, missList, shooter.Planet, excluded);
+                    LogFiring(me, quota, hitList, missList, withheld, cache);
+                }
+            }
+            catch (Exception e)
+            {
+                ReportOnce("class-quota", e);
             }
             // v0.11: a strike whose weapons mostly found no trajectory onto the committed target is called off; its firing
             // energy stays for defense rolls.
@@ -598,12 +705,15 @@ namespace InterplanetaryAI
                 ledger = VolleyLedger(me.PlayerID, GameManager.CurrentTurn);
                 AddStrikeCandidates(me, enemy.BuildingHandler.GetBuildingsByType(BaseBuilding.BuildingFunctionalityType.City), true, ledger, buildings, candidates);
                 AddStrikeCandidates(me, enemy.BuildingHandler.GetBuildingsByType(BaseBuilding.BuildingFunctionalityType.Weapon), false, ledger, buildings, candidates);
-                bool preferWeapon = Plugin.Rng.NextDouble() < Plugin.WeaponBuildingShare.Value;
+                bool preferWeapon = !StrategyPatches.PrecisionStrike(me.PlayerID) && Plugin.Rng.NextDouble() < Plugin.WeaponBuildingShare.Value;
                 pick = VolleyPlanner.Pick(candidates, Plugin.VolleyOverkill.Value, preferWeapon);
                 if (pick < 0)
                 {
-                    LogStrike(me, enemy, weapon, null, null, 0f, 0, "native-no-candidates");
-                    return true;
+                    // v0.16 (Sol v0.16 F1): native fallback picks among non-Invisible cities (Shadow included). Use the
+                    // information-free fallback instead: a random point on the planet's surface.
+                    core.Actions.SecondPhaseTargetWeapon(weapon, targetPlanet, UnityEngine.Random.onUnitSphere * targetPlanet.Radius);
+                    LogStrike(me, enemy, weapon, null, null, 0f, 0, "random-surface");
+                    return false;
                 }
                 damage = candidates[pick].IsCity ? weapon.DamageModule.PopulationDamage : weapon.DamageModule.BuildingDamage;
                 core.Actions.SecondPhaseTargetWeapon(weapon, targetPlanet, buildings[pick].transform.localPosition);
@@ -644,13 +754,8 @@ namespace InterplanetaryAI
                     if (building.CurrentState != BaseBuilding.BuildingState.Normal || building.Stats == null) continue;
                     durability = isCity ? building.Stats.CurrentPopulation : building.Stats.CurrentHP;
                 }
-                else if (vis == BuildingIntelVisibility.Shadow && isCity)
-                {
-                    ShadowBuildingFrozenState frozen = me.IntelHandler.IntelMemory != null ? me.IntelHandler.IntelMemory.GetShadowBuildingState(building) : null;
-                    if (frozen == null || frozen.BuildingState != BaseBuilding.BuildingState.Normal) continue;
-                    durability = frozen.HP;
-                    shadow = true;
-                }
+                // v0.16 (Sol v0.16 F1, decision-record-r2 1.10): a Shadow city is no longer a candidate; its frozen record
+                // and coordinates may not rescue targeting once it leaves sight.
                 else continue;
                 float allocated;
                 ledger.TryGetValue(building.ObjectId.ToString(), out allocated);

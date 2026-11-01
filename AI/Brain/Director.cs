@@ -36,9 +36,11 @@ namespace InterplanetaryAI.Brain
         // production next turn is the full gain. NaN = same as EnergyGain / MaterialGain.
         public float IncomeEnergy = float.NaN;
         public float IncomeMaterial = float.NaN;
+        public float IncomeScience = float.NaN;   // v0.16 (Sol v0.16 M2)
 
         public float NextTurnEnergy { get { return float.IsNaN(IncomeEnergy) ? EnergyGain : IncomeEnergy; } }
         public float NextTurnMaterial { get { return float.IsNaN(IncomeMaterial) ? MaterialGain : IncomeMaterial; } }
+        public float NextTurnScience { get { return float.IsNaN(IncomeScience) ? ScienceGain : IncomeScience; } }
         public object Payload;  // adapter data (BuildingData, UpgradeData, AIProjectEntity)
         public object Target;   // adapter data (the building an upgrade goes on)
 

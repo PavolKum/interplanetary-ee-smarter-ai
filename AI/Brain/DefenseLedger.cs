@@ -109,6 +109,14 @@ namespace InterplanetaryAI.Brain
             m_pendingShooter[playerId] = new Dictionary<string, int[]>();
         }
 
+        // v0.16 (Sol v0.16 F4): the action phase still being recorded (before this player's Roll). At the start of the AI's
+        // turn, before AICore.BeginTurn's postfix rolls it, this is the phase that has just finished.
+        public DefenderStats PendingDefender(int playerId)
+        {
+            DefenderStats d;
+            return m_pendingDefender.TryGetValue(playerId, out d) ? d : new DefenderStats();
+        }
+
         public DefenderStats LastDefender(int playerId)
         {
             DefenderStats d;

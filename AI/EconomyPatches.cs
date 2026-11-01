@@ -267,6 +267,10 @@ namespace InterplanetaryAI
                     AIBuildingEntity building = entity as AIBuildingEntity;
                     if (building == null || building.Building.id.Value != buildingId) continue;
                     if (!core.Construction.IsEntityAvailable(building)) continue;
+                    // v0.16 (Sol v0.16 F6): no precision superweapon goal (Nuclear Missile) while the target offers no visible
+                    // strike candidate, so its savings are not held for a purchase the director would refuse.
+                    if (Plugin.BlindArtillery.Value && building.Building.weapon_functionality.IsValueSet
+                        && DirectorPatches.IsPrecisionWeapon(building.Building.weapon_functionality.Value) && DirectorPatches.TargetCandidates(core) == 0) continue;
                     int cost = AIWeaponConstruction.GetWeaponEnergyCost(building, core) + AIWeaponConstruction.GetWeaponMaterialCost(building, core);
                     if (cost < bestCost)
                     {
@@ -514,7 +518,8 @@ namespace InterplanetaryAI
                     List<string> queue = tech.GetTechnologyQueueIdStringList();
                     string head = queue.Count > 0 ? queue[0] : null;
                     HashSet<string> owned;
-                    bool ownedHead = head != null && s_ownedQueue.TryGetValue(pid, out owned) && owned.Contains(head);
+                    bool ownedHead = head != null && ((s_ownedQueue.TryGetValue(pid, out owned) && owned.Contains(head))
+                        || urgent.Contains(head) || s_defenseTechs.ContainsValue(head)); // v0.16 (Sol v0.16 M3): counter research kept
                     bool planLeft = ResearchPlan.NextTarget(Plugin.ResearchPlanIds, id => SafeCompleted(tech, id, pid), id => s_refused.Contains(pid + ":" + id)) != null;
                     if (head == null || ownedHead || !planLeft) return;
                     guardHead = head;
