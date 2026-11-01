@@ -528,7 +528,9 @@ namespace InterplanetaryAI
                         return;
                     }
                     bool queued = false;
-                    try { queued = tech.AddTechnologyToQueueById(next, true); }
+                    // clearPrevious only on the first add of a batch (v0.14.2): the second argument clears the queue
+                    // (PlayerTechnologyHandler.AddTechnologyToQueueById), so v0.14.1 kept only the last of its three targets.
+                    try { queued = tech.AddTechnologyToQueueById(next, added == 0); }
                     catch (Exception) { queued = false; }
                     // Science is spent on the queue head without an availability check; never leave an
                     // unresearchable head (the director learned this the hard way).
