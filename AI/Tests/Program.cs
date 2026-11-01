@@ -55,6 +55,7 @@ namespace InterplanetaryAI.Tests
             V013Rules();
             V014Rules();
             V015Rules();
+            V0151Rules();
 
             Console.WriteLine(s_checks + " checks, " + s_failures + " failed");
             return s_failures == 0 ? 0 : 1;
@@ -382,6 +383,52 @@ namespace InterplanetaryAI.Tests
             Check(EconomyDirector.IntelPerTurnLimit(5, 6, 14, 6, 6, 3, 2) == 2, "6 standing: back to the normal limit");
             Check(EconomyDirector.IntelPerTurnLimit(5, 15, 14, 2, 6, 3, 2) == 2, "after the sprint turn: normal");
             Check(EconomyDirector.IntelPerTurnLimit(0, 6, 14, 2, 6, 3, 2) == 2, "every city seen: normal");
+        }
+
+        private static void V0151Rules()
+        {
+            // Sol v0.15 #2: a city-cover placement must close a city deficit (reach = 5.3 - 0.95 = 4.35 from a city centre).
+            var targets = new List<Point> { new Point(0, 0, 0), new Point(20, 0, 0), new Point(40, 0, 0) };
+            var loss = new List<float> { 0.95f, 0.95f, 0f };
+            var isCity = new List<bool> { true, true, false };
+            int[] counts = { 2, 0, 0 };
+            Check(!DefenseCoverage.ClosesCityDeficit(new Point(3, 0, 0), targets, loss, isCity, counts, 5.3f, 2), "over a city already at 2: refused");
+            Check(DefenseCoverage.ClosesCityDeficit(new Point(23, 0, 0), targets, loss, isCity, counts, 5.3f, 2), "over the exposed city: accepted");
+            Check(!DefenseCoverage.ClosesCityDeficit(new Point(40, 1, 0), targets, loss, isCity, counts, 5.3f, 2), "over a producer cluster: refused");
+            Check(!DefenseCoverage.ClosesCityDeficit(new Point(25, 0, 0), targets, loss, isCity, counts, 5.3f, 2), "5 from the exposed city (reach 4.35): refused");
+            counts[1] = 1;
+            Check(DefenseCoverage.ClosesCityDeficit(new Point(23, 0, 0), targets, loss, isCity, counts, 5.3f, 2), "a city at 1 of 2 still takes one");
+
+            // The measurement: fewest qualifying defenses over any city.
+            var cities = new List<Point> { new Point(0, 0, 0), new Point(20, 0, 0) };
+            var cityR = new List<float> { 1.9f, 1.9f };
+            var ions = new List<Point> { new Point(3, 0, 0), new Point(0, 3, 0), new Point(23, 0, 0) };
+            var ionR = new List<float> { 5.3f, 5.3f, 5.3f };
+            Check(DefenseCoverage.MinCityCover(cities, cityR, ions, ionR) == 1, "min cover of 2 and 1 is 1");
+            Check(DefenseCoverage.MinCityCover(cities, cityR, new List<Point>(), new List<float>()) == 0, "no Ions: 0");
+            Check(DefenseCoverage.MinCityCover(new List<Point>(), new List<float>(), ions, ionR) == -1, "no cities: -1");
+
+            // Sol v0.15 #4: the strategy estimate uses the firing rates per weapon.
+            StrategySettings s = new StrategySettings { OverlapDefenses = 20f };
+            var counters = EnhancedCounters();
+            var missiles = new Dictionary<string, float> { { "wea_Missile", 20f } };
+            var guidedRate = new Dictionary<string, float> { { "wea_Missile", 0.85f } };
+            SalvoTarget level = Target(0, 1f, 0, true, 6000f);
+            Strategy.EstimateSalvo(missiles, level, 0.7f, counters, s);
+            SalvoTarget guided = Target(0, 1f, 0, true, 6000f);
+            Strategy.EstimateSalvo(missiles, guided, 0.7f, counters, s, guidedRate);
+            Check(Math.Abs(level.Arriving - 14f) < 1e-3 && Math.Abs(guided.Arriving - 17f) < 1e-3,
+                "20 Missiles: 14 arrive at the level rate, 17 at the guided rate; got " + level.Arriving + ", " + guided.Arriving);
+            SalvoTarget rails = Target(0, 1f, 0, true, 6000f);
+            Strategy.EstimateSalvo(Railguns(20), rails, 0.7f, counters, s, guidedRate);
+            Check(Math.Abs(rails.Arriving - 14f) < 1e-3, "Railguns keep the level rate; got " + rails.Arriving);
+            StrategyDecision viaDecide = Strategy.Decide(20, true, missiles, 0.7f, new List<SalvoTarget> { Target(0, 1f, 0, true, 6000f) }, counters, -1000, 0, 20, s,
+                -1, -1, false, guidedRate);
+            Check(Math.Abs(viaDecide.Targets[0].Arriving - 17f) < 1e-3, "Decide passes the per-weapon rates on; got " + viaDecide.Targets[0].Arriving);
+
+            // Sol v0.15 #5: the sprint waits while material is short.
+            Check(EconomyDirector.IntelPerTurnLimit(5, 6, 14, 2, 6, 3, 2, 600f, 650f) == 2, "material 600 < 650 reserve: normal limit");
+            Check(EconomyDirector.IntelPerTurnLimit(5, 6, 14, 2, 6, 3, 2, 900f, 650f) == 3, "material 900: sprint");
         }
 
         private static void V014Rules()

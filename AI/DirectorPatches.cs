@@ -111,6 +111,9 @@ namespace InterplanetaryAI
             public int AntiNukeProtecting; // v0.15: anti-missile defenses that protect at least one city
             public int OwnIntel;
             public int CityProjectsThisTurn;
+            public int AntiNukePerCityNow; // v0.15.1: per-city target this turn (placement must close it)
+            public int MinCityCover = -1;  // v0.15.1: fewest qualifying powered anti-missile defenses over any city
+            public int AntiNukeNearCities; // v0.15.1: intact (any state) anti-missile defenses within reach of a city
             public int PowerEnergySpent;  // v0.13.1: energy spent this turn on energy-only purchases (plants, energy upgrades)
             public int AimedWeapons;                // own weapons needing a trajectory (not lasers, not superweapons), queued included
             // across turns
@@ -345,10 +348,18 @@ namespace InterplanetaryAI
                     cityRadii.Add(city.Radius);
                 }
                 int intactAntiNuke = 0;
+                List<Point> intactPoints = new List<Point>();
+                List<float> intactRadii = new List<float>();
                 foreach (BaseBuilding b in me.BuildingHandler.Buildings)
                 {
                     if (b == null || b.IsCity || b.BuildingData == null || b.BuildingData.id.Value != d.AntiNukeId) continue;
-                    if (b.CurrentState != BaseBuilding.BuildingState.Ruins && b.CurrentState != BaseBuilding.BuildingState.Destroyed) intactAntiNuke++;
+                    if (b.CurrentState != BaseBuilding.BuildingState.Ruins && b.CurrentState != BaseBuilding.BuildingState.Destroyed)
+                    {
+                        intactAntiNuke++;
+                        Vector3 ip = b.transform.position;
+                        intactPoints.Add(new Point(ip.x, ip.y, ip.z));
+                        intactRadii.Add(DefenseRadius(b.BuildingData));
+                    }
                     if (b.CurrentState != BaseBuilding.BuildingState.Normal || !b.Power.HasPower) continue;
                     Vector3 p = b.transform.position;
                     defensePoints.Add(new Point(p.x, p.y, p.z));
@@ -360,8 +371,15 @@ namespace InterplanetaryAI
                 // planet-wide cap of 4 x perCity x cities on every intact one stays as the runaway guard (Terra v0.8.2 #2).
                 d.AntiNukeProtecting = DefenseCoverage.ProtectingCount(cityPoints, cityRadii, defensePoints, defenseRadii);
                 d.AntiNukeIntact = intactAntiNuke;
-                int hardCap = (int)Math.Ceiling(4f * perCity * cityPoints.Count);
-                d.AntiNukeWanted = intactAntiNuke >= hardCap ? 0 : EconomyDirector.AntiNukeMissing(deficit, d.AntiNukeProtecting, cityPoints.Count, perCity, 2f);
+                d.AntiNukePerCityNow = perCity;
+                d.MinCityCover = DefenseCoverage.MinCityCover(cityPoints, cityRadii, defensePoints, defenseRadii);
+                // v0.15.1 (Sol v0.15 #2): placement now has to close a city deficit, so Ions placed elsewhere never come from
+                // this branch and must not block it (v0.15.0: 29 irrelevant Ions with one city left suppressed every
+                // purchase). The runaway guard counts intact Ions near a city, powered or not (unpowered ones protect
+                // nothing, so the deficit would never close: Terra v0.8.2 #2).
+                d.AntiNukeNearCities = DefenseCoverage.ProtectingCount(cityPoints, cityRadii, intactPoints, intactRadii);
+                int hardCap = (int)Math.Ceiling(3f * perCity * cityPoints.Count);
+                d.AntiNukeWanted = d.AntiNukeNearCities >= hardCap ? 0 : EconomyDirector.AntiNukeMissing(deficit, d.AntiNukeProtecting, cityPoints.Count, perCity, 2f);
                 d.AntiNukeCap = hardCap;
             }
 
@@ -555,7 +573,8 @@ namespace InterplanetaryAI
             // counts only guided weapons, so a Railgun army stayed blind all game (31 Oct v0.3.1).
             IntelEvaluationState intel = IntelState(core);
             int intelLimit = EconomyDirector.IntelPerTurnLimit(d.UnseenCities, d.Turn, Plugin.IntelSprintUntilTurn.Value, d.IntelBuildings + d.IntelThisTurn,
-                Plugin.IntelSprintBuildings.Value, Plugin.IntelSprintPerTurn.Value, Plugin.IntelPerTurn.Value);
+                Plugin.IntelSprintBuildings.Value, Plugin.IntelSprintPerTurn.Value, Plugin.IntelPerTurn.Value,
+                core.Resources.Material, Plugin.IntelSprintMaterialReserve.Value);
             bool intelRoom = d.IntelBuildings + d.IntelThisTurn < Plugin.MaxIntelBuildings.Value && d.IntelThisTurn < intelLimit;
             bool wantIntel = intel == IntelEvaluationState.BelowMinimum || d.BlindEnemies > 0 || d.UnseenCities > 0;
             if (wantIntel && intelRoom && d.SlotsLeft > 0 && !d.FailedThisTurn.Contains("intel"))
@@ -1288,19 +1307,28 @@ namespace InterplanetaryAI
             return false;
         }
 
-        // v0.15 instrumentation: our cities' population, in building order ("620;540;0").
+        // v0.15 instrumentation: our cities' population by city id ("1234=620;1240=x"; x = ruined).
         private static string OwnCityPopulations(PlayerData me)
         {
             List<string> parts = new List<string>();
             foreach (BaseBuilding city in me.BuildingHandler.GetBuildingsByType(BaseBuilding.BuildingFunctionalityType.City))
             {
                 if (city == null || city.Stats == null) continue;
-                parts.Add(city.CurrentState == BaseBuilding.BuildingState.Normal ? city.Stats.CurrentPopulation.ToString() : "x");
+                // v0.15.1 (Sol v0.15 #10): "id=pop", so strikes and population can be joined by city id.
+                parts.Add(city.ObjectId + "=" + (city.CurrentState == BaseBuilding.BuildingState.Normal ? city.Stats.CurrentPopulation.ToString() : "x"));
             }
             return string.Join(";", parts.ToArray());
         }
 
         private static bool HasCityForProject(AIConstruction construction, AICore core, AIProjectEntity project)
+        {
+            return CityForProject(construction, core, project) != null;
+        }
+
+        // v0.15.1 (Sol v0.15 #6, v0.14.2 #17): the living city a project goes to, with the native checks (free slot, not
+        // installed, not queued, prerequisite projects installed). QueueProject enqueues against this exact city: the
+        // native search walks every city of the type without a state check and can pick a ruin, which still charges.
+        private static BaseBuilding CityForProject(AIConstruction construction, AICore core, AIProjectEntity project)
         {
             foreach (BaseBuilding city in core.PlayerData.BuildingHandler.GetBuildingsByID(project.City.id.Value))
             {
@@ -1308,9 +1336,18 @@ namespace InterplanetaryAI
                 if (!construction.Projects.HasCityFreeSlots(city)) continue;
                 if (construction.Projects.HasCityProject(city, project.Project)) continue;
                 if (construction.ConstructionQueue.IsProjectInQueue(project.Project, city)) continue;
-                return true;
+                bool prerequisites = true;
+                if (project.OtherProjects != null)
+                {
+                    foreach (ProjectData other in project.OtherProjects)
+                    {
+                        if (!construction.Projects.HasCityProject(city, other)) { prerequisites = false; break; }
+                    }
+                }
+                if (!prerequisites) continue;
+                return city;
             }
-            return false;
+            return null;
         }
 
         private static void AddBuildingOptions(AICore core, DirectorState d, List<EconOption> options, float planetFactor)
@@ -1442,9 +1479,10 @@ namespace InterplanetaryAI
         private static bool QueueProject(AIConstruction construction, AICore core, DirectorState d, AIProjectEntity project)
         {
             if (core.Resources.Energy < project.EnergyCost || core.Resources.Material < project.MaterialCost) return false;
+            BaseBuilding city = CityForProject(construction, core, project);
+            if (city == null) return false;
             int before = QueueCount(construction);
-            object module = s_materialModule.GetValue(construction);
-            s_tryProject.Invoke(module, new object[] { project }); // native per-city slot checks
+            construction.ConstructionQueue.AddProjectToQueue(project.Project, city); // v0.15.1: the validated living city
             if (QueueCount(construction) <= before) return false;
             core.Resources.Energy -= project.EnergyCost;
             core.Resources.Material -= project.MaterialCost;
@@ -1645,6 +1683,8 @@ namespace InterplanetaryAI
             public float Radius;
             public float P;          // this defense's best interception chance
             public bool AntiNuke;
+            public readonly List<bool> IsCity = new List<bool>(); // v0.15.1
+            public int PerCity;      // v0.15.1: anti-missile target per city; a placement must close a city below it
         }
 
         private static CoverageModel BuildCoverageModel(AICore core, BuildingData data)
@@ -1681,6 +1721,7 @@ namespace InterplanetaryAI
                 bool defense = b.BuildingData != null && b.BuildingData.defense_functionality.IsValueSet;
                 m.Values.Add(b.IsCity ? cityValue : (defense ? 0.25f : 1f));
                 m.Loss.Add(antiNuke && b.IsCity ? 0.5f * b.Radius : 0f);
+                m.IsCity.Add(b.IsCity);
                 if (b.BuildingData != null && b.BuildingData.id.Value == id && b.CurrentState == BaseBuilding.BuildingState.Normal && b.Power.HasPower)
                 {
                     defenses.Add(new Point(p.x, p.y, p.z));
@@ -1694,6 +1735,7 @@ namespace InterplanetaryAI
                 Point point = new Point(p.x, p.y, p.z);
                 m.Targets.Add(point);
                 m.Loss.Add(0f);
+                m.IsCity.Add(false);
                 BuildingData queued = buildings.HasBuilding(action.BuildingID) ? buildings.GetBuilding(action.BuildingID) : null;
                 m.Values.Add(queued != null && queued.defense_functionality.IsValueSet ? 0.25f : 1f);
                 if (action.BuildingID == id)
@@ -1703,6 +1745,16 @@ namespace InterplanetaryAI
                 }
             }
             m.Counts = DefenseCoverage.CoverCounts(m.Targets, defenses, radii, m.Loss);
+            if (antiNuke)
+            {
+                // v0.15.1 (Sol v0.15 #2): anchors and scores lean on the cities still below the target; everything else
+                // only breaks ties. The step then refuses any spot that closes no city deficit.
+                m.PerCity = Math.Max(1, ds.AntiNukePerCityNow);
+                for (int i = 0; i < m.Targets.Count; i++)
+                {
+                    if (!(m.IsCity[i] && m.Counts[i] < m.PerCity)) m.Values[i] *= 0.05f;
+                }
+            }
             return m;
         }
 
@@ -1818,6 +1870,8 @@ namespace InterplanetaryAI
                 if (placed == null || !placed.IsSuccessful) continue;
                 if (Vector3.Distance(placed.BuildingWorldPosition, anchor.transform.position) > lineLimit) continue; // line would be refused
                 Vector3 at = placed.BuildingWorldPosition;
+                if (model.AntiNuke && !DefenseCoverage.ClosesCityDeficit(new Point(at.x, at.y, at.z), model.Targets, model.Loss, model.IsCity, model.Counts, model.Radius, model.PerCity))
+                    continue; // v0.15.1 (Sol v0.15 #2): a city-cover purchase must cover an under-covered city or be refunded
                 float score = DefenseCoverage.MarginalValue(new Point(at.x, at.y, at.z), model.Targets, model.Values, model.Counts, model.Radius, model.P, model.Loss);
                 if (score > bestScore)
                 {
@@ -2028,6 +2082,7 @@ namespace InterplanetaryAI
                 .Int("refunds", d.Refunds).Map("placementFailures", d.PlacementFailures).Int("steps", d.Steps)
                 .Int("unseenCities", d.UnseenCities).Int("ownIntel", d.OwnIntel).Bool("guidedThreat", d.GuidedThreat)
                 .Int("antiNukeProtecting", d.AntiNukeProtecting).Int("antiNukeWanted", d.AntiNukeWanted)
+                .Int("minCityCover", d.MinCityCover).Int("antiNukeNearCities", d.AntiNukeNearCities).Int("antiNukePerCity", d.AntiNukePerCityNow)
                 .Int("idleEnergy", core.Resources.Energy + d.DefenseReserve).Str("ownCityPop", OwnCityPopulations(core.PlayerData))
                 .Map("queued", d.Actions).ToString());
         }

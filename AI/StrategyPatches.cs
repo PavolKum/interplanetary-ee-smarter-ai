@@ -166,12 +166,14 @@ namespace InterplanetaryAI
                 foreach (EnemyView view in views) perEnemy[view.PlayerId] = new Dictionary<string, float>();
                 int weapons = 0;
                 HashSet<int> unreachable = new HashSet<int>();
+                HashSet<string> guidedIds = new HashSet<string>(); // v0.15.1 (Sol v0.15 #4)
                 foreach (WeaponGameplayData weapon in me.WeaponHandler.Weapons)
                 {
                     if (weapon == null || weapon.IsLaser || weapon.WeaponData == null || weapon.Building == null) continue;
                     if (weapon.Building.CurrentState != BaseBuilding.BuildingState.Normal || !weapon.Building.Power.HasPower) continue;
                     weapons++;
                     string id = weapon.WeaponData.id.Value;
+                    if (AiPatches.IsGuided(weapon)) guidedIds.Add(id);
                     // Live counts, upgrades included (Terra v0.11 #2): ShootingModule / SurfaceModule are what the action phase fires.
                     int liveProjectiles = weapon.ShootingModule != null ? weapon.ShootingModule.ProjectileAmount : 0;
                     int liveFragments = weapon.SurfaceModule != null ? weapon.SurfaceModule.SplitFragments : 0;
@@ -189,6 +191,12 @@ namespace InterplanetaryAI
 
                 float accuracy = Plugin.AccuracyOverride.Value ? AccuracyPlan.ForLevel(Plugin.Accuracy, me.AILevel)
                     : core.Difficulty != null ? core.Difficulty.Accuracy : 0.75f;
+                Dictionary<string, float> accuracyById = null;
+                if (Plugin.AccuracyOverride.Value && Plugin.GuidedAccuracy.Value > 0f && guidedIds.Count > 0)
+                {
+                    accuracyById = new Dictionary<string, float>();
+                    foreach (string g in guidedIds) accuracyById[g] = Plugin.GuidedAccuracy.Value;
+                }
                 List<SalvoTarget> targets = new List<SalvoTarget>();
                 for (int i = 0; i < views.Count; i++)
                 {
@@ -219,7 +227,7 @@ namespace InterplanetaryAI
                 }
                 bool underAttack = recentDamage > 0f || Plugin.Ledger.LastDefender(me.PlayerID).Impacts > 0;
                 decision = Strategy.Decide(turn, war, salvo, accuracy, targets, DefensePlanner.Counters, state.LastStrikeTurn, state.HoldTurns,
-                    weapons, Plugin.StrategyCfg, state.LastCommitId, state.LastWeapons, underAttack);
+                    weapons, Plugin.StrategyCfg, state.LastCommitId, state.LastWeapons, underAttack, accuracyById);
                 state.LastWeapons = weapons;
                 if (!decision.Fire && !HoldAvailable)
                 {

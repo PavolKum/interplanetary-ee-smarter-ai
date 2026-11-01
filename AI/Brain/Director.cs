@@ -267,10 +267,12 @@ namespace InterplanetaryAI.Brain
         // that guided strikes can use; v0.14.1 Bolide built its first Telescopes at T16, after the human's first counterintel
         // hub (T13), and never saw a city. While an enemy city has never been seen and turn <= untilTurn, intel may take up
         // to sprintPerTurn buildings a turn until sprintBuildings stand; otherwise the normal per-turn limit.
+        // v0.15.1 (Sol v0.15 #5): the sprint's extra buildings wait while material is below materialReserve (one Telescope
+        // plus one core material project), so the sprint cannot starve the opening's compounding investments.
         public static int IntelPerTurnLimit(int unseenCities, int turn, int untilTurn, int intelBuildings, int sprintBuildings,
-            int sprintPerTurn, int normalPerTurn)
+            int sprintPerTurn, int normalPerTurn, float material = float.MaxValue, float materialReserve = 0f)
         {
-            bool sprint = unseenCities > 0 && turn <= untilTurn && intelBuildings < sprintBuildings;
+            bool sprint = unseenCities > 0 && turn <= untilTurn && intelBuildings < sprintBuildings && material >= materialReserve;
             return sprint ? Math.Max(normalPerTurn, sprintPerTurn) : normalPerTurn;
         }
 

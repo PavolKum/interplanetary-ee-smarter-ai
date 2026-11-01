@@ -262,6 +262,38 @@ namespace InterplanetaryAI.Brain
             return n;
         }
 
+        // v0.15.1 (Sol v0.15 #2): an anti-missile placement only counts when its actual position adds qualifying cover
+        // (reach = radius - loss) to a city still below perCity. v0.15.0 accepted any legal spot that scored best on all
+        // building value, so a purchase meant for an exposed city could land over a producer cluster and protect nothing.
+        public static bool ClosesCityDeficit(Point at, IList<Point> targets, IList<float> loss, IList<bool> isCity, int[] counts, float radius, int perCity)
+        {
+            for (int i = 0; i < targets.Count; i++)
+            {
+                if (!isCity[i] || counts[i] >= perCity) continue;
+                float reach = radius - loss[i];
+                if (reach > 0f && at.DistanceSquared(targets[i]) < reach * reach) return true;
+            }
+            return false;
+        }
+
+        // v0.15.1 measurement (Sol v0.15, "single fastest measurement"): the fewest qualifying defenses over any surviving
+        // city, same reach rule as CityProtectionDeficit. -1 with no city.
+        public static int MinCityCover(IList<Point> cities, IList<float> cityRadii, IList<Point> defenses, IList<float> defenseRadii)
+        {
+            int min = -1;
+            for (int c = 0; c < cities.Count; c++)
+            {
+                int k = 0;
+                for (int j = 0; j < defenses.Count; j++)
+                {
+                    float reach = defenseRadii[j] - 0.5f * cityRadii[c];
+                    if (reach > 0f && cities[c].DistanceSquared(defenses[j]) < reach * reach) k++;
+                }
+                if (min < 0 || k < min) min = k;
+            }
+            return min;
+        }
+
         // Share of the total value that is covered (for the decision log).
         public static float CoveredShare(IList<float> values, bool[] covered)
         {

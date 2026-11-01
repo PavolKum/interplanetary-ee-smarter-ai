@@ -22,7 +22,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.15.0";
+        public const string VERSION = "0.15.1";
 
         internal static ManualLogSource Log;
 
@@ -110,6 +110,7 @@ namespace InterplanetaryAI
         internal static ConfigEntry<int> IntelSprintUntilTurn;
         internal static ConfigEntry<int> IntelSprintBuildings;
         internal static ConfigEntry<int> IntelSprintPerTurn;
+        internal static ConfigEntry<float> IntelSprintMaterialReserve;
         internal static ConfigEntry<bool> CounterintelProjects;
         internal static ConfigEntry<float> ReachFailMinShare;
         internal static ConfigEntry<int> MaxWeapons;
@@ -326,7 +327,7 @@ namespace InterplanetaryAI
             ResearchPlanEnabled = Config.Bind("Research", "UsePlan", true,
                 "Research the Plan list in order (prerequisites are queued automatically) instead of the native random focus. Native research resumes when the plan is done.");
             GuidedAccuracy = Config.Bind("Strikes", "GuidedAccuracy", 0.85f,
-                "v0.15: planned hit rate for guided weapons (second-phase targeting: Missile, MIRV, Nuke). Pavol's decision: his own measured Missile rate (60 of 71 shots hit the planet, v0.14.1 match). Unguided weapons keep the level accuracy. 0 = use the level accuracy for all.");
+                "v0.15: planned hit rate for guided weapons (second-phase targeting: Missile, Nuclear Missile; MIRV has no second phase in this engine and keeps the level rate). Used by firing and by the strategy estimate (v0.15.1). Pavol's decision: his own measured Missile rate (60 of 71 shots hit the planet, v0.14.1 match). Unguided weapons keep the level accuracy. 0 = use the level accuracy for all.");
             VolleyOverkill = Config.Bind("Strikes", "VolleyOverkill", 1.25f,
                 "v0.15: a guided target counts as fully allocated once the damage aimed at it this volley reaches this multiple of its durability (population for cities, HP otherwise); further shots move to the next target.");
             GuidedCityCover = Config.Bind("Director", "GuidedCityCover", true,
@@ -336,6 +337,8 @@ namespace InterplanetaryAI
             IntelSprintBuildings = Config.Bind("Director", "IntelSprintBuildings", 6,
                 "v0.15: intel buildings the sprint aims for (6 Telescopes x 8 intel = 48 >= a small city's 45 stealth before counterintel).");
             IntelSprintPerTurn = Config.Bind("Director", "IntelSprintPerTurn", 3, "v0.15: intel buildings a turn during the sprint.");
+            IntelSprintMaterialReserve = Config.Bind("Director", "IntelSprintMaterialReserve", 650f,
+                "v0.15.1: the sprint's extra intel buildings wait while material is below this (a Telescope 300 + a Molecular Recycling project 350), so the opening economy keeps compounding (Sol v0.15 #5). The normal intel limit is unaffected.");
             CounterintelProjects = Config.Bind("Director", "CounterintelProjects", true,
                 "v0.15: buy the Quantum Encryption Hub city project (+50 counterintel per city, permanent) in every city, up to 2 a turn, from CounterintelFromTurn.");
             ResearchQueueDepth = Config.Bind("Research", "QueueDepth", 3,
@@ -678,6 +681,7 @@ namespace InterplanetaryAI
             LastTurnSeen = 0;
             EconomyPatches.Reset();
             StrategyPatches.Reset();
+            AiPatches.ResetCombatMemory(); // v0.15.1 (Sol v0.15 #7)
         }
 
         internal static void WriteDecision(string json)

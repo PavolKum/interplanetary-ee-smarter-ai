@@ -242,9 +242,22 @@ namespace InterplanetaryAI
             return weapon.Building != null ? weapon.Building.ObjectId.ToString() : "weapon@" + weapon.GetHashCode();
         }
 
+        // v0.15: guided = has second-phase targeting (lands where placed: Missile, Nuclear Missile). MIRV has no second
+        // phase in this engine (Sol v0.15), so it keeps the level rate. One classifier for firing and strategy (Sol v0.15 #4).
+        internal static bool IsGuided(WeaponGameplayData w)
+        {
+            return w != null && w.TargetingModule != null && w.TargetingModule.HasTargetingPhase(WeaponTargetingPhase.SecondPhaseTargeting);
+        }
+
+        // v0.15.1 (Sol v0.15 #7): a new match or a loaded save must not reuse last match's volley reservations.
+        internal static void ResetCombatMemory()
+        {
+            s_volley.Clear();
+        }
+
         // ---- how many shots are planned to hit -------------------------------------------------
 
-        private static void GoalBeginTurnPostfix(AIWeaponTargetingGoal __instance)
+        private static void GoalBeginTurnPostfix(AIWeaponTargetingGoal __instance, List<AITargetableWeapon> weapons)
         {
             if (!Plugin.Active || !Plugin.AccuracyOverride.Value) return;
             try
@@ -258,30 +271,31 @@ namespace InterplanetaryAI
                 float levelAccuracy = AccuracyPlan.ForLevel(Plugin.Accuracy, me.AILevel);
                 // v0.15: live weapons only (the targeting list keeps destroyed entries, Sol + Fable v0.14.2 audits), guided
                 // ones at GuidedAccuracy (Pavol's measured Missile rate), unguided at the level rate.
+                // v0.15.1 (Sol v0.15 #1): counted from the BeginTurn argument, whose Weapon is set in its constructor. The
+                // trajectory weapon's TargetableWeapon back-reference is only set after this postfix (AIWeaponTargeting.cs:
+                // 110-122), so v0.15.0 skipped every newly built weapon and fell back to the level rate.
+                if (weapons == null) return;
                 int guided = 0, unguided = 0;
-                List<AITrajectoryWeapon> listed = s_goalWeapons != null ? s_goalWeapons.GetValue(__instance) as List<AITrajectoryWeapon> : null;
-                if (listed != null)
+                foreach (AITargetableWeapon tw in weapons)
                 {
-                    foreach (AITrajectoryWeapon tw in listed)
-                    {
-                        WeaponGameplayData w = tw != null && tw.TargetableWeapon != null ? tw.TargetableWeapon.Weapon : null;
-                        if (w == null || w.Building == null || w.Building.CurrentState != BaseBuilding.BuildingState.Normal || !w.Building.Power.HasPower) continue;
-                        if (w.TargetingModule != null && w.TargetingModule.HasTargetingPhase(WeaponTargetingPhase.SecondPhaseTargeting)) guided++;
-                        else unguided++;
-                    }
+                    WeaponGameplayData w = tw != null ? tw.Weapon : null;
+                    if (w == null || w.Building == null || w.Building.CurrentState != BaseBuilding.BuildingState.Normal || !w.Building.Power.HasPower) continue;
+                    if (IsGuided(w)) guided++;
+                    else unguided++;
                 }
                 int live = guided + unguided;
-                if (live <= 0) live = total;
+                if (live <= 0) return; // nothing operational: leave the native counts alone
                 float accuracy = Plugin.GuidedAccuracy.Value > 0f
                     ? AccuracyPlan.MixedRate(guided, Plugin.GuidedAccuracy.Value, unguided, levelAccuracy) : levelAccuracy;
                 float carry;
                 Plugin.AccuracyCarry.TryGetValue(me.PlayerID, out carry);
                 int nativeHits = __instance.Hits;
-                int hits = Math.Min(total, AccuracyPlan.PlannedHits(live, accuracy, ref carry));
+                int slots = Math.Min(total, live);
+                int hits = Math.Min(slots, AccuracyPlan.PlannedHits(live, accuracy, ref carry));
                 Plugin.AccuracyCarry[me.PlayerID] = carry;
 
                 __instance.Hits = hits;
-                __instance.Misses = total - hits;
+                __instance.Misses = slots - hits; // dead entries cannot fill a miss slot (Sol v0.15 #1)
 
                 Plugin.WriteDecision(new Json()
                     .Str("e", "accuracy").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName).Int("lvl", me.AILevel)
@@ -501,7 +515,7 @@ namespace InterplanetaryAI
                 pick = VolleyPlanner.Pick(candidates, Plugin.VolleyOverkill.Value, preferWeapon);
                 if (pick < 0)
                 {
-                    LogStrike(me, enemy, null, null, 0f, 0, "native-no-candidates");
+                    LogStrike(me, enemy, weapon, null, null, 0f, 0, "native-no-candidates");
                     return true;
                 }
                 damage = candidates[pick].IsCity ? weapon.DamageModule.PopulationDamage : weapon.DamageModule.BuildingDamage;
@@ -519,7 +533,7 @@ namespace InterplanetaryAI
                 float before;
                 ledger.TryGetValue(key, out before);
                 ledger[key] = before + damage;
-                LogStrike(me, enemy, buildings[pick], candidates[pick], damage, candidates.Count, "");
+                LogStrike(me, enemy, weapon, buildings[pick], candidates[pick], damage, candidates.Count, "");
             }
             catch (Exception e)
             {
@@ -558,12 +572,13 @@ namespace InterplanetaryAI
             }
         }
 
-        private static void LogStrike(PlayerData me, PlayerData enemy, BaseBuilding target, StrikeCandidate c, float damage, int count, string fallback)
+        private static void LogStrike(PlayerData me, PlayerData enemy, WeaponGameplayData weapon, BaseBuilding target, StrikeCandidate c, float damage, int count, string fallback)
         {
             try
             {
                 Json j = new Json().Str("e", "strike").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName).Str("target", enemy.UserNickName)
-                    .Int("candidates", count);
+                    .Int("candidates", count)
+                    .Str("weapon", weapon != null ? WeaponKey(weapon) : "").Str("wid", weapon != null && weapon.WeaponData != null ? weapon.WeaponData.id.Value : ""); // Sol v0.15 #10
                 if (target != null && c != null)
                 {
                     j.Str("building", c.IsCity ? "city" : "weapon").Str("id", target.ObjectId.ToString()).Str("seen", c.Shadow ? "shadow" : "visible")

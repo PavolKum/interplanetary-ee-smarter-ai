@@ -92,15 +92,19 @@ namespace InterplanetaryAI.Brain
     {
         // Expected shots through one target's defenses. counters: defense id -> (weapon id -> intercept chance).
         // accuracy: share of shots planned to hit (AccuracyPlan); misses do not reach the target.
+        // v0.15.1 (Sol v0.15 #4): accuracyById, when given, overrides `accuracy` per weapon id (guided weapons at their own
+        // rate), the same split the firing quota uses, applied before the weapon families are combined.
         public static void EstimateSalvo(IDictionary<string, float> salvo, SalvoTarget target, float accuracy,
-            Dictionary<string, Dictionary<string, float>> counters, StrategySettings s)
+            Dictionary<string, Dictionary<string, float>> counters, StrategySettings s, IDictionary<string, float> accuracyById = null)
         {
             IDictionary<string, float> shotsByWeapon = target.Shots ?? salvo;
             float arriving = 0f, eligible = 0f, intercepts = 0f, rollsNeeded = 0f;
             foreach (KeyValuePair<string, float> shots in shotsByWeapon)
             {
                 if (shots.Value <= 0f) continue;
-                float n = shots.Value * Math.Max(0f, Math.Min(1f, accuracy));
+                float rate = accuracy, byId;
+                if (accuracyById != null && accuracyById.TryGetValue(shots.Key, out byId)) rate = byId;
+                float n = shots.Value * Math.Max(0f, Math.Min(1f, rate));
                 arriving += n;
                 int defenses = 0;
                 float chance = 0f;
@@ -186,13 +190,13 @@ namespace InterplanetaryAI.Brain
         // lastCommitId: the enemy our weapons were pointed at last turn (-1 none).
         public static StrategyDecision Decide(int turn, bool war, IDictionary<string, float> salvo, float accuracy, IList<SalvoTarget> targets,
             Dictionary<string, Dictionary<string, float>> counters, int lastStrikeTurn, int holdTurns, int weapons, StrategySettings s,
-            int lastCommitId = -1, int lastWeapons = -1, bool underAttack = false)
+            int lastCommitId = -1, int lastWeapons = -1, bool underAttack = false, IDictionary<string, float> accuracyById = null)
         {
             StrategyDecision d = new StrategyDecision { War = war, Shots = weapons };
             float maxScore = 0f;
             foreach (SalvoTarget t in targets)
             {
-                EstimateSalvo(salvo, t, accuracy, counters, s);
+                EstimateSalvo(salvo, t, accuracy, counters, s, accuracyById);
                 d.Targets.Add(t);
                 maxScore = Math.Max(maxScore, t.Score);
             }
