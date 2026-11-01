@@ -27,6 +27,7 @@ The human has won every match so far.
 | 8 | 0.9.1 | 2 AIs | T39 | ~7k vs 24k (T35) | Science projects, weapon upgrades, research reorder | War from T15 ate ~60% of energy (firing reserve + defense reserve); 15-37k material idle; AIs fought each other |
 | 9 | 0.10.1 | 2 AIs | T39 | 67.1k vs 23.4k (T30) | Strategy layer: hold fire and release the firing reservation, saturation strikes, committed target, Reactor Trials research early, material-glut pricing | Kingmaking (first 6 strikes AI vs AI); planet space and material caps (8-59k energy unspent per turn); strikes at the human did nothing (11 of 48 weapons found a trajectory); human's 111 shots/turn met no eligible defense 70-98% of the time; no Shields |
 | 10 | 0.11.1 | 2 AIs | T47 | 61.5k vs 23.7k (T29) | Commit by expected shots through; abort strikes without trajectories; live projectile counts; energy glut; counter research and counter-defenses (Shields); placement throttle | Both AIs mined their planets dry by T26-27 (human: T38), then could not build or repair; only 36% of live weapons found a trajectory; 13 of 26 strikes aborted; target flip-flopped every turn (reachability memory misreads search time-outs) |
+| 11 | 0.12.1 | 2 AIs (T14 save of #9) | T35 | 24.0k vs 15.5k (T25) | Planet budget (energy cap, material reserve, sell dry mines), fire what can aim, reachability fix, weapon cap 30, 40 s aiming window | Energy cap choked the economy (24k vs 67k from the same save) while 96k material sat unused; strikes did no lasting damage (the human repairs, the AI never does); human's 26 Kinetic never seen; Railguns only |
 
 ## The arc so far
 
@@ -42,7 +43,9 @@ The human has won every match so far.
    aim; spend surplus energy on material and per-building damage; counter the human's weapon mix (Shields vs Lasers).
    Result: the longest match (T47) and the best defenses yet, but the AIs mined their planets dry by T27 and the
    engine's trajectory search (bounded by work per frame and geometry) aimed only about a third of their live weapons.
-5. **v0.12 (next): budget the planet, fire what can aim.** Material is a whole-game budget, not a flow.
+5. **v0.12: budget the planet, fire what can aim.** Targeting became consistent (12 of 12 strikes at the human, 1 abort),
+   but the energy cap was backwards: energy is the throughput that spends material. Lost faster from the same save (T35 vs
+   T39). The match exposed that the native AI never repairs.
 
 ## Recurring lessons
 
