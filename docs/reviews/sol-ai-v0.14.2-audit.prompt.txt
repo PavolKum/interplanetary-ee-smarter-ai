@@ -1,0 +1,22 @@
+READ-ONLY review. Do not edit, create or delete any file. Stay inside this repository: any path outside it is auto-rejected and ends your run. Finish with the complete written report.
+
+DEEP AUDIT of the whole Smarter AI mod at v0.14.2 (HEAD), not a diff review: find bugs and strategic blind spots. Take your time and be thorough; breadth across the whole mod matters more than polish.
+
+Code: AI/*.cs (Harmony adapters: Patches.cs, DirectorPatches.cs, EconomyPatches.cs, StrategyPatches.cs, LedgerPatches.cs, LaserPatches.cs, Plugin.cs) and AI/Brain/*.cs (pure rules, tested by AI/Tests/Program.cs). The game's code is in decompiled/ (authoritative for every API and mechanic); game data in docs/ruleset/embedded/enhanced/ (CSV, columns = entities, row 2 = ids).
+
+Evidence:
+- Latest match: docs/playtests/2026-11-01-v0.14.1.md (1v1, human won T29 although the AI out-produced him from T7; the AI never saw a human city - target view "cities 0" all match - so its Missiles had no city targets; 2 of its 5 cities fell to one 14-Missile volley while its Ion covered 2 of 5). Data: docs/playtests/data/v0141-ai-decisions.jsonl and v0141-human-telemetry.jsonl.
+- Previous: docs/playtests/2026-11-01-v0.13.1.md, data v0131-*.
+- History and lessons: docs/PROGRESS.md; earlier reviews and dispositions in docs/reviews/ (sol-ai-v0.12/13/14*).
+- Game mechanics study: docs/strategy/game-math-report.md (sections 0-9 + MIRV addendum; verify any claim you rely on against decompiled/).
+- Tools: python AI/tools/human_summary.py and AI/tools/human_turns.py <telemetry jsonl>.
+
+Known recent bug as a calibration example of what to hunt for: v0.14.1 called PlayerTechnologyHandler.AddTechnologyToQueueById(id, true) three times; the second argument is clearPrevious, so only the last target survived (fixed in 0.14.2, AI/EconomyPatches.cs). Look for more of this class: an engine API whose real semantics differ from what the adapter assumes.
+
+Hunt list (all of it, then anything else you find):
+A. API and lifecycle bugs: every call into game code (construction queue, placement finder and searches, power grid, resources CheckEnergy/SpendEnergy, research queue, weapon targeting and second-phase targeting, repair, sell, defense handler, intel memory/shadow buildings) - does the adapter's assumption match decompiled/? Per-turn vs per-match state (static dictionaries, save/load, turn going backwards, two AIs, AI elimination), events firing twice, ordering between AICore.BeginTurn prefix/postfix and module BeginTurns, refund/abandon paths, exceptions swallowed into silent fallbacks.
+B. Logic bugs in the Brain rules and their adapters: off-by-one turns, units (energy vs material, per turn vs stock), glut/saturation/reserve interactions, caps that can never bind or always bind, rules that contradict each other (economy vs defense vs weapons vs repair budgets), config migrations.
+C. Strategic blind spots against this human: intel and targeting (cities seen once stay as shadows - can strike targeting use remembered/shadow city positions? what does the native second-phase choice do?), anti-missile cover per city, Lasers/Shields, superweapons both ways, counterintel race, the 30-weapon and firing-cost caps leaving 5-9k energy unspent, research plan vs what the director can actually install (refinery slot policy), population growth engine (connectors, city defense bonus, Vertical Farms), global city projects stacking (x1.3 per city), multi-AI games.
+D. Measurement gaps: what the decision log does not record that we need to diagnose the next loss (e.g. where our missiles actually landed, what the human's missiles hit, per-city population over time).
+
+Report format: a verdict line ("Verdict: ship" / "fix first" / "rethink"); then findings ranked Critical/High/Medium/Low, each with file:line evidence (ours and decompiled/), a concrete failure scenario, and a concrete fix; mark each finding CONFIRMED (traced in code or data) or SUSPECTED. Then the five changes most likely to make the AI win the next match, with the number behind each.
