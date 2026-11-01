@@ -110,6 +110,7 @@ def main():
                       f"{' keepM ' + str(r.get('materialReserve')) if r.get('materialReserve') else ''}"
                       f"{' SOLD ' + str(r.get('soldMines')) + ' mines +' + str(r.get('soldMaterial')) + 'M' if r.get('soldMines') else ''}"
                       f" aimedW {r.get('aimedWeapons', '?')}"
+                      f"{' REP ' + str(r.get('repaired')) + ' (-' + str(r.get('repairEnergy')) + 'E -' + str(r.get('repairMaterial')) + 'M)' if r.get('repaired') else ''}"
                       f" | {describe_queued(r.get('queued') or {})} | unspent E{r['energyLeft']}"
                       + (f" | placement gave up {fails}" if fails else ""), flush=True)
             elif kind == "fire":

@@ -134,6 +134,14 @@ namespace InterplanetaryAI.Brain
             return o.Kind != OptionKind.Project && o.EnergyGain > 0f && o.MaterialGain <= 0f && o.ScienceGain <= 0f;
         }
 
+        // v0.13: an option whose only gain is extracted material (a mine, a material yield upgrade or project). In material
+        // glut it only drains the fixed planet pool faster: v0.12.1 Clowrus queued 14-30 Mines a turn T21-T26 while its stock
+        // grew 38.6k -> 96.2k unused, and still ran its planet dry at T28. Planet-saving options (refinery) are kept.
+        public static bool IsExtractionOnly(EconOption o)
+        {
+            return !o.SavesReserve && o.MaterialGain > 0f && o.EnergyGain <= 0f && o.ScienceGain <= 0f;
+        }
+
         // v0.12: material per turn the planet and the bank can supply until horizonTurn (at least minTurns ahead).
         // -1 = unlimited planet.
         public static float SustainableMaterialIncome(int planetMaterial, int stock, bool limited, int turn, int horizonTurn, int minTurns)
@@ -193,6 +201,7 @@ namespace InterplanetaryAI.Brain
             {
                 if (o.Energy > b.EnergyBudget || o.Material > materialBudget) continue;
                 if (saturated && IsEnergyOnly(o)) continue;
+                if (b.MaterialGlut && IsExtractionOnly(o)) continue;
                 if (o.NeedsSlot && slotsLeft <= 0) continue;
                 float score = Score(o, wE, wM, eFactor, b.ScienceWeight, mFactor);
                 if (score > bestScore)
@@ -278,24 +287,27 @@ namespace InterplanetaryAI.Brain
             return pass;
         }
 
+        // perSlot (v0.13): with a cap on aimed weapons the cap, not the cost, binds - rank by damage through per weapon.
+        // v0.12.1: 30 Railguns per AI (pass 0.41-0.55 observed) into a human with Kinetic only and no Ion Defense.
         public static float WeaponScore(WeaponStats w, Dictionary<string, int> targetDefenses, Dictionary<string, Dictionary<string, float>> counters, float coverageFull, float firingCostTurns,
-            Dictionary<string, float> observedPass = null)
+            Dictionary<string, float> observedPass = null, bool perSlot = false)
         {
             float pass = PassChance(w.WeaponId, targetDefenses, counters, coverageFull, observedPass);
+            if (perSlot) return w.Damage * pass;
             float cost = w.BuildMaterial + 0.5f * w.BuildEnergy + firingCostTurns * w.FiringEnergy;
             return w.Damage * pass / Math.Max(1f, cost);
         }
 
         // Human-like variety: pick among the weapons scoring at least `band` of the best, weighted by score squared.
         public static WeaponStats PickWeapon(IList<WeaponStats> weapons, Dictionary<string, int> targetDefenses, Dictionary<string, Dictionary<string, float>> counters,
-            float coverageFull, float firingCostTurns, float band, Random rng, Dictionary<string, float> observedPass = null)
+            float coverageFull, float firingCostTurns, float band, Random rng, Dictionary<string, float> observedPass = null, bool perSlot = false)
         {
             if (weapons.Count == 0) return null;
             float[] scores = new float[weapons.Count];
             float best = 0f;
             for (int i = 0; i < weapons.Count; i++)
             {
-                scores[i] = WeaponScore(weapons[i], targetDefenses, counters, coverageFull, firingCostTurns, observedPass);
+                scores[i] = WeaponScore(weapons[i], targetDefenses, counters, coverageFull, firingCostTurns, observedPass, perSlot);
                 best = Math.Max(best, scores[i]);
             }
             if (best <= 0f) return null;

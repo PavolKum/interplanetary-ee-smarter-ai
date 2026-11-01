@@ -103,6 +103,7 @@ namespace InterplanetaryAI
             public int MaterialReserve;             // material the economy may not spend this turn
             public bool EnergySaturated;
             public int SoldMines, SoldMaterial;
+            public int Repaired, RepairEnergy, RepairMaterial; // v0.13
             public int AimedWeapons;                // own weapons needing a trajectory (not lasers, not superweapons), queued included
             // across turns
             public int WaterCooldownUntil;
@@ -216,6 +217,11 @@ namespace InterplanetaryAI
                 d.MaterialReserve = EconomyDirector.EconomyReserve(res.PlanetMaterial, drain, limited, Plugin.BankWarningTurns.Value, Plugin.MaterialReserve.Value);
                 int[] sold;
                 if (s_soldThisTurn.TryGetValue(me.PlayerID, out sold) && sold[0] == turn) { d.SoldMines = sold[1]; d.SoldMaterial = sold[2]; }
+                int[] repaired;
+                if (s_repairedThisTurn.TryGetValue(me.PlayerID, out repaired) && repaired[0] == turn)
+                {
+                    d.Repaired = repaired[1]; d.RepairEnergy = repaired[2]; d.RepairMaterial = repaired[3];
+                }
             }
             catch (Exception e)
             {
@@ -324,6 +330,13 @@ namespace InterplanetaryAI
                     bestEconomy = view.Economy;
                     target = planet.Player;
                 }
+            }
+            // v0.13: weapons are chosen against the enemy the strategy committed to this turn (v0.12.1: the director chose
+            // against the other AI's defenses while every strike went at the human).
+            int commit = StrategyPatches.CommitTarget(me.PlayerID);
+            foreach (CelestialBody planet in core.EnemyPlanets)
+            {
+                if (commit >= 0 && planet.Player != null && planet.Player.PlayerID == commit) target = planet.Player;
             }
             if (target != null)
             {
@@ -738,13 +751,77 @@ namespace InterplanetaryAI
         // reconnection searches. Only leaves are sold: at most one power connection (a relay has two or more), no generation.
         private static readonly Dictionary<int, int[]> s_soldThisTurn = new Dictionary<int, int[]>(); // player -> [turn, mines, material]
 
+        private static readonly Dictionary<int, int[]> s_repairedThisTurn = new Dictionary<int, int[]>(); // player -> [turn, n, energy, material]
+
         private static void CoreBeginTurnPrefix(AICore __instance)
+        {
+            if (!Plugin.Active || !Plugin.DirectorEnabled.Value) return;
+            PlayerData me = __instance.PlayerData;
+            if (me == null || !me.AIPlayer) return;
+            SellDryMines(me);
+            RepairDamaged(me);
+        }
+
+        // v0.13: repair damaged buildings before the turn's resources are snapshotted, so construction plans with what is
+        // left. Weapons, then defenses, then power; most damaged first; at most RepairEnergyShare of this turn's energy.
+        private static void RepairDamaged(PlayerData me)
         {
             try
             {
-                if (!Plugin.Active || !Plugin.DirectorEnabled.Value || Plugin.SellDryMinesPerTurn.Value <= 0) return;
-                PlayerData me = __instance.PlayerData;
-                if (me == null || !me.AIPlayer) return;
+                if (!Plugin.RepairEnabled.Value || Plugin.RepairsPerTurn.Value <= 0) return;
+                PlayerResourceHandler res = me.ResourceHandler;
+                bool dry = GameSessionManager.CurrentGameSettings.PlanetMaterial != -1 && res.PlanetMaterial <= 0;
+                List<RepairCandidate> candidates = new List<RepairCandidate>();
+                foreach (BaseBuilding b in me.BuildingHandler.Buildings)
+                {
+                    if (b == null || b.IsCity || b.BuildingData == null || b.CurrentState != BaseBuilding.BuildingState.Normal || b.Stats == null) continue;
+                    float max = b.Stats.MaxHP;
+                    if (max <= 0f || b.Stats.CurrentHP >= max) continue;
+                    BuildingData data = b.BuildingData;
+                    bool mine = Value(data.turn_yield_material) > 0;
+                    if (mine && dry) continue; // sold, not repaired
+                    int priority = data.weapon_functionality.IsValueSet ? 0
+                        : data.defense_functionality.IsValueSet ? 1
+                        : Value(data.turn_yield_energy) > 0 ? 2
+                        : Value(data.turn_yield_intel) > 0 || Value(data.turn_yield_counterintel) > 0 ? 3
+                        : mine ? 4 : 5;
+                    candidates.Add(new RepairCandidate
+                    {
+                        Priority = priority,
+                        HpShare = b.Stats.CurrentHP / max,
+                        Energy = Value(data.repair_cost_energy),
+                        Material = Value(data.repair_cost_material),
+                        Payload = b,
+                    });
+                }
+                if (candidates.Count == 0) return;
+                int energyBudget = (int)(Math.Max(0f, Plugin.RepairEnergyShare.Value) * res.Energy);
+                List<RepairCandidate> picked = RepairPlanner.Pick(candidates, energyBudget, res.Material, Plugin.RepairsPerTurn.Value, Plugin.RepairBelowHpShare.Value);
+                int n = 0, spentE = 0, spentM = 0;
+                foreach (RepairCandidate c in picked)
+                {
+                    if (!res.CheckEnergy(c.Energy) || !res.CheckMaterial(c.Material)) break;
+                    BaseBuilding b = (BaseBuilding)c.Payload;
+                    res.SpendEnergy(c.Energy);
+                    res.SpendMaterial(c.Material);
+                    me.BuildingHandler.RepairBuilding(b, () => { });
+                    n++;
+                    spentE += c.Energy;
+                    spentM += c.Material;
+                }
+                s_repairedThisTurn[me.PlayerID] = new[] { GameManager.CurrentTurn, n, spentE, spentM };
+            }
+            catch (Exception e)
+            {
+                ReportOnce("repair", e);
+            }
+        }
+
+        private static void SellDryMines(PlayerData me)
+        {
+            try
+            {
+                if (Plugin.SellDryMinesPerTurn.Value <= 0) return;
                 if (GameSessionManager.CurrentGameSettings.PlanetMaterial == -1 || me.ResourceHandler.PlanetMaterial > 0) return;
                 List<BaseBuilding> dry = new List<BaseBuilding>();
                 foreach (BaseBuilding b in me.BuildingHandler.Buildings)
@@ -809,7 +886,9 @@ namespace InterplanetaryAI
                     Damage = damage,
                 });
             }
-            WeaponStats pick = EconomyDirector.PickWeapon(options, d.TargetDefenses, DefensePlanner.Counters, Plugin.DefensesForFullCover.Value, 4f, 0.6f, Plugin.Rng, d.ObservedPass);
+            // v0.13: with the aimed-weapon cap on, rank by damage through per weapon (the cap binds, not the cost).
+            WeaponStats pick = EconomyDirector.PickWeapon(options, d.TargetDefenses, DefensePlanner.Counters, Plugin.DefensesForFullCover.Value, 4f, 0.6f, Plugin.Rng, d.ObservedPass,
+                Plugin.MaxWeapons.Value > 0);
             if (pick == null) return false;
             if (!QueueBuilding(construction, core, d, buildings.GetBuilding(pick.BuildingId), "weapon")) return false;
             d.Upkeep += pick.FiringEnergy;
@@ -1798,6 +1877,7 @@ namespace InterplanetaryAI
                 .Bool("holdingFire", d.HoldingFire).Int("releasedEnergy", d.ReleasedEnergy).Bool("materialGlut", d.MaterialGlut).Bool("energyGlut", d.EnergyGlut)
                 .Num("sustainableMaterial", d.SustainableMaterial).Bool("energySaturated", d.EnergySaturated).Int("materialReserve", d.MaterialReserve)
                 .Int("soldMines", d.SoldMines).Int("soldMaterial", d.SoldMaterial).Int("aimedWeapons", d.AimedWeapons)
+                .Int("repaired", d.Repaired).Int("repairEnergy", d.RepairEnergy).Int("repairMaterial", d.RepairMaterial)
                 .Int("refunds", d.Refunds).Map("placementFailures", d.PlacementFailures).Int("steps", d.Steps)
                 .Map("queued", d.Actions).ToString());
         }

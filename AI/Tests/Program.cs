@@ -52,6 +52,7 @@ namespace InterplanetaryAI.Tests
             MaterialGlutRules();
             V011Rules();
             V012Rules();
+            V013Rules();
 
             Console.WriteLine(s_checks + " checks, " + s_failures + " failed");
             return s_failures == 0 ? 0 : 1;
@@ -311,7 +312,8 @@ namespace InterplanetaryAI.Tests
             Check(Math.Abs(EconomyDirector.EnergyCostFactor(bal) - bal.GlutEnergyWeight) < 1e-6, "energy glut: energy cost at GlutEnergyWeight");
             bal.MaterialGlut = true;
             // v0.12 (was: energy wins): v0.11.1 turned the last planet material into ~180 Floating Plants with energy unspent.
-            Check(EconomyDirector.Best(options, bal, 10) == material, "both gluts: energy gains are worthless, material wins");
+            // v0.13: and extraction is not bought in material glut either (it only drains the planet faster).
+            Check(EconomyDirector.Best(options, bal, 10) == null, "both gluts: energy gains worthless, extraction filtered: nothing");
 
             // Counter research: Lasers known, no Shield buildable -> Shield tech first.
             var countersWithShield = new Dictionary<string, Dictionary<string, float>>(counters);
@@ -328,6 +330,68 @@ namespace InterplanetaryAI.Tests
             Check(urgent.Count == 1 && urgent[0] == "tec_MaglevServos", "a Shield (0.15 vs Railguns) does not count as a Railgun counter; got " + string.Join(",", urgent.ToArray()));
             urgent = ResearchPlan.CounterTechs(new Dictionary<string, int> { { "wea_Laser", 0 } }, countersWithShield, techs, id => false);
             Check(urgent.Count == 0, "a weapon no longer known (count 0) asks for nothing");
+        }
+
+        // ---- v0.13: repair, no extraction in material glut, weapons ranked per slot -------------------
+        private static void V013Rules()
+        {
+            // Repair: weapons, then defenses, then power; most damaged first; within budgets and count.
+            RepairCandidate mineHit = new RepairCandidate { Priority = 4, HpShare = 0.2f, Energy = 100, Material = 150 };
+            RepairCandidate railHit = new RepairCandidate { Priority = 0, HpShare = 0.5f, Energy = 100, Material = 100 };
+            RepairCandidate railBad = new RepairCandidate { Priority = 0, HpShare = 0.3f, Energy = 100, Material = 100 };
+            RepairCandidate kinetic = new RepairCandidate { Priority = 1, HpShare = 0.6f, Energy = 100, Material = 100 };
+            RepairCandidate scratched = new RepairCandidate { Priority = 0, HpShare = 0.9f, Energy = 100, Material = 100 };
+            RepairCandidate whole = new RepairCandidate { Priority = 0, HpShare = 1f, Energy = 100, Material = 100 };
+            var all = new List<RepairCandidate> { mineHit, railHit, railBad, kinetic, scratched, whole };
+            List<RepairCandidate> got = RepairPlanner.Pick(all, 10000, 10000, 40, 0.8f);
+            Check(got.Count == 4 && got[0] == railBad && got[1] == railHit && got[2] == kinetic && got[3] == mineHit,
+                "order: weapons (most damaged first), defense, mine; 90% and full HP skipped; got " + got.Count);
+            got = RepairPlanner.Pick(all, 250, 10000, 40, 0.8f);
+            Check(got.Count == 2 && got[0] == railBad && got[1] == railHit, "energy for two repairs: the two weapons");
+            got = RepairPlanner.Pick(all, 10000, 10000, 1, 0.8f);
+            Check(got.Count == 1 && got[0] == railBad, "maxCount 1: the most damaged weapon");
+            RepairCandidate pricey = new RepairCandidate { Priority = 0, HpShare = 0.1f, Energy = 100, Material = 1000 };
+            got = RepairPlanner.Pick(new List<RepairCandidate> { pricey, kinetic }, 10000, 500, 40, 0.8f);
+            Check(got.Count == 1 && got[0] == kinetic, "one that does not fit is skipped, a cheaper one still fits");
+            got = RepairPlanner.Pick(all, 10000, 10000, 40, 0.95f);
+            Check(got.Contains(scratched), "threshold 0.95 includes the 90% one");
+
+            // Material glut: no extraction (mines, material upgrades/projects); plants, Trials and refineries stay.
+            EconOption mine = new EconOption { Id = "mine", Kind = OptionKind.Producer, Energy = 300, Material = 300, MaterialGain = 175f, NeedsSlot = true };
+            EconOption matUp = new EconOption { Id = "mup", Kind = OptionKind.Upgrade, Energy = 50, Material = 200, MaterialGain = 120f };
+            EconOption plant = new EconOption { Id = "np", Kind = OptionKind.Plant, Energy = 250, Material = 450, EnergyGain = 200f };
+            EconOption refinery = new EconOption { Id = "ref", Kind = OptionKind.Upgrade, Energy = 50, Material = 200, MaterialGain = 60f, SavesReserve = true };
+            EconOption trials = new EconOption { Id = "trials", Kind = OptionKind.Project, Energy = 150, Material = 300, EnergyGain = 3000f, MaterialGain = -500f };
+            // v0.12.1 Clowrus T23: 21.2k energy, 26.8k material income, 57.3k stock, material glut.
+            EconomyBalance glut = new EconomyBalance { EnergyIncome = 21246, MaterialIncome = 26813, TargetRatio = 0.6f, WeaponUpkeep = 3000,
+                EnergyBudget = 20000, MaterialBudget = 57340, MaterialGlut = true };
+            Check(EconomyDirector.Best(new List<EconOption> { mine }, glut, 10) == null, "material glut: no Mine");
+            Check(EconomyDirector.Best(new List<EconOption> { matUp }, glut, 10) == null, "material glut: no material yield upgrade");
+            Check(EconomyDirector.Best(new List<EconOption> { mine, plant }, glut, 10) == plant, "material glut: the plant");
+            Check(EconomyDirector.Best(new List<EconOption> { refinery }, glut, 10) == refinery, "material glut: a planet-saving refinery stays");
+            Check(EconomyDirector.Best(new List<EconOption> { trials }, glut, 10) == trials, "material glut: Reactor Trials stays");
+            EconOption mixed = new EconOption { Id = "mix", Kind = OptionKind.Project, Energy = 150, Material = 300, EnergyGain = 500f, MaterialGain = 500f };
+            Check(EconomyDirector.Best(new List<EconOption> { mixed }, glut, 10) == mixed, "material glut: an option that also gains energy stays");
+            glut.MaterialGlut = false;
+            glut.EnergyIncome = 5000;
+            Check(EconomyDirector.Best(new List<EconOption> { mine }, glut, 10) == mine, "setup: without glut the Mine is bought");
+
+            // Weapons per slot: v0.12.1 observed Railgun pass ~0.45 at a human with Kinetic only.
+            WeaponStats rail = new WeaponStats { BuildingId = "bui_Railgun", WeaponId = "wea_Railgun", BuildEnergy = 200, BuildMaterial = 200, FiringEnergy = 100, Damage = 375f };
+            WeaponStats missile = new WeaponStats { BuildingId = "bui_Missile", WeaponId = "wea_Missile", BuildEnergy = 250, BuildMaterial = 450, FiringEnergy = 300, Damage = 455f };
+            var observed = new Dictionary<string, float> { { "wea_Railgun", 0.45f } };
+            var none = new Dictionary<string, int>();
+            // Unseen defenses, no shots yet: by cost the cheap Railgun wins; per slot the Missile's damage does.
+            float rCost = EconomyDirector.WeaponScore(rail, none, EnhancedCounters(), 10f, 4f);
+            float mCost = EconomyDirector.WeaponScore(missile, none, EnhancedCounters(), 10f, 4f);
+            Check(rCost > mCost, "setup: by cost, nothing observed, the Railgun wins (" + rCost + " vs " + mCost + ")");
+            Check(EconomyDirector.WeaponScore(missile, none, EnhancedCounters(), 10f, 4f, null, true) > EconomyDirector.WeaponScore(rail, none, EnhancedCounters(), 10f, 4f, null, true),
+                "per slot, nothing observed: the Missile");
+            float rSlot = EconomyDirector.WeaponScore(rail, none, EnhancedCounters(), 10f, 4f, observed, true);
+            float mSlot = EconomyDirector.WeaponScore(missile, none, EnhancedCounters(), 10f, 4f, observed, true);
+            Check(mSlot > rSlot && Math.Abs(rSlot - 375f * 0.45f) < 0.01f, "per slot: Missile (455 through) beats Railgun (169 through)");
+            WeaponStats only = EconomyDirector.PickWeapon(new List<WeaponStats> { rail, missile }, none, EnhancedCounters(), 10f, 4f, 0.6f, new Random(1), observed, true);
+            Check(only == missile, "per slot with band 0.6: only the Missile qualifies (169 < 0.6 x 455)");
         }
 
         // ---- v0.12: material budget, energy saturation, fire what can aim, reachability ----------------
@@ -378,7 +442,10 @@ namespace InterplanetaryAI.Tests
             EconOption trials = new EconOption { Id = "trials", Kind = OptionKind.Project, Energy = 150, Material = 300, EnergyGain = 3000f, MaterialGain = -500f };
             EconomyBalance sat = new EconomyBalance { EnergyIncome = 20118, MaterialIncome = 16193, TargetRatio = 0.6f, WeaponUpkeep = 6000,
                 SustainableMaterialIncome = 9300f, EnergyBudget = 20000, MaterialBudget = 23000, MaterialGlut = true };
-            Check(EconomyDirector.Best(new List<EconOption> { plant, mineUp }, sat, 10) == mineUp, "saturated + material glut: no Floating Plant");
+            Check(EconomyDirector.Best(new List<EconOption> { plant, mineUp }, sat, 10) == null, "saturated + material glut: no Floating Plant, no extraction");
+            sat.MaterialGlut = false;
+            Check(EconomyDirector.Best(new List<EconOption> { plant, mineUp }, sat, 10) == mineUp, "saturated, no glut: the material option, not the plant");
+            sat.MaterialGlut = true;
             Check(EconomyDirector.Best(new List<EconOption> { plant }, sat, 10) == null, "saturated: a plant alone is not bought");
             Check(EconomyDirector.Best(new List<EconOption> { energyUp }, sat, 10) == null, "saturated: an energy yield upgrade is not bought");
             Check(EconomyDirector.Best(new List<EconOption> { trials }, sat, 10) == trials, "saturated: Reactor Trials still can be (Sol #5)");

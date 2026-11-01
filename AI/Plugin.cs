@@ -22,7 +22,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.12.1";
+        public const string VERSION = "0.13.0";
 
         internal static ManualLogSource Log;
 
@@ -106,6 +106,10 @@ namespace InterplanetaryAI
         internal static ConfigEntry<int> MaterialReserve;
         internal static ConfigEntry<float> EnergySaturation;
         internal static ConfigEntry<int> SellDryMinesPerTurn;
+        internal static ConfigEntry<bool> RepairEnabled;
+        internal static ConfigEntry<float> RepairEnergyShare;
+        internal static ConfigEntry<int> RepairsPerTurn;
+        internal static ConfigEntry<float> RepairBelowHpShare;
         internal static ConfigEntry<bool> CounterResearch;
         internal static ConfigEntry<bool> StrategyEnabled;
         internal static ConfigEntry<int> StrikeEvery;
@@ -134,7 +138,20 @@ namespace InterplanetaryAI
         // v0.11: Experimental Matter Control (global material project; the human had it at T11) at #10: v0.10.1 AIs were
         // material-bound with 8-59k energy unspent from T22. Railgun projectile techs (Magnetic Radiation Shielding,
         // Ultracapacitors) ahead of Uranium Alloys. Ultrasonic Projection (Shield Defense) added; it was missing.
+        // v0.13: Orbital Assembly (Missile) at #13, right after the telescope tech: v0.12.1 AIs researched it at T21-22, after
+        // war began at T20, and filled the 30-weapon cap with Railguns into a Kinetic-only human.
         private const string DefaultResearchPlan =
+            "tec_MassBiochemicalProcessing,tec_MolecularRecycling,tec_SmartGrids,tec_SuperTensileMaterials,tec_QuantumComputing,"
+            + "tec_4thGenNuclearReactors,tec_LosslessEnergyTransfer,tec_2ndGenComposites,tec_MaglevServos,tec_ExperimentalMatterControl,"
+            + "tec_SelfAdjustingOptics,tec_AdvancedSignalProcessing,tec_OrbitalAssembly,tec_Nanostructuring,tec_MicrowaveEnergyTranmission,"
+            + "tec_PlasmaChannelInduction,tec_MagneticRadiationShielding,tec_Ultracapacitors,tec_UraniumAlloys,tec_EmDrives,"
+            + "tec_ThermonuclearWarheads,tec_InductionCoils,tec_ZeroReluctanceEngineering,tec_MagneticSaturationElimination,tec_RoboticMining,"
+            + "tec_EarlyWarningAI,tec_UltrasonicProjection,tec_Metamaterials,tec_DesignerNanomaterials,tec_VerticalFarming,"
+            + "tec_QuantumCommunications,tec_AtmosphericInterferenceMitigation,tec_CompositeHeatCells,tec_Octaazacubane,tec_AdvancedGenetics,"
+            + "tec_SelfHealingMaterials,tec_AITargetTracking,tec_MultiChainedStages,tec_GammaRayLasers,tec_MassDrivers";
+
+        // v0.11 default, replaced on load if the config still holds it unchanged.
+        private const string V011ResearchPlan =
             "tec_MassBiochemicalProcessing,tec_MolecularRecycling,tec_SmartGrids,tec_SuperTensileMaterials,tec_QuantumComputing,"
             + "tec_4thGenNuclearReactors,tec_LosslessEnergyTransfer,tec_2ndGenComposites,tec_MaglevServos,tec_ExperimentalMatterControl,"
             + "tec_SelfAdjustingOptics,tec_AdvancedSignalProcessing,tec_Nanostructuring,tec_MicrowaveEnergyTranmission,tec_OrbitalAssembly,"
@@ -285,10 +302,10 @@ namespace InterplanetaryAI
             ResearchPlan = Config.Bind("Research", "Plan", DefaultResearchPlan,
                 "Tech IDs in order. Default (v0.3): the human's order from the 31 Oct 2026 win, economy first (material and energy projects, yield upgrades, Offshore Mine, Floating Plant), then the Nuclear Missile line, then the rest.");
             if (ResearchPlan.Value == V02ResearchPlan || ResearchPlan.Value == V03ResearchPlan || ResearchPlan.Value == V04ResearchPlan
-                || ResearchPlan.Value == V09ResearchPlan || ResearchPlan.Value == V010ResearchPlan)
+                || ResearchPlan.Value == V09ResearchPlan || ResearchPlan.Value == V010ResearchPlan || ResearchPlan.Value == V011ResearchPlan)
             {
                 ResearchPlan.Value = DefaultResearchPlan;
-                Log.LogInfo("Research plan: replaced an unchanged older default with the v0.11 default.");
+                Log.LogInfo("Research plan: replaced an unchanged older default with the v0.13 default.");
             }
             if (Math.Abs(GrudgeWeight.Value - 0.6f) < 1e-4f)
             {
@@ -326,7 +343,13 @@ namespace InterplanetaryAI
                 "v0.12: most aimed weapons (all but lasers and superweapons) per AI. The game's trajectory search is time-bound: v0.11.1 aimed 2-15 of ~50 at the human. Surplus goes to weapon upgrades. 0 = no cap.");
             MaterialHorizonTurn = Config.Bind("Director", "MaterialHorizonTurn", 45,
                 "v0.12: the planet's remaining material is budgeted to last until this turn. Energy income above EnergySaturation x what that material can use is not built. v0.11.1 AIs ran their planets dry at T26-27, the human at T38.");
-            EnergySaturation = Config.Bind("Director", "EnergySaturation", 1.5f, "v0.12: see MaterialHorizonTurn. 0 = off.");
+            EnergySaturation = Config.Bind("Director", "EnergySaturation", 0f,
+                "v0.12: see MaterialHorizonTurn. 0 = off (v0.13 default: energy is the throughput that spends material; v0.12.1 capped it at 16-24k while 96k material sat unused). In material glut, extraction is not bought instead.");
+            RepairEnabled = Config.Bind("Director", "Repair", true,
+                "v0.13: repair damaged buildings at turn start (the game's own AI never repairs; a human does between strikes). Weapons, defenses, power first.");
+            RepairEnergyShare = Config.Bind("Director", "RepairEnergyShare", 0.25f, "v0.13: most of a turn's energy spent on repairs.");
+            RepairsPerTurn = Config.Bind("Director", "RepairsPerTurn", 40, "v0.13: most repairs a turn. 0 = off.");
+            RepairBelowHpShare = Config.Bind("Director", "RepairBelowHpShare", 0.8f, "v0.13: repair a building at or below this share of its HP (a repair costs the same whatever the damage).");
             MaterialReserve = Config.Bind("Director", "MaterialReserve", 15000,
                 "v0.12: once the planet will run dry within BankWarningTurns, the economy keeps this much material back for defenses, weapons and rebuilding. 0 = off.");
             SellDryMinesPerTurn = Config.Bind("Director", "SellDryMinesPerTurn", 10,
@@ -410,6 +433,15 @@ namespace InterplanetaryAI
                     Log.LogInfo("AbortBelowShare: replaced the unchanged default 0.3 with 0 (once).");
                 }
                 migrated.Value = "0.12";
+            }
+            if (migrated.Value == "0.12")
+            {
+                if (Math.Abs(EnergySaturation.Value - 1.5f) < 1e-4f)
+                {
+                    EnergySaturation.Value = 0f; // v0.12.1: capped energy at 16-24k (v0.10.1 from the same save: 52-67k) while 96k material sat unused
+                    Log.LogInfo("EnergySaturation: replaced the unchanged default 1.5 with 0 (off, once).");
+                }
+                migrated.Value = "0.13";
             }
             DefensesPerTurn = Config.Bind("Director", "DefensesPerTurn", 3,
                 "Defenses queued per turn when on target; more when behind (see DefenseCatchUpTurns).");
