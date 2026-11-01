@@ -632,7 +632,9 @@ namespace InterplanetaryAI
                 d.DefenseReserve = reserve;
                 d.TurnStartEnergy = core.Resources.Energy;
             }
-            RepairAfterReserve(core, d);
+            // v0.16 (Sol re-check round 3): a pending superweapon purchase keeps its funding through repairs.
+            bool goalPending = economy.BuyPending && !economy.Bought;
+            RepairAfterReserve(core, d, goalPending ? economy.GoalEnergyCost : 0, goalPending ? economy.GoalMaterialCost : 0);
             d.TurnStartEnergy = core.Resources.Energy;
             d.TurnStartMaterial = core.Resources.Material;
         }
@@ -1064,7 +1066,7 @@ namespace InterplanetaryAI
         // has been taken from the construction budget, so repairs and the reserve use ONE current-turn defense request.
         // core.Resources is native's turn snapshot (firing already reserved, AIResources.BeginTurn); repairs leave the
         // recovery floor and are charged to the snapshot and the queue allotment as well as to the player's stock.
-        private static void RepairAfterReserve(AICore core, DirectorState d)
+        private static void RepairAfterReserve(AICore core, DirectorState d, int keepEnergy, int keepMaterial)
         {
             try
             {
@@ -1102,8 +1104,9 @@ namespace InterplanetaryAI
                 if (candidates.Count == 0) return;
                 float recovery = Math.Max(0f, Plugin.DefenseRecoveryShare.Value) * d.EnergyIncome;
                 int energyBudget = (int)Math.Min(Math.Max(0f, Plugin.RepairEnergyShare.Value) * core.Resources.Energy,
-                    Math.Max(0f, core.Resources.Energy - recovery));
-                int materialBudget = (int)(Math.Max(0f, Math.Min(1f, Plugin.RepairMaterialShare.Value)) * core.Resources.Material);
+                    Math.Max(0f, core.Resources.Energy - recovery - Math.Max(0, keepEnergy)));
+                int materialBudget = (int)Math.Min(Math.Max(0f, Math.Min(1f, Plugin.RepairMaterialShare.Value)) * core.Resources.Material,
+                    Math.Max(0, core.Resources.Material - Math.Max(0, keepMaterial)));
                 List<RepairCandidate> picked = RepairPlanner.Pick(candidates, energyBudget, materialBudget, Plugin.RepairsPerTurn.Value, Plugin.RepairBelowHpShare.Value);
                 int n = 0, spentE = 0, spentM = 0;
                 foreach (RepairCandidate c in picked)

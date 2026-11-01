@@ -1,0 +1,11 @@
+READ-ONLY re-check, round 3. Do not edit, create or delete any file. Stay inside this repository: any path outside it is auto-rejected and ends your run. Finish with the complete written report; include a line containing the word "verdict".
+
+Your round-2 re-check (docs/reviews/sol-ai-v0.16-recheck2.md) returned DO NOT SHIP for: (a) the ambiguous CompleteFirstPhaseTargeting overload lookup, (b) F4 repairs protecting a stale previous-turn defense request; plus a note that the payment guard failed open on exceptions. Round-3 fixes: docs/reviews/sol-ai-v0.16-fixes3.diff (git diff 46c28e9..1a6276b -- AI); the disposition's last section maps them. HEAD is 1a6276b. decompiled/ is the game source (authoritative).
+
+Task, narrowly:
+1. (a) RESOLVED or NOT: the explicit-parameter registration selects exactly the trajectory overload.
+2. (b) RESOLVED or NOT: repairs now run inside StartConstruction after this turn's reserve. Check against native order (AICore.BeginTurn, AIResources.BeginTurn snapshot, AIConstructionQueue allotment, when StartConstruction runs relative to the first construction purchase and to StrategyPatches' hold-fire release). Confirm repair spending is charged consistently to the player stock, core.Resources and the queue allotment, with no double charge and no overspend of the queue.
+3. The refusal path: authoritative once decided, guard-error fails closed only for AI guided shots, human handler untouched.
+4. Any new defect from round 3 (exception path, behaviour change outside the finding, fairness leak).
+
+End with a verdict line: SHIP, SHIP AFTER FIXES (list), or DO NOT SHIP. Under 1,200 words.

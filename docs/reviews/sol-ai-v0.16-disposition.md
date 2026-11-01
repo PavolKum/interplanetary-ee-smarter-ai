@@ -62,3 +62,12 @@
 | Guard failed open on an exception | An AI guided shot whose destination cannot be checked is refused (`guard-error`). Once decided, the refusal is authoritative; result bookkeeping and logging are isolated in their own try blocks |
 | F4 repairs used previous-turn inputs | Repairs moved out of the `AICore.BeginTurn` prefix into `StartConstruction`, after this turn's reserve (one current-turn defense request, with its Ion floor). Repairs spend from native's snapshot minus the recovery floor and are charged to the snapshot and the queue allotment. `RepairDefenseHold` was removed |
 | Laser payments not in the ledger | Accepted: lasers are off by default; `fire-paid` covers trajectory weapons |
+
+## Re-check round 3 (docs/reviews/sol-ai-v0.16-recheck3.md): SHIP AFTER FIXES - both applied
+
+| Item | Fix |
+|---|---|
+| Repairs could consume a pending superweapon's funding | `RepairAfterReserve` keeps `GoalEnergyCost`/`GoalMaterialCost` out of the repair budgets while `BuyPending && !Bought` |
+| Guard-error refusal not limited to AI guided shots | Applicability (AI handler, BlindArtillery, guided) is checked first; an error there allows the shot. The paid-ledger energy snapshot is isolated (`SafeEnergy`). Only an established AI guided shot can be refused on a guard error |
+
+Round-2 blockers confirmed RESOLVED by round 3: the explicit overload, and repairs after the current-turn reserve (accounting consistent, no queue overspend). **Shipped after these fixes.** Remaining in-game check: BepInEx "16 of 16 hooks patched".

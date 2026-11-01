@@ -502,12 +502,22 @@ namespace InterplanetaryAI
             if (!Plugin.Active) return true;
             PlayerData me = null;
             string reason = null, destName = "";
+            // v0.16 (Sol re-check round 3): applicability first, outside the fail-closed region. Any error here allows the
+            // shot (native behaviour); only an established AI guided shot can be refused on a guard error.
             try
             {
                 me = s_handlerPlayer != null ? s_handlerPlayer.GetValue(__instance) as PlayerData : null;
                 if (me == null || !me.AIPlayer) return true; // the human's handler: untouched
-                __state = me.ResourceHandler.Energy;
-                if (!Plugin.BlindArtillery.Value || !IsGuided(weapon)) return true;
+                if (!Plugin.BlindArtillery.Value || !IsGuided(weapon)) { __state = SafeEnergy(me); return true; }
+            }
+            catch (Exception e)
+            {
+                ReportOnce("fire-guard-scope", e);
+                return true;
+            }
+            __state = SafeEnergy(me); // the paid-ledger snapshot cannot trigger a refusal
+            try
+            {
                 CelestialBody dest = trajectory != null ? trajectory.HitCelestialBody : null;
                 if (dest == null || dest.Player == null || dest.Player == me) return true; // not an enemy planet: no second phase
                 destName = dest.Player.UserNickName;
@@ -517,8 +527,7 @@ namespace InterplanetaryAI
             catch (Exception e)
             {
                 ReportOnce("fire-guard", e);
-                if (me == null || !me.AIPlayer) return true;
-                reason = "guard-error"; // an AI guided shot we could not check: fail closed
+                reason = "guard-error"; // an established AI guided shot we could not check: fail closed
             }
             // Refusal is authoritative once decided: native's own refusal state (no payment), whatever the bookkeeping does.
             __state = -2;
@@ -546,6 +555,12 @@ namespace InterplanetaryAI
                 ReportOnce("fire-refused-log", e);
             }
             return false;
+        }
+
+        private static int SafeEnergy(PlayerData me)
+        {
+            try { return me.ResourceHandler.Energy; }
+            catch (Exception e) { ReportOnce("fire-paid-snapshot", e); return -1; }
         }
 
         private static void CompleteFirstPhasePostfix(PlayerWeaponHandler __instance, WeaponGameplayData weapon, TrajectoryCalculationResults trajectory,
