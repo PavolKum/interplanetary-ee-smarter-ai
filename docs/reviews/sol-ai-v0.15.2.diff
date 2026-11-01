@@ -1,0 +1,816 @@
+diff --git a/AI/Brain/Coverage.cs b/AI/Brain/Coverage.cs
+index 0ccb2b8..d5191ca 100644
+--- a/AI/Brain/Coverage.cs
++++ b/AI/Brain/Coverage.cs
+@@ -262,6 +262,47 @@ namespace InterplanetaryAI.Brain
+             return n;
+         }
+ 
++        // v0.15.1 (Sol v0.15 #2): an anti-missile placement only counts when its actual position adds qualifying cover
++        // (reach = radius - loss) to a city still below perCity. v0.15.0 accepted any legal spot that scored best on all
++        // building value, so a purchase meant for an exposed city could land over a producer cluster and protect nothing.
++        public static bool ClosesCityDeficit(Point at, IList<Point> targets, IList<float> loss, IList<bool> isCity, int[] counts, float radius, int perCity)
++        {
++            for (int i = 0; i < targets.Count; i++)
++            {
++                if (!isCity[i] || counts[i] >= perCity) continue;
++                float reach = radius - loss[i];
++                if (reach > 0f && at.DistanceSquared(targets[i]) < reach * reach) return true;
++            }
++            return false;
++        }
++
++        // v0.15.2: the ring around a city where a defense of `radius` and footprint `ownRadius` both stands clear of the city
++        // (centre distance >= ownRadius + cityRadius + margin) and protects it (centre distance < radius - cityRadius/2 -
++        // margin). inner >= outer: no spot can protect that city.
++        public static void CityCoverRing(float radius, float ownRadius, float cityRadius, float margin, out float inner, out float outer)
++        {
++            inner = ownRadius + cityRadius + margin;
++            outer = radius - 0.5f * cityRadius - margin;
++        }
++
++        // v0.15.1 measurement (Sol v0.15, "single fastest measurement"): the fewest qualifying defenses over any surviving
++        // city, same reach rule as CityProtectionDeficit. -1 with no city.
++        public static int MinCityCover(IList<Point> cities, IList<float> cityRadii, IList<Point> defenses, IList<float> defenseRadii)
++        {
++            int min = -1;
++            for (int c = 0; c < cities.Count; c++)
++            {
++                int k = 0;
++                for (int j = 0; j < defenses.Count; j++)
++                {
++                    float reach = defenseRadii[j] - 0.5f * cityRadii[c];
++                    if (reach > 0f && cities[c].DistanceSquared(defenses[j]) < reach * reach) k++;
++                }
++                if (min < 0 || k < min) min = k;
++            }
++            return min;
++        }
++
+         // Share of the total value that is covered (for the decision log).
+         public static float CoveredShare(IList<float> values, bool[] covered)
+         {
+diff --git a/AI/Brain/Director.cs b/AI/Brain/Director.cs
+index daa6243..fb01693 100644
+--- a/AI/Brain/Director.cs
++++ b/AI/Brain/Director.cs
+@@ -267,13 +267,24 @@ namespace InterplanetaryAI.Brain
+         // that guided strikes can use; v0.14.1 Bolide built its first Telescopes at T16, after the human's first counterintel
+         // hub (T13), and never saw a city. While an enemy city has never been seen and turn <= untilTurn, intel may take up
+         // to sprintPerTurn buildings a turn until sprintBuildings stand; otherwise the normal per-turn limit.
++        // v0.15.1 (Sol v0.15 #5): the sprint's extra buildings wait while material is below materialReserve (one Telescope
++        // plus one core material project), so the sprint cannot starve the opening's compounding investments.
+         public static int IntelPerTurnLimit(int unseenCities, int turn, int untilTurn, int intelBuildings, int sprintBuildings,
+-            int sprintPerTurn, int normalPerTurn)
++            int sprintPerTurn, int normalPerTurn, float material = float.MaxValue, float materialReserve = 0f)
+         {
+-            bool sprint = unseenCities > 0 && turn <= untilTurn && intelBuildings < sprintBuildings;
++            bool sprint = unseenCities > 0 && turn <= untilTurn && intelBuildings < sprintBuildings && material >= materialReserve;
+             return sprint ? Math.Max(normalPerTurn, sprintPerTurn) : normalPerTurn;
+         }
+ 
++        // v0.15.2: intel wanted only to find unseen cities (not below the native minimum, not blind) waits while energy is below
++        // `reserve` (one Telescope + one power plant), so the economy step after it still gets a plant. v0.15.1 Thistle: intel
++        // (step 3) ran before the economy (step 6) and its 8 Telescopes at T6-T8 left no energy for plants; energy fell
++        // 925 -> 785 while v0.14.1 Bolide rose to 1425. The v0.15.1 material guard never bound (material was in glut).
++        public static bool IntelEnergyAllowed(bool unseenOnly, float energy, float reserve)
++        {
++            return !unseenOnly || energy >= reserve;
++        }
++
+         // Anti-nuke defenses wanted over each city.
+         public static int AntiNukePerCity(bool nukeSeen, int turn, int priorTurn, int perCitySeen, int perCityPrior)
+         {
+diff --git a/AI/Brain/Strategy.cs b/AI/Brain/Strategy.cs
+index 4a5f36c..5130a26 100644
+--- a/AI/Brain/Strategy.cs
++++ b/AI/Brain/Strategy.cs
+@@ -73,6 +73,12 @@ namespace InterplanetaryAI.Brain
+         // saturating salvo while the human destroyed them unfired. 0 = off.
+         public float AttritionLossShare = 0.15f;
+         public int AttritionMinLoss = 2;
++        // v0.15.2 return fire: under attack, fire when at least this share of the salvo is expected through and at least
++        // ReturnFireMinPassing shots, pulse or not. v0.15.1 Thistle held 5 turns (T19-T23, 82% through) and 4 turns (T34-T37,
++        // 64-70% through) only because the salvo fell short of MinPassingShots 12 (9.4-11.8) while the human hit it every
++        // turn; it lost a city and then 16 Railguns unfired. A high pass share means waiting buys nothing. 0 = off.
++        public float ReturnFirePassShare = 0.6f;
++        public float ReturnFireMinPassing = 4f;
+     }
+ 
+     public sealed class StrategyDecision
+@@ -92,15 +98,19 @@ namespace InterplanetaryAI.Brain
+     {
+         // Expected shots through one target's defenses. counters: defense id -> (weapon id -> intercept chance).
+         // accuracy: share of shots planned to hit (AccuracyPlan); misses do not reach the target.
++        // v0.15.1 (Sol v0.15 #4): accuracyById, when given, overrides `accuracy` per weapon id (guided weapons at their own
++        // rate), the same split the firing quota uses, applied before the weapon families are combined.
+         public static void EstimateSalvo(IDictionary<string, float> salvo, SalvoTarget target, float accuracy,
+-            Dictionary<string, Dictionary<string, float>> counters, StrategySettings s)
++            Dictionary<string, Dictionary<string, float>> counters, StrategySettings s, IDictionary<string, float> accuracyById = null)
+         {
+             IDictionary<string, float> shotsByWeapon = target.Shots ?? salvo;
+             float arriving = 0f, eligible = 0f, intercepts = 0f, rollsNeeded = 0f;
+             foreach (KeyValuePair<string, float> shots in shotsByWeapon)
+             {
+                 if (shots.Value <= 0f) continue;
+-                float n = shots.Value * Math.Max(0f, Math.Min(1f, accuracy));
++                float rate = accuracy, byId;
++                if (accuracyById != null && accuracyById.TryGetValue(shots.Key, out byId)) rate = byId;
++                float n = shots.Value * Math.Max(0f, Math.Min(1f, rate));
+                 arriving += n;
+                 int defenses = 0;
+                 float chance = 0f;
+@@ -168,13 +178,20 @@ namespace InterplanetaryAI.Brain
+ 
+         public static bool ShouldAbort(int hitsOnCommit, int weapons, string reason, StrategySettings s)
+         {
+-            if (reason == "max-hold" || reason == "attrition") return false;
++            if (reason == "max-hold" || reason == "attrition" || reason == "return-fire") return false;
+             return hitsOnCommit < AbortThreshold(weapons, s);
+         }
+ 
+         // v0.14: capacity-loss fire. Our live (Normal, powered) weapons fell by at least max(AttritionMinLoss, AttritionLossShare x
+         // last turn's) while under attack (impacts or damage last action phase). v0.14.1 (Sol v0.14 #5): the count also drops
+         // when plants are lost or weapons sold; without an attack that is no reason to fire. lastWeapons < 0 = unknown.
++        // v0.15.2: under attack with a salvo whose defenses are not the limit (see ReturnFirePassShare).
++        public static bool ReturnFire(int weapons, float passing, float passShare, bool underAttack, StrategySettings s)
++        {
++            if (!underAttack || s.ReturnFirePassShare <= 0f || weapons < s.MinWeapons) return false;
++            return passShare >= s.ReturnFirePassShare && passing >= Math.Max(0.01f, s.ReturnFireMinPassing);
++        }
++
+         public static bool Attrition(int weapons, int lastWeapons, bool underAttack, StrategySettings s)
+         {
+             if (!underAttack || s.AttritionLossShare <= 0f || weapons >= lastWeapons) return false; // lastWeapons < 0 (unknown) ends here too
+@@ -186,13 +203,13 @@ namespace InterplanetaryAI.Brain
+         // lastCommitId: the enemy our weapons were pointed at last turn (-1 none).
+         public static StrategyDecision Decide(int turn, bool war, IDictionary<string, float> salvo, float accuracy, IList<SalvoTarget> targets,
+             Dictionary<string, Dictionary<string, float>> counters, int lastStrikeTurn, int holdTurns, int weapons, StrategySettings s,
+-            int lastCommitId = -1, int lastWeapons = -1, bool underAttack = false)
++            int lastCommitId = -1, int lastWeapons = -1, bool underAttack = false, IDictionary<string, float> accuracyById = null)
+         {
+             StrategyDecision d = new StrategyDecision { War = war, Shots = weapons };
+             float maxScore = 0f;
+             foreach (SalvoTarget t in targets)
+             {
+-                EstimateSalvo(salvo, t, accuracy, counters, s);
++                EstimateSalvo(salvo, t, accuracy, counters, s, accuracyById);
+                 d.Targets.Add(t);
+                 maxScore = Math.Max(maxScore, t.Score);
+             }
+@@ -238,6 +255,12 @@ namespace InterplanetaryAI.Brain
+                 d.Fire = true;
+                 d.Reason = "attrition";
+             }
++            else if (ReturnFire(weapons, d.Passing, d.PassShare, underAttack, s))
++            {
++                // v0.15.2: trade blows instead of waiting for a bigger salvo (exempt from the abort, like attrition).
++                d.Fire = true;
++                d.Reason = "return-fire";
++            }
+             else if (weapons >= s.MinWeapons && saturated && (pulseReady || broken))
+             {
+                 d.Fire = true;
+diff --git a/AI/DirectorPatches.cs b/AI/DirectorPatches.cs
+index c5b1c23..2461376 100644
+--- a/AI/DirectorPatches.cs
++++ b/AI/DirectorPatches.cs
+@@ -111,6 +111,9 @@ namespace InterplanetaryAI
+             public int AntiNukeProtecting; // v0.15: anti-missile defenses that protect at least one city
+             public int OwnIntel;
+             public int CityProjectsThisTurn;
++            public int AntiNukePerCityNow; // v0.15.1: per-city target this turn (placement must close it)
++            public int MinCityCover = -1;  // v0.15.1: fewest qualifying powered anti-missile defenses over any city
++            public int AntiNukeNearCities; // v0.15.1: intact (any state) anti-missile defenses within reach of a city
+             public int PowerEnergySpent;  // v0.13.1: energy spent this turn on energy-only purchases (plants, energy upgrades)
+             public int AimedWeapons;                // own weapons needing a trajectory (not lasers, not superweapons), queued included
+             // across turns
+@@ -345,10 +348,18 @@ namespace InterplanetaryAI
+                     cityRadii.Add(city.Radius);
+                 }
+                 int intactAntiNuke = 0;
++                List<Point> intactPoints = new List<Point>();
++                List<float> intactRadii = new List<float>();
+                 foreach (BaseBuilding b in me.BuildingHandler.Buildings)
+                 {
+                     if (b == null || b.IsCity || b.BuildingData == null || b.BuildingData.id.Value != d.AntiNukeId) continue;
+-                    if (b.CurrentState != BaseBuilding.BuildingState.Ruins && b.CurrentState != BaseBuilding.BuildingState.Destroyed) intactAntiNuke++;
++                    if (b.CurrentState != BaseBuilding.BuildingState.Ruins && b.CurrentState != BaseBuilding.BuildingState.Destroyed)
++                    {
++                        intactAntiNuke++;
++                        Vector3 ip = b.transform.position;
++                        intactPoints.Add(new Point(ip.x, ip.y, ip.z));
++                        intactRadii.Add(DefenseRadius(b.BuildingData));
++                    }
+                     if (b.CurrentState != BaseBuilding.BuildingState.Normal || !b.Power.HasPower) continue;
+                     Vector3 p = b.transform.position;
+                     defensePoints.Add(new Point(p.x, p.y, p.z));
+@@ -360,8 +371,15 @@ namespace InterplanetaryAI
+                 // planet-wide cap of 4 x perCity x cities on every intact one stays as the runaway guard (Terra v0.8.2 #2).
+                 d.AntiNukeProtecting = DefenseCoverage.ProtectingCount(cityPoints, cityRadii, defensePoints, defenseRadii);
+                 d.AntiNukeIntact = intactAntiNuke;
+-                int hardCap = (int)Math.Ceiling(4f * perCity * cityPoints.Count);
+-                d.AntiNukeWanted = intactAntiNuke >= hardCap ? 0 : EconomyDirector.AntiNukeMissing(deficit, d.AntiNukeProtecting, cityPoints.Count, perCity, 2f);
++                d.AntiNukePerCityNow = perCity;
++                d.MinCityCover = DefenseCoverage.MinCityCover(cityPoints, cityRadii, defensePoints, defenseRadii);
++                // v0.15.1 (Sol v0.15 #2): placement now has to close a city deficit, so Ions placed elsewhere never come from
++                // this branch and must not block it (v0.15.0: 29 irrelevant Ions with one city left suppressed every
++                // purchase). The runaway guard counts intact Ions near a city, powered or not (unpowered ones protect
++                // nothing, so the deficit would never close: Terra v0.8.2 #2).
++                d.AntiNukeNearCities = DefenseCoverage.ProtectingCount(cityPoints, cityRadii, intactPoints, intactRadii);
++                int hardCap = (int)Math.Ceiling(3f * perCity * cityPoints.Count);
++                d.AntiNukeWanted = d.AntiNukeNearCities >= hardCap ? 0 : EconomyDirector.AntiNukeMissing(deficit, d.AntiNukeProtecting, cityPoints.Count, perCity, 2f);
+                 d.AntiNukeCap = hardCap;
+             }
+ 
+@@ -555,10 +573,13 @@ namespace InterplanetaryAI
+             // counts only guided weapons, so a Railgun army stayed blind all game (31 Oct v0.3.1).
+             IntelEvaluationState intel = IntelState(core);
+             int intelLimit = EconomyDirector.IntelPerTurnLimit(d.UnseenCities, d.Turn, Plugin.IntelSprintUntilTurn.Value, d.IntelBuildings + d.IntelThisTurn,
+-                Plugin.IntelSprintBuildings.Value, Plugin.IntelSprintPerTurn.Value, Plugin.IntelPerTurn.Value);
++                Plugin.IntelSprintBuildings.Value, Plugin.IntelSprintPerTurn.Value, Plugin.IntelPerTurn.Value,
++                core.Resources.Material, Plugin.IntelSprintMaterialReserve.Value);
+             bool intelRoom = d.IntelBuildings + d.IntelThisTurn < Plugin.MaxIntelBuildings.Value && d.IntelThisTurn < intelLimit;
+-            bool wantIntel = intel == IntelEvaluationState.BelowMinimum || d.BlindEnemies > 0 || d.UnseenCities > 0;
+-            if (wantIntel && intelRoom && d.SlotsLeft > 0 && !d.FailedThisTurn.Contains("intel"))
++            bool intelNeeded = intel == IntelEvaluationState.BelowMinimum || d.BlindEnemies > 0;
++            bool wantIntel = intelNeeded || d.UnseenCities > 0;
++            bool intelEnergy = EconomyDirector.IntelEnergyAllowed(!intelNeeded, core.Resources.Energy, Plugin.IntelSprintEnergyReserve.Value);
++            if (wantIntel && intelRoom && intelEnergy && d.SlotsLeft > 0 && !d.FailedThisTurn.Contains("intel"))
+             {
+                 if (TryIntelBuilding(construction, core, d)) return true;
+                 d.FailedThisTurn.Add("intel");
+@@ -1288,19 +1309,28 @@ namespace InterplanetaryAI
+             return false;
+         }
+ 
+-        // v0.15 instrumentation: our cities' population, in building order ("620;540;0").
++        // v0.15 instrumentation: our cities' population by city id ("1234=620;1240=x"; x = ruined).
+         private static string OwnCityPopulations(PlayerData me)
+         {
+             List<string> parts = new List<string>();
+             foreach (BaseBuilding city in me.BuildingHandler.GetBuildingsByType(BaseBuilding.BuildingFunctionalityType.City))
+             {
+                 if (city == null || city.Stats == null) continue;
+-                parts.Add(city.CurrentState == BaseBuilding.BuildingState.Normal ? city.Stats.CurrentPopulation.ToString() : "x");
++                // v0.15.1 (Sol v0.15 #10): "id=pop", so strikes and population can be joined by city id.
++                parts.Add(city.ObjectId + "=" + (city.CurrentState == BaseBuilding.BuildingState.Normal ? city.Stats.CurrentPopulation.ToString() : "x"));
+             }
+             return string.Join(";", parts.ToArray());
+         }
+ 
+         private static bool HasCityForProject(AIConstruction construction, AICore core, AIProjectEntity project)
++        {
++            return CityForProject(construction, core, project) != null;
++        }
++
++        // v0.15.1 (Sol v0.15 #6, v0.14.2 #17): the living city a project goes to, with the native checks (free slot, not
++        // installed, not queued, prerequisite projects installed). QueueProject enqueues against this exact city: the
++        // native search walks every city of the type without a state check and can pick a ruin, which still charges.
++        private static BaseBuilding CityForProject(AIConstruction construction, AICore core, AIProjectEntity project)
+         {
+             foreach (BaseBuilding city in core.PlayerData.BuildingHandler.GetBuildingsByID(project.City.id.Value))
+             {
+@@ -1308,9 +1338,18 @@ namespace InterplanetaryAI
+                 if (!construction.Projects.HasCityFreeSlots(city)) continue;
+                 if (construction.Projects.HasCityProject(city, project.Project)) continue;
+                 if (construction.ConstructionQueue.IsProjectInQueue(project.Project, city)) continue;
+-                return true;
++                bool prerequisites = true;
++                if (project.OtherProjects != null)
++                {
++                    foreach (ProjectData other in project.OtherProjects)
++                    {
++                        if (!construction.Projects.HasCityProject(city, other)) { prerequisites = false; break; }
++                    }
++                }
++                if (!prerequisites) continue;
++                return city;
+             }
+-            return false;
++            return null;
+         }
+ 
+         private static void AddBuildingOptions(AICore core, DirectorState d, List<EconOption> options, float planetFactor)
+@@ -1442,9 +1481,10 @@ namespace InterplanetaryAI
+         private static bool QueueProject(AIConstruction construction, AICore core, DirectorState d, AIProjectEntity project)
+         {
+             if (core.Resources.Energy < project.EnergyCost || core.Resources.Material < project.MaterialCost) return false;
++            BaseBuilding city = CityForProject(construction, core, project);
++            if (city == null) return false;
+             int before = QueueCount(construction);
+-            object module = s_materialModule.GetValue(construction);
+-            s_tryProject.Invoke(module, new object[] { project }); // native per-city slot checks
++            construction.ConstructionQueue.AddProjectToQueue(project.Project, city); // v0.15.1: the validated living city
+             if (QueueCount(construction) <= before) return false;
+             core.Resources.Energy -= project.EnergyCost;
+             core.Resources.Material -= project.MaterialCost;
+@@ -1616,6 +1656,8 @@ namespace InterplanetaryAI
+         private sealed class CoverageState
+         {
+             public int Steps;
++            // v0.15.2 anti-missile search diagnostics: candidates tried and why each failed.
++            public int Tries, Invalid, Unplaced, NoAnchor, NotClosing;
+         }
+ 
+         private static readonly Dictionary<AIBuildingPlacementSearch, CoverageState> s_coverage = new Dictionary<AIBuildingPlacementSearch, CoverageState>();
+@@ -1645,6 +1687,8 @@ namespace InterplanetaryAI
+             public float Radius;
+             public float P;          // this defense's best interception chance
+             public bool AntiNuke;
++            public readonly List<bool> IsCity = new List<bool>(); // v0.15.1
++            public int PerCity;      // v0.15.1: anti-missile target per city; a placement must close a city below it
+         }
+ 
+         private static CoverageModel BuildCoverageModel(AICore core, BuildingData data)
+@@ -1681,6 +1725,7 @@ namespace InterplanetaryAI
+                 bool defense = b.BuildingData != null && b.BuildingData.defense_functionality.IsValueSet;
+                 m.Values.Add(b.IsCity ? cityValue : (defense ? 0.25f : 1f));
+                 m.Loss.Add(antiNuke && b.IsCity ? 0.5f * b.Radius : 0f);
++                m.IsCity.Add(b.IsCity);
+                 if (b.BuildingData != null && b.BuildingData.id.Value == id && b.CurrentState == BaseBuilding.BuildingState.Normal && b.Power.HasPower)
+                 {
+                     defenses.Add(new Point(p.x, p.y, p.z));
+@@ -1694,6 +1739,7 @@ namespace InterplanetaryAI
+                 Point point = new Point(p.x, p.y, p.z);
+                 m.Targets.Add(point);
+                 m.Loss.Add(0f);
++                m.IsCity.Add(false);
+                 BuildingData queued = buildings.HasBuilding(action.BuildingID) ? buildings.GetBuilding(action.BuildingID) : null;
+                 m.Values.Add(queued != null && queued.defense_functionality.IsValueSet ? 0.25f : 1f);
+                 if (action.BuildingID == id)
+@@ -1703,6 +1749,16 @@ namespace InterplanetaryAI
+                 }
+             }
+             m.Counts = DefenseCoverage.CoverCounts(m.Targets, defenses, radii, m.Loss);
++            if (antiNuke)
++            {
++                // v0.15.1 (Sol v0.15 #2): anchors and scores lean on the cities still below the target; everything else
++                // only breaks ties. The step then refuses any spot that closes no city deficit.
++                m.PerCity = Math.Max(1, ds.AntiNukePerCityNow);
++                for (int i = 0; i < m.Targets.Count; i++)
++                {
++                    if (!(m.IsCity[i] && m.Counts[i] < m.PerCity)) m.Values[i] *= 0.05f;
++                }
++            }
+             return m;
+         }
+ 
+@@ -1762,6 +1818,7 @@ namespace InterplanetaryAI
+             }
+             if (++st.Steps > CoverageStepCap)
+             {
++                if (model.AntiNuke) LogCoverSearch(core, st, "gave-up");
+                 AbandonSoon(search);
+                 return true;
+             }
+@@ -1778,6 +1835,7 @@ namespace InterplanetaryAI
+                 anchors.Add(new Point(p.x, p.y, p.z));
+             }
+             if (bases.Count == 0) return true; // nothing to connect to yet
++            if (model.AntiNuke) return AntiNukeStep(search, data, core, model, st, bases);
+ 
+             // Widen as steps fail (Terra v0.7.2: a blocked best anchor must not trap the search): first the near-best
+             // anchors, then every anchor with something uncovered, then any anchor at all (coverage is still scored).
+@@ -1818,6 +1876,8 @@ namespace InterplanetaryAI
+                 if (placed == null || !placed.IsSuccessful) continue;
+                 if (Vector3.Distance(placed.BuildingWorldPosition, anchor.transform.position) > lineLimit) continue; // line would be refused
+                 Vector3 at = placed.BuildingWorldPosition;
++                if (model.AntiNuke && !DefenseCoverage.ClosesCityDeficit(new Point(at.x, at.y, at.z), model.Targets, model.Loss, model.IsCity, model.Counts, model.Radius, model.PerCity))
++                    continue; // v0.15.1 (Sol v0.15 #2): a city-cover purchase must cover an under-covered city or be refunded
+                 float score = DefenseCoverage.MarginalValue(new Point(at.x, at.y, at.z), model.Targets, model.Values, model.Counts, model.Radius, model.P, model.Loss);
+                 if (score > bestScore)
+                 {
+@@ -1835,6 +1895,98 @@ namespace InterplanetaryAI
+             return true;
+         }
+ 
++        // v0.15.2: city-cover step. v0.15.1 sampled around power anchors in random directions and accepted only spots that
++        // closed a city deficit; in the Thistle match every Ion search from T26 to T33 was refunded and no city ever had cover.
++        // Now the candidates are drawn on the ring around a city still below the target (CityCoverRing), and the spot is
++        // then connected to the nearest anchor with a free slot inside the game's power-line rule.
++        private static bool AntiNukeStep(AIBuildingPlacementSearch search, BuildingData data, AICore core, CoverageModel model, CoverageState st,
++            List<BaseBuilding> bases)
++        {
++            List<int> deficient = new List<int>();
++            for (int i = 0; i < model.Targets.Count; i++)
++            {
++                if (model.IsCity[i] && model.Counts[i] < model.PerCity) deficient.Add(i);
++            }
++            if (deficient.Count == 0)
++            {
++                LogCoverSearch(core, st, "no-deficit");
++                AbandonSoon(search); // every city already covered (an earlier search closed it): refund
++                return true;
++            }
++            float scale = data.building_scale.IsValueSet ? data.building_scale.Value : 1f;
++            float ownRadius = (data.building_radius.IsValueSet ? data.building_radius.Value : 1f) * scale;
++            float ownReach = data.power_connector_range.IsValueSet ? data.power_connector_range.Value : 0f;
++            Vector3 planetCentre = core.Planet.transform.position;
++            float bestScore = -1f;
++            BuildingPlacementResult bestResult = null;
++            BaseBuilding bestAnchor = null;
++            for (int n = 0; n < CoverageCandidatesPerStep; n++)
++            {
++                int ci = deficient[Plugin.Rng.Next(deficient.Count)];
++                Point cp = model.Targets[ci];
++                Vector3 cityPos = new Vector3(cp.X, cp.Y, cp.Z);
++                float inner, outer;
++                DefenseCoverage.CityCoverRing(model.Radius, ownRadius, 2f * model.Loss[ci], 0.1f, out inner, out outer);
++                if (outer <= inner) continue; // this defense cannot protect this city from anywhere
++                Vector3 up = (cityPos - planetCentre).normalized;
++                Vector3 t1 = Vector3.Cross(up, Mathf.Abs(up.y) < 0.9f ? Vector3.up : Vector3.right).normalized;
++                Vector3 t2 = Vector3.Cross(up, t1);
++                float angle = (float)(Plugin.Rng.NextDouble() * Math.PI * 2.0);
++                float distance = inner + (float)Plugin.Rng.NextDouble() * (outer - inner);
++                Vector3 world = cityPos + (t1 * Mathf.Cos(angle) + t2 * Mathf.Sin(angle)) * distance + up * 2f;
++                Ray ray = new Ray(world, -up);
++                st.Tries++;
++                s_candidatesThisFrame++;
++                if (!core.Construction.IsBuildingPlacementValid(data, core.Planet, ray)) { st.Invalid++; continue; }
++                BuildingPlacementResult placed = core.PlayerData.BuildingHandler.TryPlaceBuilding(data, ray, core.Planet, null);
++                if (placed == null || !placed.IsSuccessful) { st.Unplaced++; continue; }
++                Vector3 at = placed.BuildingWorldPosition;
++                if (!DefenseCoverage.ClosesCityDeficit(new Point(at.x, at.y, at.z), model.Targets, model.Loss, model.IsCity, model.Counts, model.Radius, model.PerCity))
++                {
++                    st.NotClosing++;
++                    continue;
++                }
++                BaseBuilding anchor = null;
++                float anchorDistance = float.MaxValue;
++                foreach (BaseBuilding b in bases)
++                {
++                    float lineLimit = ownRadius + b.Radius + Math.Max(ownReach, b.Power.PowerConnectorRange);
++                    float dist = Vector3.Distance(at, b.transform.position);
++                    if (dist <= lineLimit && dist < anchorDistance) { anchor = b; anchorDistance = dist; }
++                }
++                if (anchor == null) { st.NoAnchor++; continue; }
++                float score = DefenseCoverage.MarginalValue(new Point(at.x, at.y, at.z), model.Targets, model.Values, model.Counts, model.Radius, model.P, model.Loss);
++                if (score > bestScore)
++                {
++                    bestScore = score;
++                    bestResult = placed;
++                    bestAnchor = anchor;
++                }
++            }
++            if (bestResult == null) return true; // nothing legal and connected this step: try again next step
++
++            AIBuildingPlacementResult result = (AIBuildingPlacementResult)s_searchResult.GetValue(search);
++            result.Result = bestResult;
++            result.PowerGridConnection = bestAnchor.Power;
++            s_setSearchComplete.Invoke(search, new object[] { true });
++            LogCoverSearch(core, st, "placed");
++            return true;
++        }
++
++        private static void LogCoverSearch(AICore core, CoverageState st, string outcome)
++        {
++            try
++            {
++                Plugin.WriteDecision(new Json().Str("e", "cover-search").Int("t", GameManager.CurrentTurn).Str("ai", core.PlayerData.UserNickName)
++                    .Str("outcome", outcome).Int("steps", st.Steps).Int("tries", st.Tries).Int("invalid", st.Invalid).Int("unplaced", st.Unplaced)
++                    .Int("notClosing", st.NotClosing).Int("noAnchor", st.NoAnchor).ToString());
++            }
++            catch (Exception e)
++            {
++                ReportOnce("cover-search-log", e);
++            }
++        }
++
+         // Share of our buildings (by value) and number of our cities inside a Kinetic Defense's radius, for the decision log.
+         private static void CoverageShares(AICore core, out float share, out int citiesCovered, out int cities)
+         {
+@@ -2028,6 +2180,7 @@ namespace InterplanetaryAI
+                 .Int("refunds", d.Refunds).Map("placementFailures", d.PlacementFailures).Int("steps", d.Steps)
+                 .Int("unseenCities", d.UnseenCities).Int("ownIntel", d.OwnIntel).Bool("guidedThreat", d.GuidedThreat)
+                 .Int("antiNukeProtecting", d.AntiNukeProtecting).Int("antiNukeWanted", d.AntiNukeWanted)
++                .Int("minCityCover", d.MinCityCover).Int("antiNukeNearCities", d.AntiNukeNearCities).Int("antiNukePerCity", d.AntiNukePerCityNow)
+                 .Int("idleEnergy", core.Resources.Energy + d.DefenseReserve).Str("ownCityPop", OwnCityPopulations(core.PlayerData))
+                 .Map("queued", d.Actions).ToString());
+         }
+diff --git a/AI/Patches.cs b/AI/Patches.cs
+index 04df672..95f9f65 100644
+--- a/AI/Patches.cs
++++ b/AI/Patches.cs
+@@ -242,9 +242,22 @@ namespace InterplanetaryAI
+             return weapon.Building != null ? weapon.Building.ObjectId.ToString() : "weapon@" + weapon.GetHashCode();
+         }
+ 
++        // v0.15: guided = has second-phase targeting (lands where placed: Missile, Nuclear Missile). MIRV has no second
++        // phase in this engine (Sol v0.15), so it keeps the level rate. One classifier for firing and strategy (Sol v0.15 #4).
++        internal static bool IsGuided(WeaponGameplayData w)
++        {
++            return w != null && w.TargetingModule != null && w.TargetingModule.HasTargetingPhase(WeaponTargetingPhase.SecondPhaseTargeting);
++        }
++
++        // v0.15.1 (Sol v0.15 #7): a new match or a loaded save must not reuse last match's volley reservations.
++        internal static void ResetCombatMemory()
++        {
++            s_volley.Clear();
++        }
++
+         // ---- how many shots are planned to hit -------------------------------------------------
+ 
+-        private static void GoalBeginTurnPostfix(AIWeaponTargetingGoal __instance)
++        private static void GoalBeginTurnPostfix(AIWeaponTargetingGoal __instance, List<AITargetableWeapon> weapons)
+         {
+             if (!Plugin.Active || !Plugin.AccuracyOverride.Value) return;
+             try
+@@ -258,30 +271,31 @@ namespace InterplanetaryAI
+                 float levelAccuracy = AccuracyPlan.ForLevel(Plugin.Accuracy, me.AILevel);
+                 // v0.15: live weapons only (the targeting list keeps destroyed entries, Sol + Fable v0.14.2 audits), guided
+                 // ones at GuidedAccuracy (Pavol's measured Missile rate), unguided at the level rate.
++                // v0.15.1 (Sol v0.15 #1): counted from the BeginTurn argument, whose Weapon is set in its constructor. The
++                // trajectory weapon's TargetableWeapon back-reference is only set after this postfix (AIWeaponTargeting.cs:
++                // 110-122), so v0.15.0 skipped every newly built weapon and fell back to the level rate.
++                if (weapons == null) return;
+                 int guided = 0, unguided = 0;
+-                List<AITrajectoryWeapon> listed = s_goalWeapons != null ? s_goalWeapons.GetValue(__instance) as List<AITrajectoryWeapon> : null;
+-                if (listed != null)
++                foreach (AITargetableWeapon tw in weapons)
+                 {
+-                    foreach (AITrajectoryWeapon tw in listed)
+-                    {
+-                        WeaponGameplayData w = tw != null && tw.TargetableWeapon != null ? tw.TargetableWeapon.Weapon : null;
+-                        if (w == null || w.Building == null || w.Building.CurrentState != BaseBuilding.BuildingState.Normal || !w.Building.Power.HasPower) continue;
+-                        if (w.TargetingModule != null && w.TargetingModule.HasTargetingPhase(WeaponTargetingPhase.SecondPhaseTargeting)) guided++;
+-                        else unguided++;
+-                    }
++                    WeaponGameplayData w = tw != null ? tw.Weapon : null;
++                    if (w == null || w.Building == null || w.Building.CurrentState != BaseBuilding.BuildingState.Normal || !w.Building.Power.HasPower) continue;
++                    if (IsGuided(w)) guided++;
++                    else unguided++;
+                 }
+                 int live = guided + unguided;
+-                if (live <= 0) live = total;
++                if (live <= 0) return; // nothing operational: leave the native counts alone
+                 float accuracy = Plugin.GuidedAccuracy.Value > 0f
+                     ? AccuracyPlan.MixedRate(guided, Plugin.GuidedAccuracy.Value, unguided, levelAccuracy) : levelAccuracy;
+                 float carry;
+                 Plugin.AccuracyCarry.TryGetValue(me.PlayerID, out carry);
+                 int nativeHits = __instance.Hits;
+-                int hits = Math.Min(total, AccuracyPlan.PlannedHits(live, accuracy, ref carry));
++                int slots = Math.Min(total, live);
++                int hits = Math.Min(slots, AccuracyPlan.PlannedHits(live, accuracy, ref carry));
+                 Plugin.AccuracyCarry[me.PlayerID] = carry;
+ 
+                 __instance.Hits = hits;
+-                __instance.Misses = total - hits;
++                __instance.Misses = slots - hits; // dead entries cannot fill a miss slot (Sol v0.15 #1)
+ 
+                 Plugin.WriteDecision(new Json()
+                     .Str("e", "accuracy").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName).Int("lvl", me.AILevel)
+@@ -501,7 +515,7 @@ namespace InterplanetaryAI
+                 pick = VolleyPlanner.Pick(candidates, Plugin.VolleyOverkill.Value, preferWeapon);
+                 if (pick < 0)
+                 {
+-                    LogStrike(me, enemy, null, null, 0f, 0, "native-no-candidates");
++                    LogStrike(me, enemy, weapon, null, null, 0f, 0, "native-no-candidates");
+                     return true;
+                 }
+                 damage = candidates[pick].IsCity ? weapon.DamageModule.PopulationDamage : weapon.DamageModule.BuildingDamage;
+@@ -519,7 +533,7 @@ namespace InterplanetaryAI
+                 float before;
+                 ledger.TryGetValue(key, out before);
+                 ledger[key] = before + damage;
+-                LogStrike(me, enemy, buildings[pick], candidates[pick], damage, candidates.Count, "");
++                LogStrike(me, enemy, weapon, buildings[pick], candidates[pick], damage, candidates.Count, "");
+             }
+             catch (Exception e)
+             {
+@@ -558,12 +572,13 @@ namespace InterplanetaryAI
+             }
+         }
+ 
+-        private static void LogStrike(PlayerData me, PlayerData enemy, BaseBuilding target, StrikeCandidate c, float damage, int count, string fallback)
++        private static void LogStrike(PlayerData me, PlayerData enemy, WeaponGameplayData weapon, BaseBuilding target, StrikeCandidate c, float damage, int count, string fallback)
+         {
+             try
+             {
+                 Json j = new Json().Str("e", "strike").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName).Str("target", enemy.UserNickName)
+-                    .Int("candidates", count);
++                    .Int("candidates", count)
++                    .Str("weapon", weapon != null ? WeaponKey(weapon) : "").Str("wid", weapon != null && weapon.WeaponData != null ? weapon.WeaponData.id.Value : ""); // Sol v0.15 #10
+                 if (target != null && c != null)
+                 {
+                     j.Str("building", c.IsCity ? "city" : "weapon").Str("id", target.ObjectId.ToString()).Str("seen", c.Shadow ? "shadow" : "visible")
+diff --git a/AI/Plugin.cs b/AI/Plugin.cs
+index a685d1c..e9ae0f7 100644
+--- a/AI/Plugin.cs
++++ b/AI/Plugin.cs
+@@ -22,7 +22,7 @@ namespace InterplanetaryAI
+     {
+         public const string GUID = "pavol.interplanetary.ai";
+         public const string NAME = "Interplanetary EE: Smarter AI";
+-        public const string VERSION = "0.15.0";
++        public const string VERSION = "0.15.2";
+ 
+         internal static ManualLogSource Log;
+ 
+@@ -101,6 +101,9 @@ namespace InterplanetaryAI
+         internal static ConfigEntry<int> AbortBelowWeapons;
+         internal static ConfigEntry<float> AimingWindowSeconds;
+         internal static ConfigEntry<float> AttritionLossShare;
++        internal static ConfigEntry<float> ReturnFirePassShare;
++        internal static ConfigEntry<float> ReturnFireMinPassing;
++        internal static ConfigEntry<float> IntelSprintEnergyReserve;
+         internal static ConfigEntry<int> AiProcessorResources;
+         internal static ConfigEntry<int> PlacementBackoffTurns;
+         internal static ConfigEntry<int> ResearchQueueDepth;
+@@ -110,6 +113,7 @@ namespace InterplanetaryAI
+         internal static ConfigEntry<int> IntelSprintUntilTurn;
+         internal static ConfigEntry<int> IntelSprintBuildings;
+         internal static ConfigEntry<int> IntelSprintPerTurn;
++        internal static ConfigEntry<float> IntelSprintMaterialReserve;
+         internal static ConfigEntry<bool> CounterintelProjects;
+         internal static ConfigEntry<float> ReachFailMinShare;
+         internal static ConfigEntry<int> MaxWeapons;
+@@ -326,7 +330,7 @@ namespace InterplanetaryAI
+             ResearchPlanEnabled = Config.Bind("Research", "UsePlan", true,
+                 "Research the Plan list in order (prerequisites are queued automatically) instead of the native random focus. Native research resumes when the plan is done.");
+             GuidedAccuracy = Config.Bind("Strikes", "GuidedAccuracy", 0.85f,
+-                "v0.15: planned hit rate for guided weapons (second-phase targeting: Missile, MIRV, Nuke). Pavol's decision: his own measured Missile rate (60 of 71 shots hit the planet, v0.14.1 match). Unguided weapons keep the level accuracy. 0 = use the level accuracy for all.");
++                "v0.15: planned hit rate for guided weapons (second-phase targeting: Missile, Nuclear Missile; MIRV has no second phase in this engine and keeps the level rate). Used by firing and by the strategy estimate (v0.15.1). Pavol's decision: his own measured Missile rate (60 of 71 shots hit the planet, v0.14.1 match). Unguided weapons keep the level accuracy. 0 = use the level accuracy for all.");
+             VolleyOverkill = Config.Bind("Strikes", "VolleyOverkill", 1.25f,
+                 "v0.15: a guided target counts as fully allocated once the damage aimed at it this volley reaches this multiple of its durability (population for cities, HP otherwise); further shots move to the next target.");
+             GuidedCityCover = Config.Bind("Director", "GuidedCityCover", true,
+@@ -336,6 +340,10 @@ namespace InterplanetaryAI
+             IntelSprintBuildings = Config.Bind("Director", "IntelSprintBuildings", 6,
+                 "v0.15: intel buildings the sprint aims for (6 Telescopes x 8 intel = 48 >= a small city's 45 stealth before counterintel).");
+             IntelSprintPerTurn = Config.Bind("Director", "IntelSprintPerTurn", 3, "v0.15: intel buildings a turn during the sprint.");
++            IntelSprintEnergyReserve = Config.Bind("Director", "IntelSprintEnergyReserve", 450f,
++                "v0.15.2: intel wanted only to find unseen enemy cities waits while energy is below this (a Telescope 200 + a power plant 250), so the economy still gets a plant that turn. v0.15.1 Thistle bought 8 Telescopes at T6-T8 and no plant; energy fell 925 -> 785. 0 = off.");
++            IntelSprintMaterialReserve = Config.Bind("Director", "IntelSprintMaterialReserve", 650f,
++                "v0.15.1: the sprint's extra intel buildings wait while material is below this (a Telescope 300 + a Molecular Recycling project 350), so the opening economy keeps compounding (Sol v0.15 #5). The normal intel limit is unaffected.");
+             CounterintelProjects = Config.Bind("Director", "CounterintelProjects", true,
+                 "v0.15: buy the Quantum Encryption Hub city project (+50 counterintel per city, permanent) in every city, up to 2 a turn, from CounterintelFromTurn.");
+             ResearchQueueDepth = Config.Bind("Research", "QueueDepth", 3,
+@@ -421,6 +429,9 @@ namespace InterplanetaryAI
+                 "v0.12: on a strike turn the AI keeps searching for trajectories until this many seconds after its turn began, or the human ends the turn if later (the game: 20). Hold turns keep 20. Longer = more weapons aimed, more waiting between turns. 20-120.");
+             AttritionLossShare = Config.Bind("Strategy", "AttritionLossShare", 0.15f,
+                 "v0.14: fire whatever aims when our live weapons dropped since last turn by at least this share (and at least 2), pulse or not. v0.13.1 Guts held at 26 -> 17 -> 11 -> 10 weapons while the human destroyed them unfired. 0 = off.");
++            ReturnFirePassShare = Config.Bind("Strategy", "ReturnFirePassShare", 0.6f,
++                "v0.15.2: under attack, fire when at least this share of the salvo is expected through (and ReturnFireMinPassing shots), pulse or not. v0.15.1 Thistle held at 64-82% through, short of MinPassingShots, while the human hit it every turn. 0 = off.");
++            ReturnFireMinPassing = Config.Bind("Strategy", "ReturnFireMinPassing", 4f, "v0.15.2: fewest expected shots through for return fire.");
+             AiProcessorResources = Config.Bind("Strategy", "AiProcessorResources", 2600,
+                 "v0.14: total trajectory-search budget per frame, shared by all AIs (the game: 1200). Each AI weapon gets clamp(this / all AI weapons, 30, 100) steps per frame: 1200 gives 26 weapons 46 steps, 2600 gives them the full 100. Higher = more weapons aimed in the same time, more CPU per frame during the human's turn. 0 = the game's 1200.");
+             ReachFailMinShare = Config.Bind("Strategy", "ReachFailMinShare", 0.5f,
+@@ -625,6 +636,8 @@ namespace InterplanetaryAI
+             StrategyCfg.AbortBelowShare = Clamp01(AbortBelowShare.Value);
+             StrategyCfg.AbortBelowWeapons = Math.Max(1, AbortBelowWeapons.Value);
+             StrategyCfg.AttritionLossShare = Clamp01(AttritionLossShare.Value);
++            StrategyCfg.ReturnFirePassShare = Clamp01(ReturnFirePassShare.Value);
++            StrategyCfg.ReturnFireMinPassing = Math.Max(0f, ReturnFireMinPassing.Value);
+ 
+             Build.Growth = BuildPlanner.Parse(GrowthWeights.Value, Build.Growth);
+             Build.Pressure = BuildPlanner.Parse(PressureWeights.Value, Build.Pressure);
+@@ -678,6 +691,7 @@ namespace InterplanetaryAI
+             LastTurnSeen = 0;
+             EconomyPatches.Reset();
+             StrategyPatches.Reset();
++            AiPatches.ResetCombatMemory(); // v0.15.1 (Sol v0.15 #7)
+         }
+ 
+         internal static void WriteDecision(string json)
+diff --git a/AI/StrategyPatches.cs b/AI/StrategyPatches.cs
+index e2c65df..60328ae 100644
+--- a/AI/StrategyPatches.cs
++++ b/AI/StrategyPatches.cs
+@@ -166,12 +166,14 @@ namespace InterplanetaryAI
+                 foreach (EnemyView view in views) perEnemy[view.PlayerId] = new Dictionary<string, float>();
+                 int weapons = 0;
+                 HashSet<int> unreachable = new HashSet<int>();
++                HashSet<string> guidedIds = new HashSet<string>(); // v0.15.1 (Sol v0.15 #4)
+                 foreach (WeaponGameplayData weapon in me.WeaponHandler.Weapons)
+                 {
+                     if (weapon == null || weapon.IsLaser || weapon.WeaponData == null || weapon.Building == null) continue;
+                     if (weapon.Building.CurrentState != BaseBuilding.BuildingState.Normal || !weapon.Building.Power.HasPower) continue;
+                     weapons++;
+                     string id = weapon.WeaponData.id.Value;
++                    if (AiPatches.IsGuided(weapon)) guidedIds.Add(id);
+                     // Live counts, upgrades included (Terra v0.11 #2): ShootingModule / SurfaceModule are what the action phase fires.
+                     int liveProjectiles = weapon.ShootingModule != null ? weapon.ShootingModule.ProjectileAmount : 0;
+                     int liveFragments = weapon.SurfaceModule != null ? weapon.SurfaceModule.SplitFragments : 0;
+@@ -189,6 +191,12 @@ namespace InterplanetaryAI
+ 
+                 float accuracy = Plugin.AccuracyOverride.Value ? AccuracyPlan.ForLevel(Plugin.Accuracy, me.AILevel)
+                     : core.Difficulty != null ? core.Difficulty.Accuracy : 0.75f;
++                Dictionary<string, float> accuracyById = null;
++                if (Plugin.AccuracyOverride.Value && Plugin.GuidedAccuracy.Value > 0f && guidedIds.Count > 0)
++                {
++                    accuracyById = new Dictionary<string, float>();
++                    foreach (string g in guidedIds) accuracyById[g] = Plugin.GuidedAccuracy.Value;
++                }
+                 List<SalvoTarget> targets = new List<SalvoTarget>();
+                 for (int i = 0; i < views.Count; i++)
+                 {
+@@ -219,7 +227,7 @@ namespace InterplanetaryAI
+                 }
+                 bool underAttack = recentDamage > 0f || Plugin.Ledger.LastDefender(me.PlayerID).Impacts > 0;
+                 decision = Strategy.Decide(turn, war, salvo, accuracy, targets, DefensePlanner.Counters, state.LastStrikeTurn, state.HoldTurns,
+-                    weapons, Plugin.StrategyCfg, state.LastCommitId, state.LastWeapons, underAttack);
++                    weapons, Plugin.StrategyCfg, state.LastCommitId, state.LastWeapons, underAttack, accuracyById);
+                 state.LastWeapons = weapons;
+                 if (!decision.Fire && !HoldAvailable)
+                 {
+diff --git a/AI/Tests/Program.cs b/AI/Tests/Program.cs
+index dc26225..db4ac21 100644
+--- a/AI/Tests/Program.cs
++++ b/AI/Tests/Program.cs
+@@ -55,6 +55,8 @@ namespace InterplanetaryAI.Tests
+             V013Rules();
+             V014Rules();
+             V015Rules();
++            V0151Rules();
++            V0152Rules();
+ 
+             Console.WriteLine(s_checks + " checks, " + s_failures + " failed");
+             return s_failures == 0 ? 0 : 1;
+@@ -384,6 +386,87 @@ namespace InterplanetaryAI.Tests
+             Check(EconomyDirector.IntelPerTurnLimit(0, 6, 14, 2, 6, 3, 2) == 2, "every city seen: normal");
+         }
+ 
++        private static void V0151Rules()
++        {
++            // Sol v0.15 #2: a city-cover placement must close a city deficit (reach = 5.3 - 0.95 = 4.35 from a city centre).
++            var targets = new List<Point> { new Point(0, 0, 0), new Point(20, 0, 0), new Point(40, 0, 0) };
++            var loss = new List<float> { 0.95f, 0.95f, 0f };
++            var isCity = new List<bool> { true, true, false };
++            int[] counts = { 2, 0, 0 };
++            Check(!DefenseCoverage.ClosesCityDeficit(new Point(3, 0, 0), targets, loss, isCity, counts, 5.3f, 2), "over a city already at 2: refused");
++            Check(DefenseCoverage.ClosesCityDeficit(new Point(23, 0, 0), targets, loss, isCity, counts, 5.3f, 2), "over the exposed city: accepted");
++            Check(!DefenseCoverage.ClosesCityDeficit(new Point(40, 1, 0), targets, loss, isCity, counts, 5.3f, 2), "over a producer cluster: refused");
++            Check(!DefenseCoverage.ClosesCityDeficit(new Point(25, 0, 0), targets, loss, isCity, counts, 5.3f, 2), "5 from the exposed city (reach 4.35): refused");
++            counts[1] = 1;
++            Check(DefenseCoverage.ClosesCityDeficit(new Point(23, 0, 0), targets, loss, isCity, counts, 5.3f, 2), "a city at 1 of 2 still takes one");
++
++            // The measurement: fewest qualifying defenses over any city.
++            var cities = new List<Point> { new Point(0, 0, 0), new Point(20, 0, 0) };
++            var cityR = new List<float> { 1.9f, 1.9f };
++            var ions = new List<Point> { new Point(3, 0, 0), new Point(0, 3, 0), new Point(23, 0, 0) };
++            var ionR = new List<float> { 5.3f, 5.3f, 5.3f };
++            Check(DefenseCoverage.MinCityCover(cities, cityR, ions, ionR) == 1, "min cover of 2 and 1 is 1");
++            Check(DefenseCoverage.MinCityCover(cities, cityR, new List<Point>(), new List<float>()) == 0, "no Ions: 0");
++            Check(DefenseCoverage.MinCityCover(new List<Point>(), new List<float>(), ions, ionR) == -1, "no cities: -1");
++
++            // Sol v0.15 #4: the strategy estimate uses the firing rates per weapon.
++            StrategySettings s = new StrategySettings { OverlapDefenses = 20f };
++            var counters = EnhancedCounters();
++            var missiles = new Dictionary<string, float> { { "wea_Missile", 20f } };
++            var guidedRate = new Dictionary<string, float> { { "wea_Missile", 0.85f } };
++            SalvoTarget level = Target(0, 1f, 0, true, 6000f);
++            Strategy.EstimateSalvo(missiles, level, 0.7f, counters, s);
++            SalvoTarget guided = Target(0, 1f, 0, true, 6000f);
++            Strategy.EstimateSalvo(missiles, guided, 0.7f, counters, s, guidedRate);
++            Check(Math.Abs(level.Arriving - 14f) < 1e-3 && Math.Abs(guided.Arriving - 17f) < 1e-3,
++                "20 Missiles: 14 arrive at the level rate, 17 at the guided rate; got " + level.Arriving + ", " + guided.Arriving);
++            SalvoTarget rails = Target(0, 1f, 0, true, 6000f);
++            Strategy.EstimateSalvo(Railguns(20), rails, 0.7f, counters, s, guidedRate);
++            Check(Math.Abs(rails.Arriving - 14f) < 1e-3, "Railguns keep the level rate; got " + rails.Arriving);
++            StrategyDecision viaDecide = Strategy.Decide(20, true, missiles, 0.7f, new List<SalvoTarget> { Target(0, 1f, 0, true, 6000f) }, counters, -1000, 0, 20, s,
++                -1, -1, false, guidedRate);
++            Check(Math.Abs(viaDecide.Targets[0].Arriving - 17f) < 1e-3, "Decide passes the per-weapon rates on; got " + viaDecide.Targets[0].Arriving);
++
++            // Sol v0.15 #5: the sprint waits while material is short.
++            Check(EconomyDirector.IntelPerTurnLimit(5, 6, 14, 2, 6, 3, 2, 600f, 650f) == 2, "material 600 < 650 reserve: normal limit");
++            Check(EconomyDirector.IntelPerTurnLimit(5, 6, 14, 2, 6, 3, 2, 900f, 650f) == 3, "material 900: sprint");
++        }
++
++        private static void V0152Rules()
++        {
++            StrategySettings s = new StrategySettings { OverlapDefenses = 20f };
++            var counters = EnhancedCounters();
++            // Return fire (v0.15.1 Thistle T19-T23 and T34-T37: 64-82% through, held for MinPassingShots 12 while hit).
++            Check(Strategy.ReturnFire(8, 4.5f, 0.8f, true, s), "under attack, 8 weapons, 82% through, 4.5 shots: return fire");
++            Check(!Strategy.ReturnFire(8, 4.5f, 0.8f, false, s), "not under attack: hold for saturation as before");
++            Check(!Strategy.ReturnFire(8, 4.5f, 0.5f, true, s), "50% through (defenses are the limit): keep holding");
++            Check(!Strategy.ReturnFire(5, 4.5f, 0.8f, true, s), "fewer than MinWeapons: keep building");
++            Check(!Strategy.ReturnFire(8, 3f, 0.8f, true, s), "fewer than 4 shots through: no");
++            Check(!Strategy.ReturnFire(8, 4.5f, 0.8f, true, new StrategySettings { ReturnFirePassShare = 0f }), "share 0 = off");
++            Check(!Strategy.ShouldAbort(0, 20, "return-fire", s), "return fire is not called off at firing time");
++
++            // Through Decide: 13 Railguns at 4 Kinetic, below MinPassingShots, fires only under attack.
++            Func<bool, StrategyDecision> decide = attacked => Strategy.Decide(20, true, Railguns(13), 0.7f,
++                new List<SalvoTarget> { Target(0, 1f, 4, true, 6000f) }, counters, 18, 1, 13, s, 0, 13, attacked);
++            StrategyDecision held = decide(false), fired = decide(true);
++            Check(!held.Fire && held.Reason == "below-saturation", "13 Railguns, not attacked: below-saturation; got " + held.Reason + " " + held.Passing);
++            Check(fired.Fire && fired.Reason == "return-fire", "13 Railguns, attacked: return-fire; got " + fired.Reason + " share " + fired.PassShare);
++
++            // Intel energy guard (v0.15.1 Thistle: 8 Telescopes at T6-T8, no plant).
++            Check(!EconomyDirector.IntelEnergyAllowed(true, 400f, 450f), "unseen-only intel waits below the 450 reserve");
++            Check(EconomyDirector.IntelEnergyAllowed(true, 500f, 450f), "unseen-only intel with 500 energy: allowed");
++            Check(EconomyDirector.IntelEnergyAllowed(false, 100f, 450f), "intel needed (blind / below minimum): never held back");
++
++            // City-cover ring: Ion 5.3, footprint 1.1, city 1.9 -> 3.1 .. 4.25.
++            float inner, outer;
++            DefenseCoverage.CityCoverRing(5.3f, 1.1f, 1.9f, 0.1f, out inner, out outer);
++            Check(Math.Abs(inner - 3.1f) < 1e-4 && Math.Abs(outer - 4.25f) < 1e-4, "ring 3.1 .. 4.25; got " + inner + " .. " + outer);
++            var ringCity = new List<Point> { new Point(0, 0, 0) };
++            var ringLoss = new List<float> { 0.95f };
++            var ringIsCity = new List<bool> { true };
++            Check(DefenseCoverage.ClosesCityDeficit(new Point(outer, 0, 0), ringCity, ringLoss, ringIsCity, new[] { 0 }, 5.3f, 1), "the ring's outer edge still closes the deficit");
++        }
++
+         private static void V014Rules()
+         {
+             StrategySettings s = new StrategySettings { OverlapDefenses = 20f };
