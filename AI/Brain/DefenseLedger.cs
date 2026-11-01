@@ -13,6 +13,7 @@ namespace InterplanetaryAI.Brain
     public sealed class DefenderStats
     {
         public int Impacts;            // shots reaching this planet
+        public int EnemyImpacts;       // v0.15.3: of those, fired by another player (the return-fire signal)
         public int NoEligibleDefense;  // no normal, matching defense in range: nothing could be rolled
         public int NearCity;           // impact within a short distance of one of our cities
         public int NoDefenseNearby;    // impact with no defense of any kind close by (the planet is simply not covered there)
@@ -56,6 +57,7 @@ namespace InterplanetaryAI.Brain
                 m_pendingDefender[defenderId] = d;
             }
             d.Impacts++;
+            if (shooterId >= 0 && shooterId != defenderId) d.EnemyImpacts++; // v0.15.3 (Sol v0.15.2 #2)
             int byWeapon;
             d.ImpactsByWeapon.TryGetValue(weaponId ?? "?", out byWeapon);
             d.ImpactsByWeapon[weaponId ?? "?"] = byWeapon + 1;

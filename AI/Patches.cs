@@ -46,6 +46,7 @@ namespace InterplanetaryAI
                 Plugin.WriteDecision(new Json()
                     .Str("e", "init").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName).Int("id", me.PlayerID).Int("lvl", me.AILevel)
                     .Bool("active", Plugin.Active).Num("acc", AccuracyPlan.ForLevel(Plugin.Accuracy, me.AILevel))
+                    .Bool("shadows", GameSessionManager.CurrentGameSettings != null && GameSessionManager.CurrentGameSettings.SeenBuildingsShadows) // Sol v0.15.2 #7
                     .Num("nativeAcc", __instance.Difficulty != null ? __instance.Difficulty.Accuracy : -1f).ToString());
             }
             catch (Exception e)
@@ -249,6 +250,24 @@ namespace InterplanetaryAI
             return w != null && w.TargetingModule != null && w.TargetingModule.HasTargetingPhase(WeaponTargetingPhase.SecondPhaseTargeting);
         }
 
+        // v0.15.3 (Sol v0.15.2 #1): the player's current weapon registry (destroyed weapons leave it; PlayerWeaponHandler).
+        internal static HashSet<WeaponGameplayData> RegisteredWeapons(PlayerData me)
+        {
+            HashSet<WeaponGameplayData> set = new HashSet<WeaponGameplayData>();
+            if (me != null && me.WeaponHandler != null && me.WeaponHandler.Weapons != null)
+            {
+                foreach (WeaponGameplayData w in me.WeaponHandler.Weapons) if (w != null) set.Add(w);
+            }
+            return set;
+        }
+
+        // Registered weapon whose building is ours, Normal and powered.
+        internal static bool IsOperational(PlayerData me, WeaponGameplayData w)
+        {
+            return w != null && w.Building != null && w.Building.OwnerID == me.PlayerID && w.Building.CurrentState == BaseBuilding.BuildingState.Normal
+                && w.Building.Power.HasPower;
+        }
+
         // v0.15.1 (Sol v0.15 #7): a new match or a loaded save must not reuse last match's volley reservations.
         internal static void ResetCombatMemory()
         {
@@ -275,11 +294,22 @@ namespace InterplanetaryAI
                 // trajectory weapon's TargetableWeapon back-reference is only set after this postfix (AIWeaponTargeting.cs:
                 // 110-122), so v0.15.0 skipped every newly built weapon and fell back to the level rate.
                 if (weapons == null) return;
-                int guided = 0, unguided = 0;
+                // v0.15.3 (Sol v0.15.2 #1): only weapons in the player's registry count. The targetable list keeps destroyed
+                // weapons, and a pooled building component can come back Normal and powered under a stale weapon object
+                // (v0.15.1 T32: 27 registered, 33 counted). Stale entries also leave the goal's list before hit selection,
+                // so they cannot take hit slots or be fired (native completion does not check the registry).
+                HashSet<WeaponGameplayData> registered = RegisteredWeapons(me);
+                List<AITrajectoryWeapon> goalList = s_goalWeapons != null ? s_goalWeapons.GetValue(__instance) as List<AITrajectoryWeapon> : null;
+                int guided = 0, unguided = 0, stale = 0;
                 foreach (AITargetableWeapon tw in weapons)
                 {
                     WeaponGameplayData w = tw != null ? tw.Weapon : null;
-                    if (w == null || w.Building == null || w.Building.CurrentState != BaseBuilding.BuildingState.Normal || !w.Building.Power.HasPower) continue;
+                    if (w == null || !registered.Contains(w))
+                    {
+                        if (tw != null && goalList != null && tw.TrajectoryWeapon != null && goalList.Remove(tw.TrajectoryWeapon)) stale++;
+                        continue;
+                    }
+                    if (!IsOperational(me, w)) continue;
                     if (IsGuided(w)) guided++;
                     else unguided++;
                 }
@@ -299,7 +329,7 @@ namespace InterplanetaryAI
 
                 Plugin.WriteDecision(new Json()
                     .Str("e", "accuracy").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName).Int("lvl", me.AILevel)
-                    .Num("acc", accuracy).Int("shots", total).Int("live", live).Int("guided", guided).Int("nativeHits", nativeHits).Int("hits", hits).ToString());
+                    .Num("acc", accuracy).Int("shots", total).Int("live", live).Int("guided", guided).Int("stale", stale).Int("nativeHits", nativeHits).Int("hits", hits).ToString());
             }
             catch (Exception e)
             {
@@ -407,6 +437,7 @@ namespace InterplanetaryAI
                 if (core == null || weapons == null) return;
 
                 int turn = GameManager.CurrentTurn;
+                HashSet<WeaponGameplayData> registered = RegisteredWeapons(core.PlayerData); // v0.15.3 (Sol v0.15.2 #1)
                 int powered = 0, primary = 0, secondary = 0;
                 Dictionary<string, int> primaryByTarget = new Dictionary<string, int>();
                 Dictionary<string, int> assignedByTarget = new Dictionary<string, int>();
@@ -418,8 +449,7 @@ namespace InterplanetaryAI
                 {
                     WeaponGameplayData data = weapon.TargetableWeapon != null ? weapon.TargetableWeapon.Weapon : null;
                     // v0.12: live weapons only (the targetable list keeps destroyed weapons: v0.11.1 logged 53-54 to the end).
-                    if (data == null || data.Building == null || data.Building.CurrentState != BaseBuilding.BuildingState.Normal
-                        || !data.Building.Power.HasPower) continue;
+                    if (data == null || !registered.Contains(data) || !IsOperational(core.PlayerData, data)) continue;
                     powered++;
                     string targetName = weapon.TargetEnemy != null && weapon.TargetEnemy.Player != null ? weapon.TargetEnemy.Player.UserNickName : "?";
                     Increment(assignedByTarget, targetName);

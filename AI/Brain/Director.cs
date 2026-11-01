@@ -280,6 +280,14 @@ namespace InterplanetaryAI.Brain
         // `reserve` (one Telescope + one power plant), so the economy step after it still gets a plant. v0.15.1 Thistle: intel
         // (step 3) ran before the economy (step 6) and its 8 Telescopes at T6-T8 left no energy for plants; energy fell
         // 925 -> 785 while v0.14.1 Bolide rose to 1425. The v0.15.1 material guard never bound (material was in glut).
+        // v0.15.3 (Sol v0.15.2 #3): which intel purchases the energy guard applies to. Native BelowMinimum is exempt; intel
+        // needed because an enemy is blind is guarded from the second building of the turn (v0.15.1 T6-T7 were blind and
+        // bypassed the v0.15.2 guard); intel wanted only for unseen cities is guarded from the first.
+        public static bool IntelGuarded(bool belowMinimum, bool needed, int boughtThisTurn)
+        {
+            return !needed || (!belowMinimum && boughtThisTurn > 0);
+        }
+
         public static bool IntelEnergyAllowed(bool unseenOnly, float energy, float reserve)
         {
             return !unseenOnly || energy >= reserve;

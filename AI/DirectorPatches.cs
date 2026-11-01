@@ -578,7 +578,10 @@ namespace InterplanetaryAI
             bool intelRoom = d.IntelBuildings + d.IntelThisTurn < Plugin.MaxIntelBuildings.Value && d.IntelThisTurn < intelLimit;
             bool intelNeeded = intel == IntelEvaluationState.BelowMinimum || d.BlindEnemies > 0;
             bool wantIntel = intelNeeded || d.UnseenCities > 0;
-            bool intelEnergy = EconomyDirector.IntelEnergyAllowed(!intelNeeded, core.Resources.Energy, Plugin.IntelSprintEnergyReserve.Value);
+            // v0.15.3 (Sol v0.15.2 #3): blind counts too (T6-T7 were blind), but the first intel building of a turn is free;
+            // only native BelowMinimum stays exempt.
+            bool intelGuarded = EconomyDirector.IntelGuarded(intel == IntelEvaluationState.BelowMinimum, intelNeeded, d.IntelThisTurn);
+            bool intelEnergy = EconomyDirector.IntelEnergyAllowed(intelGuarded, core.Resources.Energy, Plugin.IntelSprintEnergyReserve.Value);
             if (wantIntel && intelRoom && intelEnergy && d.SlotsLeft > 0 && !d.FailedThisTurn.Contains("intel"))
             {
                 if (TryIntelBuilding(construction, core, d)) return true;
@@ -590,7 +593,7 @@ namespace InterplanetaryAI
             if (d.AntiNukeId != null) economy.DefensesQueued.TryGetValue(d.AntiNukeId, out ionsQueuedThisTurn);
             int antiNukeTurnCap = d.GuidedThreat ? d.AntiNukeWanted : Math.Max(2, d.DefenseTurnCap); // v0.15: no throttle on city cover
             if (d.AntiNukeId != null && d.AntiNukeThisTurn < d.AntiNukeWanted && d.AntiNukeThisTurn < antiNukeTurnCap
-                && d.AntiNukeIntact + ionsQueuedThisTurn < d.AntiNukeCap
+                && d.AntiNukeNearCities + ionsQueuedThisTurn < d.AntiNukeCap // v0.15.3 (Sol v0.15.2 #4): Ions near cities only
                 && d.SlotsLeft > 0 && !d.FailedThisTurn.Contains("antinuke"))
             {
                 BuildingData antiNuke = GameDataFileManager.GetDataFile<BuildingsData>().GetBuilding(d.AntiNukeId);
@@ -623,7 +626,10 @@ namespace InterplanetaryAI
             // one; its counterintel stayed x1.0 until T22 while the human saw every city.
             if (Plugin.CounterintelProjects.Value && d.Turn >= Plugin.CounterintelFromTurn.Value && d.CityProjectsThisTurn < 2 && !d.FailedThisTurn.Contains("city-project"))
             {
-                if (TryCityProject(construction, core, d, "pro_CounterintelYieldPermanent1")) return true;
+                // v0.15.3 (Sol v0.15.2 #3): in the opening a counterintel project must leave one plant's energy (v0.15.1 T8:
+                // two projects took the last 300 after the Telescopes, and no plant was bought).
+                float keep = d.Turn <= Plugin.IntelSprintUntilTurn.Value ? Plugin.OpeningPlantReserve.Value : 0f;
+                if (TryCityProject(construction, core, d, "pro_CounterintelYieldPermanent1", keep)) return true;
                 d.FailedThisTurn.Add("city-project");
             }
 
@@ -1286,7 +1292,7 @@ namespace InterplanetaryAI
         }
 
         // v0.15: queue one city project by id in the first city type that offers it and has a city with a free slot.
-        private static bool TryCityProject(AIConstruction construction, AICore core, DirectorState d, string projectId)
+        private static bool TryCityProject(AIConstruction construction, AICore core, DirectorState d, string projectId, float keepEnergy = 0f)
         {
             ProjectsData projectsData = GameDataFileManager.GetDataFile<ProjectsData>();
             PlayerAvailableBuildings availableNow = core.PlayerData.BuildingHandler.AvailableBuildings;
@@ -1299,6 +1305,7 @@ namespace InterplanetaryAI
                     if (p == null || p.id.Value != projectId || !availableNow.IsProjectAvailable(p)) continue;
                     AIProjectEntity entity = new AIProjectEntity(core, AIConstructionEntityValueType.EnergyGeneration, p, city.CityData);
                     if (!HasCityForProject(construction, core, entity)) continue;
+                    if (core.Resources.Energy - entity.EnergyCost < keepEnergy) return false;
                     if (QueueProject(construction, core, d, entity))
                     {
                         d.CityProjectsThisTurn++;
@@ -1658,6 +1665,7 @@ namespace InterplanetaryAI
             public int Steps;
             // v0.15.2 anti-missile search diagnostics: candidates tried and why each failed.
             public int Tries, Invalid, Unplaced, NoAnchor, NotClosing;
+            public int Deficient, Anchors; // v0.15.3 (Sol v0.15.2 #8): cities below target, anchors with a free slot
         }
 
         private static readonly Dictionary<AIBuildingPlacementSearch, CoverageState> s_coverage = new Dictionary<AIBuildingPlacementSearch, CoverageState>();
@@ -1907,6 +1915,8 @@ namespace InterplanetaryAI
             {
                 if (model.IsCity[i] && model.Counts[i] < model.PerCity) deficient.Add(i);
             }
+            st.Deficient = deficient.Count;
+            st.Anchors = bases.Count;
             if (deficient.Count == 0)
             {
                 LogCoverSearch(core, st, "no-deficit");
@@ -1979,7 +1989,7 @@ namespace InterplanetaryAI
             {
                 Plugin.WriteDecision(new Json().Str("e", "cover-search").Int("t", GameManager.CurrentTurn).Str("ai", core.PlayerData.UserNickName)
                     .Str("outcome", outcome).Int("steps", st.Steps).Int("tries", st.Tries).Int("invalid", st.Invalid).Int("unplaced", st.Unplaced)
-                    .Int("notClosing", st.NotClosing).Int("noAnchor", st.NoAnchor).ToString());
+                    .Int("notClosing", st.NotClosing).Int("noAnchor", st.NoAnchor).Int("deficient", st.Deficient).Int("anchors", st.Anchors).ToString());
             }
             catch (Exception e)
             {

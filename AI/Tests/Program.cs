@@ -443,12 +443,13 @@ namespace InterplanetaryAI.Tests
             Check(!Strategy.ReturnFire(5, 4.5f, 0.8f, true, s), "fewer than MinWeapons: keep building");
             Check(!Strategy.ReturnFire(8, 3f, 0.8f, true, s), "fewer than 4 shots through: no");
             Check(!Strategy.ReturnFire(8, 4.5f, 0.8f, true, new StrategySettings { ReturnFirePassShare = 0f }), "share 0 = off");
-            Check(!Strategy.ShouldAbort(0, 20, "return-fire", s), "return fire is not called off at firing time");
+            Check(Strategy.ShouldAbort(0, 20, "return-fire", s), "v0.15.3: return fire with nothing aimed is called off (Sol v0.15.2 #6)");
 
             // Through Decide: 13 Railguns at 4 Kinetic, below MinPassingShots, fires only under attack.
-            Func<bool, StrategyDecision> decide = attacked => Strategy.Decide(20, true, Railguns(13), 0.7f,
-                new List<SalvoTarget> { Target(0, 1f, 4, true, 6000f) }, counters, 18, 1, 13, s, 0, 13, attacked);
-            StrategyDecision held = decide(false), fired = decide(true);
+            Func<bool, bool, StrategyDecision> decide = (grudge, hit) => Strategy.Decide(20, true, Railguns(13), 0.7f,
+                new List<SalvoTarget> { Target(0, 1f, 4, true, 6000f) }, counters, 18, 1, 13, s, 0, 13, grudge, null, hit);
+            StrategyDecision held = decide(false, false), fired = decide(true, true), grudgeOnly = decide(true, false);
+            Check(!grudgeOnly.Fire, "v0.15.3: a decaying grudge without impacts last phase does not return fire (Sol v0.15.2 #2); got " + grudgeOnly.Reason);
             Check(!held.Fire && held.Reason == "below-saturation", "13 Railguns, not attacked: below-saturation; got " + held.Reason + " " + held.Passing);
             Check(fired.Fire && fired.Reason == "return-fire", "13 Railguns, attacked: return-fire; got " + fired.Reason + " share " + fired.PassShare);
 
@@ -456,6 +457,12 @@ namespace InterplanetaryAI.Tests
             Check(!EconomyDirector.IntelEnergyAllowed(true, 400f, 450f), "unseen-only intel waits below the 450 reserve");
             Check(EconomyDirector.IntelEnergyAllowed(true, 500f, 450f), "unseen-only intel with 500 energy: allowed");
             Check(EconomyDirector.IntelEnergyAllowed(false, 100f, 450f), "intel needed (blind / below minimum): never held back");
+
+            // v0.15.3 intel guard: native minimum exempt; blind or unseen-only guarded from the second building of a turn.
+            Check(!EconomyDirector.IntelGuarded(true, true, 3), "native BelowMinimum: never guarded");
+            Check(!EconomyDirector.IntelGuarded(false, true, 0), "blind, first intel building this turn: free");
+            Check(EconomyDirector.IntelGuarded(false, true, 1), "blind, second building: guarded");
+            Check(EconomyDirector.IntelGuarded(false, false, 0), "unseen cities only: guarded from the first");
 
             // City-cover ring: Ion 5.3, footprint 1.1, city 1.9 -> 3.1 .. 4.25.
             float inner, outer;

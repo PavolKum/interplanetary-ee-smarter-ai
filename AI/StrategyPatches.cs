@@ -226,8 +226,9 @@ namespace InterplanetaryAI
                     });
                 }
                 bool underAttack = recentDamage > 0f || Plugin.Ledger.LastDefender(me.PlayerID).Impacts > 0;
+                bool hitLastPhase = Plugin.Ledger.LastDefender(me.PlayerID).EnemyImpacts > 0; // v0.15.3 (Sol v0.15.2 #2)
                 decision = Strategy.Decide(turn, war, salvo, accuracy, targets, DefensePlanner.Counters, state.LastStrikeTurn, state.HoldTurns,
-                    weapons, Plugin.StrategyCfg, state.LastCommitId, state.LastWeapons, underAttack, accuracyById);
+                    weapons, Plugin.StrategyCfg, state.LastCommitId, state.LastWeapons, underAttack, accuracyById, hitLastPhase);
                 state.LastWeapons = weapons;
                 if (!decision.Fire && !HoldAvailable)
                 {

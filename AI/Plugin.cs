@@ -22,7 +22,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.15.2";
+        public const string VERSION = "0.15.3";
 
         internal static ManualLogSource Log;
 
@@ -104,6 +104,7 @@ namespace InterplanetaryAI
         internal static ConfigEntry<float> ReturnFirePassShare;
         internal static ConfigEntry<float> ReturnFireMinPassing;
         internal static ConfigEntry<float> IntelSprintEnergyReserve;
+        internal static ConfigEntry<float> OpeningPlantReserve;
         internal static ConfigEntry<int> AiProcessorResources;
         internal static ConfigEntry<int> PlacementBackoffTurns;
         internal static ConfigEntry<int> ResearchQueueDepth;
@@ -342,6 +343,8 @@ namespace InterplanetaryAI
             IntelSprintPerTurn = Config.Bind("Director", "IntelSprintPerTurn", 3, "v0.15: intel buildings a turn during the sprint.");
             IntelSprintEnergyReserve = Config.Bind("Director", "IntelSprintEnergyReserve", 450f,
                 "v0.15.2: intel wanted only to find unseen enemy cities waits while energy is below this (a Telescope 200 + a power plant 250), so the economy still gets a plant that turn. v0.15.1 Thistle bought 8 Telescopes at T6-T8 and no plant; energy fell 925 -> 785. 0 = off.");
+            OpeningPlantReserve = Config.Bind("Director", "OpeningPlantReserve", 250f,
+                "v0.15.3: until IntelSprintUntilTurn, a counterintel city project must leave this much energy (one power plant) for the economy step (Sol v0.15.2 #3). 0 = off.");
             IntelSprintMaterialReserve = Config.Bind("Director", "IntelSprintMaterialReserve", 650f,
                 "v0.15.1: the sprint's extra intel buildings wait while material is below this (a Telescope 300 + a Molecular Recycling project 350), so the opening economy keeps compounding (Sol v0.15 #5). The normal intel limit is unaffected.");
             CounterintelProjects = Config.Bind("Director", "CounterintelProjects", true,

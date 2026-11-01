@@ -76,7 +76,11 @@ namespace InterplanetaryAI.Brain
         // v0.15.2 return fire: under attack, fire when at least this share of the salvo is expected through and at least
         // ReturnFireMinPassing shots, pulse or not. v0.15.1 Thistle held 5 turns (T19-T23, 82% through) and 4 turns (T34-T37,
         // 64-70% through) only because the salvo fell short of MinPassingShots 12 (9.4-11.8) while the human hit it every
-        // turn; it lost a city and then 16 Railguns unfired. A high pass share means waiting buys nothing. 0 = off.
+        // turn; it lost a city and then 16 Railguns unfired. Waiting can still buy plants and a bigger arsenal; under fire
+        // it also costs weapons and cities. 0 = off.
+        // v0.15.3 (Sol v0.15.2 #2, #6): the signal is enemy impacts in the last action phase (not the decaying grudge, which
+        // kept one hit alive for the rest of the match), and return fire is called off like a saturated strike when too few
+        // weapons aim at the committed target.
         public float ReturnFirePassShare = 0.6f;
         public float ReturnFireMinPassing = 4f;
     }
@@ -178,7 +182,7 @@ namespace InterplanetaryAI.Brain
 
         public static bool ShouldAbort(int hitsOnCommit, int weapons, string reason, StrategySettings s)
         {
-            if (reason == "max-hold" || reason == "attrition" || reason == "return-fire") return false;
+            if (reason == "max-hold" || reason == "attrition") return false;
             return hitsOnCommit < AbortThreshold(weapons, s);
         }
 
@@ -203,7 +207,8 @@ namespace InterplanetaryAI.Brain
         // lastCommitId: the enemy our weapons were pointed at last turn (-1 none).
         public static StrategyDecision Decide(int turn, bool war, IDictionary<string, float> salvo, float accuracy, IList<SalvoTarget> targets,
             Dictionary<string, Dictionary<string, float>> counters, int lastStrikeTurn, int holdTurns, int weapons, StrategySettings s,
-            int lastCommitId = -1, int lastWeapons = -1, bool underAttack = false, IDictionary<string, float> accuracyById = null)
+            int lastCommitId = -1, int lastWeapons = -1, bool underAttack = false, IDictionary<string, float> accuracyById = null,
+            bool hitLastPhase = false)
         {
             StrategyDecision d = new StrategyDecision { War = war, Shots = weapons };
             float maxScore = 0f;
@@ -255,9 +260,9 @@ namespace InterplanetaryAI.Brain
                 d.Fire = true;
                 d.Reason = "attrition";
             }
-            else if (ReturnFire(weapons, d.Passing, d.PassShare, underAttack, s))
+            else if (ReturnFire(weapons, d.Passing, d.PassShare, hitLastPhase, s))
             {
-                // v0.15.2: trade blows instead of waiting for a bigger salvo (exempt from the abort, like attrition).
+                // v0.15.2: trade blows instead of waiting for a bigger salvo (v0.15.3: the abort still applies).
                 d.Fire = true;
                 d.Reason = "return-fire";
             }
