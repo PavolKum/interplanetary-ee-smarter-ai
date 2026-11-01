@@ -41,6 +41,12 @@ Terra the match logs (decision log + telemetry recording + the playtest note) an
 independently: what limited the AIs, what the human did differently, which game rules the planned fix depends on.
 And in every code review prompt, list the game-rule assumptions the design rests on so it can test them too.
 
+## Design principle: what "smarter" means (Pavol, 2026-10-31)
+
+- Accuracy is a difficulty knob, not intelligence. Keep the AI's hit rate a setting matched to the player's recorded rate,
+  and put the "smarter" effort into economy, research and superweapon timing. Make misses situational rather than
+  constant: a uniformly near-perfect hit rate reads as a chess engine, not a human.
+
 ## Game facts that have bitten us
 
 - Energy does not carry over: `PlayerResourceHandler.TurnStartInit` sets it to production every turn. Material accumulates.
