@@ -105,6 +105,7 @@ namespace InterplanetaryAI
             public bool EnergySaturated;
             public int SoldMines, SoldMaterial;
             public int Repaired, RepairEnergy, RepairMaterial; // v0.13
+            public int PlantsQueued;      // v0.14.1: power-distributing buildings queued this turn
             public int PowerEnergySpent;  // v0.13.1: energy spent this turn on energy-only purchases (plants, energy upgrades)
             public int AimedWeapons;                // own weapons needing a trajectory (not lasers, not superweapons), queued included
             // across turns
@@ -962,6 +963,9 @@ namespace InterplanetaryAI
                 SustainableMaterialIncome = d.SustainableMaterial,
                 EnergySaturation = Plugin.EnergySaturation.Value,
                 MaterialReserve = d.MaterialReserve,
+                SlotsLeft = d.SlotsLeft,
+                PlantsQueued = d.PlantsQueued,
+                Opening = d.Turn <= 3,
             };
             d.MaterialGlut = balance.MaterialGlut;
             d.EnergySaturated = EconomyDirector.EnergySaturated(balance);
@@ -1298,13 +1302,6 @@ namespace InterplanetaryAI
             return PlacementBackoff.Next(last.BackoffUntil, last.PlacementFailures, last.QueuedById, last.Turn, turns);
         }
 
-        // v0.14: free power slots a newly placed plant adds: its connectors minus the one that links it to the grid.
-        private static int PlantSlots(BuildingData data)
-        {
-            if (data == null) return 0;
-            return EconomyDirector.PlantSlots(data.distribute_power.IsValueSet && data.distribute_power.Value, Value(data.power_connectors));
-        }
-
         private static bool QueueBuilding(AIConstruction construction, AICore core, DirectorState d, BuildingData data, string role)
         {
             // A type whose placement gave up this turn is not queued again (v0.3.1: 241 Railgun searches requeued).
@@ -1319,10 +1316,7 @@ namespace InterplanetaryAI
             }
             else
             {
-                // v0.14: a queued plant brings its connectors (one links it to the grid). v0.13.1 Guts started T1 with 0 free
-                // slots, so no Mine could be queued and the economy bought 3 Solar Plants with 1,200 of its 1,350 material
-                // (then 750-975 energy unspent each turn T2-T6); the human built 1 Solar Plant + 1 Mine.
-                d.SlotsLeft += PlantSlots(data);
+                d.PlantsQueued++; // v0.14.1: slot-starved plant limit (EconomyDirector.SlotStarved)
             }
             Record(d, role + ":" + data.id.Value);
             Increment(d.QueuedById, data.id.Value);
@@ -1875,7 +1869,7 @@ namespace InterplanetaryAI
             else
             {
                 d.PowerEnergySpent = Math.Max(0, d.PowerEnergySpent - energy); // a refunded plant was not spent on energy
-                d.SlotsLeft -= PlantSlots(data); // v0.14: its connectors were counted when it was queued
+                d.PlantsQueued = Math.Max(0, d.PlantsQueued - 1);
             }
             d.Refunds++;
             d.Reopened = true;

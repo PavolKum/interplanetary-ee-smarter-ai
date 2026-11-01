@@ -217,8 +217,9 @@ namespace InterplanetaryAI
                         LowYieldTurns = state.LowYield.ContainsKey(view.PlayerId) ? state.LowYield[view.PlayerId] : 0,
                     });
                 }
+                bool underAttack = recentDamage > 0f || Plugin.Ledger.LastDefender(me.PlayerID).Impacts > 0;
                 decision = Strategy.Decide(turn, war, salvo, accuracy, targets, DefensePlanner.Counters, state.LastStrikeTurn, state.HoldTurns,
-                    weapons, Plugin.StrategyCfg, state.LastCommitId, state.LastWeapons);
+                    weapons, Plugin.StrategyCfg, state.LastCommitId, state.LastWeapons, underAttack);
                 state.LastWeapons = weapons;
                 if (!decision.Fire && !HoldAvailable)
                 {

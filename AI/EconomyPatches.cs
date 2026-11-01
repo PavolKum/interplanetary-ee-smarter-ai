@@ -515,12 +515,16 @@ namespace InterplanetaryAI
                     plan = new List<string>(urgent);
                     plan.AddRange(Plugin.ResearchPlanIds);
                 }
-                for (int attempt = 0; attempt < 3; attempt++)
+                // v0.14.1 (Sol v0.14 #3): queue up to ResearchQueueDepth plan targets at once. The game spends science down the
+                // queue and keeps the excess at its end (PlayerTechnologyHandler); with one target at a time the queue ran out
+                // each turn a tech finished and science sat banked until the next boundary.
+                int depth = Math.Max(1, Plugin.ResearchQueueDepth.Value), added = 0;
+                for (int attempt = 0; attempt < depth + 3 && added < depth; attempt++)
                 {
                     string next = ResearchPlan.NextTarget(plan, id => SafeCompleted(tech, id, pid), id => tech.GetTechnologyIsInQueue(id) || s_refused.Contains(pid + ":" + id));
                     if (next == null)
                     {
-                        if (preempt) tech.SetTechnologyQueue(before.ToArray());
+                        if (preempt && added == 0) tech.SetTechnologyQueue(before.ToArray());
                         return;
                     }
                     bool queued = false;
@@ -534,10 +538,13 @@ namespace InterplanetaryAI
                         Plugin.WriteDecision(new Json().Str("e", "research").Int("t", GameManager.CurrentTurn).Str("ai", core.PlayerData.UserNickName)
                             .Str("target", next).Str("head", after[0]).Int("queueLength", after.Count).Bool("counter", urgent.Contains(next))
                             .Bool("preempted", preempt).ToString());
-                        return;
+                        added++;
+                        before = after;
+                        continue;
                     }
                     tech.SetTechnologyQueue(before.ToArray());
-                    if (preempt) return; // the old queue is back; try the plan at the next boundary
+                    if (preempt && added == 0) return; // the old queue is back; try the plan at the next boundary
+                    if (added > 0) return;             // keep what was queued; the rest at the next boundary
                     s_refused.Add(pid + ":" + next);
                     Plugin.Log.LogWarning("Research plan: " + next + " could not be queued for " + core.PlayerData.UserNickName + "; skipping it.");
                 }

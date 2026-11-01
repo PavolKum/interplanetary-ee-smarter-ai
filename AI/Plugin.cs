@@ -22,7 +22,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.14.0";
+        public const string VERSION = "0.14.1";
 
         internal static ManualLogSource Log;
 
@@ -103,6 +103,7 @@ namespace InterplanetaryAI
         internal static ConfigEntry<float> AttritionLossShare;
         internal static ConfigEntry<int> AiProcessorResources;
         internal static ConfigEntry<int> PlacementBackoffTurns;
+        internal static ConfigEntry<int> ResearchQueueDepth;
         internal static ConfigEntry<float> ReachFailMinShare;
         internal static ConfigEntry<int> MaxWeapons;
         internal static ConfigEntry<int> MaterialHorizonTurn;
@@ -145,23 +146,7 @@ namespace InterplanetaryAI
         // Ultracapacitors) ahead of Uranium Alloys. Ultrasonic Projection (Shield Defense) added; it was missing.
         // v0.13: Orbital Assembly (Missile) at #13, right after the telescope tech: v0.12.1 AIs researched it at T21-22, after
         // war began at T20, and filled the 30-weapon cap with Railguns into a Kinetic-only human.
-        // v0.14: the yield techs that upgrade every existing building right after Experimental Matter Control, in the winner's
-        // order (v0.13.1 human: Microwave + Nanostructuring T13, Robotic Mining T14, Magnetic Radiation Shielding T15, then
-        // energy 3.8k -> 8.0k and material 8.3k -> 13.1k in one turn at T16). Guts had them at T19-T22 and Robotic Mining
-        // never (it was #25). Magnetic Radiation Shielding also unlocks the Data Security Hub (counterintel) and the first
-        // Railgun projectile upgrade; Ultracapacitors (the second) right after Orbital Assembly.
         private const string DefaultResearchPlan =
-            "tec_MassBiochemicalProcessing,tec_MolecularRecycling,tec_SmartGrids,tec_SuperTensileMaterials,tec_QuantumComputing,"
-            + "tec_4thGenNuclearReactors,tec_LosslessEnergyTransfer,tec_2ndGenComposites,tec_MaglevServos,tec_ExperimentalMatterControl,"
-            + "tec_Nanostructuring,tec_MicrowaveEnergyTranmission,tec_RoboticMining,tec_MagneticRadiationShielding,tec_SelfAdjustingOptics,"
-            + "tec_AdvancedSignalProcessing,tec_OrbitalAssembly,tec_Ultracapacitors,tec_PlasmaChannelInduction,tec_UraniumAlloys,"
-            + "tec_EmDrives,tec_ThermonuclearWarheads,tec_InductionCoils,tec_ZeroReluctanceEngineering,tec_MagneticSaturationElimination,"
-            + "tec_EarlyWarningAI,tec_UltrasonicProjection,tec_Metamaterials,tec_DesignerNanomaterials,tec_VerticalFarming,"
-            + "tec_QuantumCommunications,tec_AtmosphericInterferenceMitigation,tec_CompositeHeatCells,tec_Octaazacubane,tec_AdvancedGenetics,"
-            + "tec_SelfHealingMaterials,tec_AITargetTracking,tec_MultiChainedStages,tec_GammaRayLasers,tec_MassDrivers";
-
-        // v0.13 default, replaced on load if the config still holds it unchanged.
-        private const string V013ResearchPlan =
             "tec_MassBiochemicalProcessing,tec_MolecularRecycling,tec_SmartGrids,tec_SuperTensileMaterials,tec_QuantumComputing,"
             + "tec_4thGenNuclearReactors,tec_LosslessEnergyTransfer,tec_2ndGenComposites,tec_MaglevServos,tec_ExperimentalMatterControl,"
             + "tec_SelfAdjustingOptics,tec_AdvancedSignalProcessing,tec_OrbitalAssembly,tec_Nanostructuring,tec_MicrowaveEnergyTranmission,"
@@ -320,14 +305,15 @@ namespace InterplanetaryAI
 
             ResearchPlanEnabled = Config.Bind("Research", "UsePlan", true,
                 "Research the Plan list in order (prerequisites are queued automatically) instead of the native random focus. Native research resumes when the plan is done.");
+            ResearchQueueDepth = Config.Bind("Research", "QueueDepth", 3,
+                "v0.14.1: plan targets queued at once (each with its prerequisites). The game spends science down the queue and banks the excess at its end; 1 = one target at a time (v0.13).");
             ResearchPlan = Config.Bind("Research", "Plan", DefaultResearchPlan,
                 "Tech IDs in order. Default (v0.3): the human's order from the 31 Oct 2026 win, economy first (material and energy projects, yield upgrades, Offshore Mine, Floating Plant), then the Nuclear Missile line, then the rest.");
             if (ResearchPlan.Value == V02ResearchPlan || ResearchPlan.Value == V03ResearchPlan || ResearchPlan.Value == V04ResearchPlan
-                || ResearchPlan.Value == V09ResearchPlan || ResearchPlan.Value == V010ResearchPlan || ResearchPlan.Value == V011ResearchPlan
-                || ResearchPlan.Value == V013ResearchPlan)
+                || ResearchPlan.Value == V09ResearchPlan || ResearchPlan.Value == V010ResearchPlan || ResearchPlan.Value == V011ResearchPlan)
             {
                 ResearchPlan.Value = DefaultResearchPlan;
-                Log.LogInfo("Research plan: replaced an unchanged older default with the v0.14 default.");
+                Log.LogInfo("Research plan: replaced an unchanged older default with the v0.13 default.");
             }
             if (Math.Abs(GrudgeWeight.Value - 0.6f) < 1e-4f)
             {
@@ -401,8 +387,8 @@ namespace InterplanetaryAI
                 "v0.12: on a strike turn the AI keeps searching for trajectories until this many seconds after its turn began, or the human ends the turn if later (the game: 20). Hold turns keep 20. Longer = more weapons aimed, more waiting between turns. 20-120.");
             AttritionLossShare = Config.Bind("Strategy", "AttritionLossShare", 0.15f,
                 "v0.14: fire whatever aims when our live weapons dropped since last turn by at least this share (and at least 2), pulse or not. v0.13.1 Guts held at 26 -> 17 -> 11 -> 10 weapons while the human destroyed them unfired. 0 = off.");
-            AiProcessorResources = Config.Bind("Strategy", "AiProcessorResources", 0,
-                "v0.14: the AI's per-frame work budget for trajectory and placement searches (the game: 200). Higher = more weapons find a trajectory in the same time, at some frame-rate cost. 0 = the game's value. 200-1000.");
+            AiProcessorResources = Config.Bind("Strategy", "AiProcessorResources", 2600,
+                "v0.14: total trajectory-search budget per frame, shared by all AIs (the game: 1200). Each AI weapon gets clamp(this / all AI weapons, 30, 100) steps per frame: 1200 gives 26 weapons 46 steps, 2600 gives them the full 100. Higher = more weapons aimed in the same time, more CPU per frame during the human's turn. 0 = the game's 1200.");
             ReachFailMinShare = Config.Bind("Strategy", "ReachFailMinShare", 0.5f,
                 "v0.12: a weapon that found no trajectory marks its target unreachable only when at least this share of the weapons aimed at that target found one (otherwise the search ran out of time).");
             RollEnergyShare = Config.Bind("Strategy", "RollEnergyShare", 0.5f, "Share of a target's energy income assumed left for its defense rolls (150 energy each).");

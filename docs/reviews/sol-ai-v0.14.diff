@@ -1,0 +1,582 @@
+diff --git a/AI/Brain/Director.cs b/AI/Brain/Director.cs
+index 0a58e80..d933d83 100644
+--- a/AI/Brain/Director.cs
++++ b/AI/Brain/Director.cs
+@@ -180,6 +180,13 @@ namespace InterplanetaryAI.Brain
+             return value / Math.Max(1f, cost);
+         }
+ 
++        // v0.14: free power slots a newly placed plant adds: its connectors minus the one that links it to the grid (BuildingsData
++        // power_connectors: Solar and Floating 3, Nuclear 4). Buildings that do not distribute power add none.
++        public static int PlantSlots(bool distributesPower, int connectors)
++        {
++            return distributesPower ? Math.Max(0, connectors - 1) : 0;
++        }
++
+         // v0.10: material is in glut when the banked stock is several turns of what this turn's energy can spend.
+         public static bool IsMaterialGlut(int materialStock, int energyBudget, float ratio, int minimum)
+         {
+diff --git a/AI/Brain/Memory.cs b/AI/Brain/Memory.cs
+index 9496d8c..7a1c9f8 100644
+--- a/AI/Brain/Memory.cs
++++ b/AI/Brain/Memory.cs
+@@ -191,4 +191,48 @@ namespace InterplanetaryAI.Brain
+             return weakestCity;
+         }
+     }
++
++    // v0.14: placement throttle across turns. v0.11 carried a failing type's throttle (at most two queued a turn) only to the
++    // turn just after, so a type with no room left was tried again in bulk later (v0.13.1: 6 Offshore Mines abandoned at T14,
++    // 14 queued and 13 abandoned at T18). A type whose placements gave up 3+ times on `lastTurn` is throttled to
++    // lastTurn + turns; a type queued with no failure that turn is released.
++    public static class PlacementBackoff
++    {
++        public static Dictionary<string, int> Next(IDictionary<string, int> backoffUntil, IDictionary<string, int> failures,
++            IDictionary<string, int> queued, int lastTurn, int turns)
++        {
++            Dictionary<string, int> next = new Dictionary<string, int>();
++            if (turns <= 0) return next;
++            if (backoffUntil != null)
++            {
++                foreach (KeyValuePair<string, int> pair in backoffUntil)
++                {
++                    if (pair.Value > lastTurn) next[pair.Key] = pair.Value;
++                }
++            }
++            if (failures != null)
++            {
++                foreach (KeyValuePair<string, int> pair in failures)
++                {
++                    if (pair.Value >= 3) next[pair.Key] = lastTurn + turns;
++                }
++            }
++            if (queued != null)
++            {
++                foreach (KeyValuePair<string, int> pair in queued)
++                {
++                    int failed = 0;
++                    if (failures != null) failures.TryGetValue(pair.Key, out failed);
++                    if (pair.Value > 0 && failed == 0) next.Remove(pair.Key);
++                }
++            }
++            return next;
++        }
++
++        public static bool Throttled(IDictionary<string, int> backoffUntil, string id, int turn)
++        {
++            int until;
++            return backoffUntil != null && backoffUntil.TryGetValue(id, out until) && until >= turn;
++        }
++    }
+ }
+diff --git a/AI/Brain/Offense.cs b/AI/Brain/Offense.cs
+index 677cbec..16a53a3 100644
+--- a/AI/Brain/Offense.cs
++++ b/AI/Brain/Offense.cs
+@@ -82,4 +82,18 @@ namespace InterplanetaryAI.Brain
+             return baseWeight * Math.Max(1f, Math.Min(Math.Max(1f, maxMultiplier), ratio));
+         }
+     }
++
++    // v0.14: trajectory search steps per frame for each AI weapon, as AIWeaponTargeting.BeginTurn computes them from the
++    // total processor budget (the game: 1200 over all AIs): clamp(total / all AI weapons, 30, 100).
++    public static class AimBudget
++    {
++        public const int MinSteps = 30, MaxSteps = 100;
++
++        public static int StepsPerWeapon(int totalBudget, int totalAiWeapons)
++        {
++            if (totalAiWeapons <= 0) return MinSteps;
++            int steps = (int)Math.Round(totalBudget / (double)totalAiWeapons); // Mathf.RoundToInt: half to even
++            return Math.Max(MinSteps, Math.Min(MaxSteps, steps));
++        }
++    }
+ }
+diff --git a/AI/Brain/Strategy.cs b/AI/Brain/Strategy.cs
+index f26e7ed..e3c3c5b 100644
+--- a/AI/Brain/Strategy.cs
++++ b/AI/Brain/Strategy.cs
+@@ -68,6 +68,11 @@ namespace InterplanetaryAI.Brain
+         public int ObservedMinImpacts = 10;    // our own shots of a weapon at a target before they correct its coverage
+         public float ObservedPriorWeight = 20f; // impacts' worth of weight on the modelled coverage
+         public float DefaultChance = 0.8f;     // intercept chance assumed for defenses we have not seen
++        // v0.14 attrition: fire what we have when the arsenal shrank since last turn by at least this share (and at least
++        // AttritionMinLoss weapons). v0.13.1 Guts held at 26 -> 17 -> 11 -> 10 live weapons (T24-T27) waiting for a
++        // saturating salvo while the human destroyed them unfired. 0 = off.
++        public float AttritionLossShare = 0.15f;
++        public int AttritionMinLoss = 2;
+     }
+ 
+     public sealed class StrategyDecision
+@@ -163,15 +168,24 @@ namespace InterplanetaryAI.Brain
+ 
+         public static bool ShouldAbort(int hitsOnCommit, int weapons, string reason, StrategySettings s)
+         {
+-            if (reason == "max-hold") return false;
++            if (reason == "max-hold" || reason == "attrition") return false;
+             return hitsOnCommit < AbortThreshold(weapons, s);
+         }
+ 
++        // v0.14: the arsenal is being destroyed: last turn's live weapons minus this turn's is at least
++        // max(AttritionMinLoss, AttritionLossShare x last turn's). lastWeapons < 0 = unknown.
++        public static bool Attrition(int weapons, int lastWeapons, StrategySettings s)
++        {
++            if (s.AttritionLossShare <= 0f || weapons >= lastWeapons) return false; // lastWeapons < 0 (unknown) ends here too
++            int lost = lastWeapons - weapons;
++            return lost >= Math.Max(1, s.AttritionMinLoss) && lost >= s.AttritionLossShare * lastWeapons;
++        }
++
+         // lastStrikeTurn: last turn we fired (-1000 never); holdTurns: consecutive war turns held with weapons;
+         // lastCommitId: the enemy our weapons were pointed at last turn (-1 none).
+         public static StrategyDecision Decide(int turn, bool war, IDictionary<string, float> salvo, float accuracy, IList<SalvoTarget> targets,
+             Dictionary<string, Dictionary<string, float>> counters, int lastStrikeTurn, int holdTurns, int weapons, StrategySettings s,
+-            int lastCommitId = -1)
++            int lastCommitId = -1, int lastWeapons = -1)
+         {
+             StrategyDecision d = new StrategyDecision { War = war, Shots = weapons };
+             float maxScore = 0f;
+@@ -217,6 +231,12 @@ namespace InterplanetaryAI.Brain
+                 d.Fire = true; // never sit on weapons forever, small arsenals included
+                 d.Reason = "max-hold";
+             }
++            else if (d.Passing > 0f && Attrition(weapons, lastWeapons, s))
++            {
++                // v0.14: use them or lose them, pulse or not (exempt from the abort, like max-hold).
++                d.Fire = true;
++                d.Reason = "attrition";
++            }
+             else if (weapons >= s.MinWeapons && saturated && (pulseReady || broken))
+             {
+                 d.Fire = true;
+diff --git a/AI/DirectorPatches.cs b/AI/DirectorPatches.cs
+index f39bd8b..489ec6f 100644
+--- a/AI/DirectorPatches.cs
++++ b/AI/DirectorPatches.cs
+@@ -109,6 +109,8 @@ namespace InterplanetaryAI
+             public int AimedWeapons;                // own weapons needing a trajectory (not lasers, not superweapons), queued included
+             // across turns
+             public int WaterCooldownUntil;
++            // v0.14: building type -> last turn it stays throttled (at most two queued a turn) after 3+ placements gave up
++            public Dictionary<string, int> BackoffUntil = new Dictionary<string, int>();
+         }
+ 
+         private static readonly Dictionary<int, DirectorState> s_states = new Dictionary<int, DirectorState>();
+@@ -205,7 +207,9 @@ namespace InterplanetaryAI
+                     lastAbandons[pair.Key] = before >= 3 && pair.Value >= 1 ? Math.Max(3, pair.Value) : pair.Value;
+                 }
+             }
+-            d = new DirectorState { WaterCooldownUntil = waterCooldown, Turn = turn, LastEnergyLeft = lastLeft, LastEnergyBudget = lastBudget };
++            Dictionary<string, int> backoff = turn > d.Turn ? NextBackoff(d, Plugin.PlacementBackoffTurns.Value) : new Dictionary<string, int>();
++            d = new DirectorState { WaterCooldownUntil = waterCooldown, Turn = turn, LastEnergyLeft = lastLeft, LastEnergyBudget = lastBudget,
++                BackoffUntil = backoff };
+             foreach (KeyValuePair<string, int> pair in lastAbandons) d.AbandonedLastTurn[pair.Key] = pair.Value;
+             s_states[core.PlayerData.PlayerID] = d;
+ 
+@@ -1284,7 +1288,21 @@ namespace InterplanetaryAI
+             int abandoned, queuedNow;
+             d.AbandonedLastTurn.TryGetValue(id, out abandoned);
+             d.QueuedById.TryGetValue(id, out queuedNow);
+-            return abandoned >= 3 && queuedNow >= 2;
++            bool backoff = PlacementBackoff.Throttled(d.BackoffUntil, id, d.Turn);
++            return (abandoned >= 3 || backoff) && queuedNow >= 2;
++        }
++
++        private static Dictionary<string, int> NextBackoff(DirectorState last, int turns)
++        {
++            if (last == null) return new Dictionary<string, int>();
++            return PlacementBackoff.Next(last.BackoffUntil, last.PlacementFailures, last.QueuedById, last.Turn, turns);
++        }
++
++        // v0.14: free power slots a newly placed plant adds: its connectors minus the one that links it to the grid.
++        private static int PlantSlots(BuildingData data)
++        {
++            if (data == null) return 0;
++            return EconomyDirector.PlantSlots(data.distribute_power.IsValueSet && data.distribute_power.Value, Value(data.power_connectors));
+         }
+ 
+         private static bool QueueBuilding(AIConstruction construction, AICore core, DirectorState d, BuildingData data, string role)
+@@ -1299,6 +1317,13 @@ namespace InterplanetaryAI
+                 d.SlotsLeft--;
+                 construction.PowerSlotNeed++; // keep the native bookkeeping consistent
+             }
++            else
++            {
++                // v0.14: a queued plant brings its connectors (one links it to the grid). v0.13.1 Guts started T1 with 0 free
++                // slots, so no Mine could be queued and the economy bought 3 Solar Plants with 1,200 of its 1,350 material
++                // (then 750-975 energy unspent each turn T2-T6); the human built 1 Solar Plant + 1 Mine.
++                d.SlotsLeft += PlantSlots(data);
++            }
+             Record(d, role + ":" + data.id.Value);
+             Increment(d.QueuedById, data.id.Value);
+             return true;
+@@ -1847,7 +1872,11 @@ namespace InterplanetaryAI
+             core.Resources.Energy += energy;
+             core.Resources.Material += material;
+             if (!(data.distribute_power.IsValueSet && data.distribute_power.Value)) d.SlotsLeft++;
+-            else d.PowerEnergySpent = Math.Max(0, d.PowerEnergySpent - energy); // a refunded plant was not spent on energy
++            else
++            {
++                d.PowerEnergySpent = Math.Max(0, d.PowerEnergySpent - energy); // a refunded plant was not spent on energy
++                d.SlotsLeft -= PlantSlots(data); // v0.14: its connectors were counted when it was queued
++            }
+             d.Refunds++;
+             d.Reopened = true;
+             Record(d, "abandoned:" + id);
+diff --git a/AI/Patches.cs b/AI/Patches.cs
+index 2840101..c966a02 100644
+--- a/AI/Patches.cs
++++ b/AI/Patches.cs
+@@ -56,8 +56,34 @@ namespace InterplanetaryAI
+ 
+         // ---- who to shoot ----------------------------------------------------------------------
+ 
++        // v0.14: the trajectory search budget. AIWeaponTargeting.BeginTurn gives every AI weapon clamp(1200 / all AI weapons,
++        // 30, 100) search steps per frame (1200 = AICore's processor resources over all AIs). v0.13.1 1v1: 11-17 weapons
++        // (100 steps each) aimed 11/11 and 17/17; 26 weapons (46 each) aimed 6/26 and 9/26 on the two strike turns.
++        // AiProcessorResources replaces the 1200; the per-weapon clamp stays. 0 = the game's budget.
++        private static readonly FieldInfo s_trajectoryCalculator = AccessTools.Field(typeof(AIWeaponTargeting), "m_trajectoryCalculator");
++
++        private static void ApplyProcessorBudget(AIWeaponTargeting targeting)
++        {
++            int total = Plugin.AiProcessorResources.Value;
++            if (total <= 0) return;
++            try
++            {
++                int ais = Math.Max(1, PlayerManager.GetAiPlayerAmount());
++                targeting.ProcessorResourcesThisFrame = Math.Max(1, total / ais);
++                int perWeapon = AimBudget.StepsPerWeapon(total, PlayerManager.GetTotalAIWeaponAmount());
++                Interplanetary.Weapons.Trajectories.TrajectoryCalculator calc =
++                    s_trajectoryCalculator != null ? s_trajectoryCalculator.GetValue(targeting) as Interplanetary.Weapons.Trajectories.TrajectoryCalculator : null;
++                if (calc != null) calc.ReallocateDesignatedStepAmount(perWeapon);
++            }
++            catch (Exception e)
++            {
++                ReportOnce("processor-budget", e);
++            }
++        }
++
+         private static void TargetingBeginTurnPostfix(AIWeaponTargeting __instance)
+         {
++            if (Plugin.Active) ApplyProcessorBudget(__instance);
+             if (!Plugin.Active || !Plugin.SmartTargeting.Value) return;
+             try
+             {
+diff --git a/AI/Plugin.cs b/AI/Plugin.cs
+index d81885e..e3f3cd2 100644
+--- a/AI/Plugin.cs
++++ b/AI/Plugin.cs
+@@ -22,7 +22,7 @@ namespace InterplanetaryAI
+     {
+         public const string GUID = "pavol.interplanetary.ai";
+         public const string NAME = "Interplanetary EE: Smarter AI";
+-        public const string VERSION = "0.13.1";
++        public const string VERSION = "0.14.0";
+ 
+         internal static ManualLogSource Log;
+ 
+@@ -100,6 +100,9 @@ namespace InterplanetaryAI
+         internal static ConfigEntry<float> AbortBelowShare;
+         internal static ConfigEntry<int> AbortBelowWeapons;
+         internal static ConfigEntry<float> AimingWindowSeconds;
++        internal static ConfigEntry<float> AttritionLossShare;
++        internal static ConfigEntry<int> AiProcessorResources;
++        internal static ConfigEntry<int> PlacementBackoffTurns;
+         internal static ConfigEntry<float> ReachFailMinShare;
+         internal static ConfigEntry<int> MaxWeapons;
+         internal static ConfigEntry<int> MaterialHorizonTurn;
+@@ -142,7 +145,23 @@ namespace InterplanetaryAI
+         // Ultracapacitors) ahead of Uranium Alloys. Ultrasonic Projection (Shield Defense) added; it was missing.
+         // v0.13: Orbital Assembly (Missile) at #13, right after the telescope tech: v0.12.1 AIs researched it at T21-22, after
+         // war began at T20, and filled the 30-weapon cap with Railguns into a Kinetic-only human.
++        // v0.14: the yield techs that upgrade every existing building right after Experimental Matter Control, in the winner's
++        // order (v0.13.1 human: Microwave + Nanostructuring T13, Robotic Mining T14, Magnetic Radiation Shielding T15, then
++        // energy 3.8k -> 8.0k and material 8.3k -> 13.1k in one turn at T16). Guts had them at T19-T22 and Robotic Mining
++        // never (it was #25). Magnetic Radiation Shielding also unlocks the Data Security Hub (counterintel) and the first
++        // Railgun projectile upgrade; Ultracapacitors (the second) right after Orbital Assembly.
+         private const string DefaultResearchPlan =
++            "tec_MassBiochemicalProcessing,tec_MolecularRecycling,tec_SmartGrids,tec_SuperTensileMaterials,tec_QuantumComputing,"
++            + "tec_4thGenNuclearReactors,tec_LosslessEnergyTransfer,tec_2ndGenComposites,tec_MaglevServos,tec_ExperimentalMatterControl,"
++            + "tec_Nanostructuring,tec_MicrowaveEnergyTranmission,tec_RoboticMining,tec_MagneticRadiationShielding,tec_SelfAdjustingOptics,"
++            + "tec_AdvancedSignalProcessing,tec_OrbitalAssembly,tec_Ultracapacitors,tec_PlasmaChannelInduction,tec_UraniumAlloys,"
++            + "tec_EmDrives,tec_ThermonuclearWarheads,tec_InductionCoils,tec_ZeroReluctanceEngineering,tec_MagneticSaturationElimination,"
++            + "tec_EarlyWarningAI,tec_UltrasonicProjection,tec_Metamaterials,tec_DesignerNanomaterials,tec_VerticalFarming,"
++            + "tec_QuantumCommunications,tec_AtmosphericInterferenceMitigation,tec_CompositeHeatCells,tec_Octaazacubane,tec_AdvancedGenetics,"
++            + "tec_SelfHealingMaterials,tec_AITargetTracking,tec_MultiChainedStages,tec_GammaRayLasers,tec_MassDrivers";
++
++        // v0.13 default, replaced on load if the config still holds it unchanged.
++        private const string V013ResearchPlan =
+             "tec_MassBiochemicalProcessing,tec_MolecularRecycling,tec_SmartGrids,tec_SuperTensileMaterials,tec_QuantumComputing,"
+             + "tec_4thGenNuclearReactors,tec_LosslessEnergyTransfer,tec_2ndGenComposites,tec_MaglevServos,tec_ExperimentalMatterControl,"
+             + "tec_SelfAdjustingOptics,tec_AdvancedSignalProcessing,tec_OrbitalAssembly,tec_Nanostructuring,tec_MicrowaveEnergyTranmission,"
+@@ -304,10 +323,11 @@ namespace InterplanetaryAI
+             ResearchPlan = Config.Bind("Research", "Plan", DefaultResearchPlan,
+                 "Tech IDs in order. Default (v0.3): the human's order from the 31 Oct 2026 win, economy first (material and energy projects, yield upgrades, Offshore Mine, Floating Plant), then the Nuclear Missile line, then the rest.");
+             if (ResearchPlan.Value == V02ResearchPlan || ResearchPlan.Value == V03ResearchPlan || ResearchPlan.Value == V04ResearchPlan
+-                || ResearchPlan.Value == V09ResearchPlan || ResearchPlan.Value == V010ResearchPlan || ResearchPlan.Value == V011ResearchPlan)
++                || ResearchPlan.Value == V09ResearchPlan || ResearchPlan.Value == V010ResearchPlan || ResearchPlan.Value == V011ResearchPlan
++                || ResearchPlan.Value == V013ResearchPlan)
+             {
+                 ResearchPlan.Value = DefaultResearchPlan;
+-                Log.LogInfo("Research plan: replaced an unchanged older default with the v0.13 default.");
++                Log.LogInfo("Research plan: replaced an unchanged older default with the v0.14 default.");
+             }
+             if (Math.Abs(GrudgeWeight.Value - 0.6f) < 1e-4f)
+             {
+@@ -379,6 +399,10 @@ namespace InterplanetaryAI
+             AbortBelowWeapons = Config.Bind("Strategy", "AbortBelowWeapons", 3, "v0.12: call a strike off when fewer than this many weapons found a trajectory onto the committed target.");
+             AimingWindowSeconds = Config.Bind("Strategy", "AimingWindowSeconds", 40f,
+                 "v0.12: on a strike turn the AI keeps searching for trajectories until this many seconds after its turn began, or the human ends the turn if later (the game: 20). Hold turns keep 20. Longer = more weapons aimed, more waiting between turns. 20-120.");
++            AttritionLossShare = Config.Bind("Strategy", "AttritionLossShare", 0.15f,
++                "v0.14: fire whatever aims when our live weapons dropped since last turn by at least this share (and at least 2), pulse or not. v0.13.1 Guts held at 26 -> 17 -> 11 -> 10 weapons while the human destroyed them unfired. 0 = off.");
++            AiProcessorResources = Config.Bind("Strategy", "AiProcessorResources", 0,
++                "v0.14: the AI's per-frame work budget for trajectory and placement searches (the game: 200). Higher = more weapons find a trajectory in the same time, at some frame-rate cost. 0 = the game's value. 200-1000.");
+             ReachFailMinShare = Config.Bind("Strategy", "ReachFailMinShare", 0.5f,
+                 "v0.12: a weapon that found no trajectory marks its target unreachable only when at least this share of the weapons aimed at that target found one (otherwise the search ran out of time).");
+             RollEnergyShare = Config.Bind("Strategy", "RollEnergyShare", 0.5f, "Share of a target's energy income assumed left for its defense rolls (150 energy each).");
+@@ -450,8 +474,17 @@ namespace InterplanetaryAI
+             }
+             DefensesPerTurn = Config.Bind("Director", "DefensesPerTurn", 3,
+                 "Defenses queued per turn when on target; more when behind (see DefenseCatchUpTurns).");
+-            DefenseFloorShare = Config.Bind("Director", "DefenseFloorShare", 0.15f,
+-                "At war, defenses wanted are at least this share of our own non-city buildings, seen threat or not. 0 = off (v0.4 behaviour).");
++            DefenseFloorShare = Config.Bind("Director", "DefenseFloorShare", 0.25f,
++                "At war, defenses wanted are at least this share of our own non-city buildings, seen threat or not. 0 = off (v0.4 behaviour). v0.14: 0.25 (v0.13.1: the human held 23 Kinetic per ~100 buildings before attacking; the AI 15 per 99 at 0.15).");
++            if (migrated.Value == "0.13")
++            {
++                if (Math.Abs(DefenseFloorShare.Value - 0.15f) < 1e-4f)
++                {
++                    DefenseFloorShare.Value = 0.25f;
++                    Log.LogInfo("DefenseFloorShare: replaced the unchanged default 0.15 with 0.25 (once).");
++                }
++                migrated.Value = "0.14";
++            }
+             DefenseCatchUpTurns = Config.Bind("Director", "DefenseCatchUpTurns", 3,
+                 "When behind on defenses, queue enough per turn to close the gap in this many turns.");
+             DefenseObservedMargin = Config.Bind("Director", "DefenseObservedMargin", 1.25f,
+@@ -483,6 +516,8 @@ namespace InterplanetaryAI
+             CounterintelPerBuildings = Config.Bind("Director", "CounterintelPerBuildings", 12,
+                 "One counterintel building (Data Security Hub) wanted per this many non-city buildings; hides them from enemy intel. 0 = none.");
+             CounterintelFromTurn = Config.Bind("Director", "CounterintelFromTurn", 8, "First turn counterintel is built.");
++            PlacementBackoffTurns = Config.Bind("Director", "PlacementBackoffTurns", 5,
++                "v0.14: a building type whose placements gave up 3+ times in a turn is queued at most twice a turn for this many turns, unless one of its placements succeeds (v0.13.1: 6 Offshore Mines abandoned at T14, then 13 more at T18). 0 = only the next turn (v0.11).");
+             PlacementStepCap = Config.Bind("Director", "PlacementStepCap", 1500,
+                 "Placement attempts before a building search gives up and its cost is returned (native searches never give up).");
+ 
+@@ -569,6 +604,7 @@ namespace InterplanetaryAI
+             StrategyCfg.BigSalvoShots = Math.Max(StrategyCfg.MinPassingShots, BigSalvoShots.Value);
+             StrategyCfg.AbortBelowShare = Clamp01(AbortBelowShare.Value);
+             StrategyCfg.AbortBelowWeapons = Math.Max(1, AbortBelowWeapons.Value);
++            StrategyCfg.AttritionLossShare = Clamp01(AttritionLossShare.Value);
+ 
+             Build.Growth = BuildPlanner.Parse(GrowthWeights.Value, Build.Growth);
+             Build.Pressure = BuildPlanner.Parse(PressureWeights.Value, Build.Pressure);
+diff --git a/AI/StrategyPatches.cs b/AI/StrategyPatches.cs
+index 10cc49d..e24849a 100644
+--- a/AI/StrategyPatches.cs
++++ b/AI/StrategyPatches.cs
+@@ -28,6 +28,7 @@ namespace InterplanetaryAI
+             public int ReleasedEnergy;
+             public bool Reported;               // this turn's firing has been counted
+             public int LastCommitId = -1;       // the enemy the weapons were pointed at last turn
++            public int LastWeapons = -1;        // v0.14: live weapons counted at last turn's decision (attrition)
+             public bool Aborted;                // this turn's strike was called off at firing time
+             public StrategyDecision Decision;
+             public readonly HashSet<int> PlanetsSeen = new HashSet<int>(); // enemies whose buildings our intel has seen
+@@ -142,7 +143,7 @@ namespace InterplanetaryAI
+             }
+             if (state.Turn == turn) return; // decided already (a turn start seen twice)
+             if (turn < state.Turn) { state.LastStrikeTurn = -1000; state.HoldTurns = 0; state.LastCommitId = -1; } // an earlier save
+-            if (turn != state.Turn + 1) state.LastCommitId = -1; // aim memory only from the turn just before
++            if (turn != state.Turn + 1) { state.LastCommitId = -1; state.LastWeapons = -1; } // memory only from the turn just before
+             state.Turn = turn;
+             state.Decision = null;
+             state.ReleasedEnergy = 0;
+@@ -217,7 +218,8 @@ namespace InterplanetaryAI
+                     });
+                 }
+                 decision = Strategy.Decide(turn, war, salvo, accuracy, targets, DefensePlanner.Counters, state.LastStrikeTurn, state.HoldTurns,
+-                    weapons, Plugin.StrategyCfg, state.LastCommitId);
++                    weapons, Plugin.StrategyCfg, state.LastCommitId, state.LastWeapons);
++                state.LastWeapons = weapons;
+                 if (!decision.Fire && !HoldAvailable)
+                 {
+                     decision.Fire = true; // cannot stop the shots: do not take their energy either
+diff --git a/AI/Tests/Program.cs b/AI/Tests/Program.cs
+index 00ec23d..4de5922 100644
+--- a/AI/Tests/Program.cs
++++ b/AI/Tests/Program.cs
+@@ -53,6 +53,7 @@ namespace InterplanetaryAI.Tests
+             V011Rules();
+             V012Rules();
+             V013Rules();
++            V014Rules();
+ 
+             Console.WriteLine(s_checks + " checks, " + s_failures + " failed");
+             return s_failures == 0 ? 0 : 1;
+@@ -333,6 +334,68 @@ namespace InterplanetaryAI.Tests
+         }
+ 
+         // ---- v0.13: repair, no extraction in material glut, weapons ranked per slot -------------------
++        private static void V014Rules()
++        {
++            StrategySettings s = new StrategySettings { OverlapDefenses = 20f };
++            // Attrition: the arsenal shrank by >= max(2, 15%) since last turn (v0.13.1 Guts: 26 -> 17 -> 11 -> 10 held).
++            Check(Strategy.Attrition(17, 26, s), "26 -> 17 live weapons is attrition");
++            Check(Strategy.Attrition(22, 26, s), "26 -> 22 (4 >= 3.9) is attrition");
++            Check(!Strategy.Attrition(23, 26, s), "26 -> 23 (3 < 3.9) is not");
++            Check(!Strategy.Attrition(9, 10, s), "10 -> 9 (1 < AttritionMinLoss 2) is not");
++            Check(!Strategy.Attrition(4, 5, s), "5 -> 4: 20% but 1 < AttritionMinLoss 2 is not");
++            Check(!Strategy.Attrition(17, -1, s), "unknown last turn is not");
++            Check(!Strategy.Attrition(30, 26, s), "a growing arsenal is not");
++            Check(!Strategy.Attrition(17, 26, new StrategySettings { AttritionLossShare = 0f }), "share 0 = off");
++            Func<int, List<SalvoTarget>> human = kinetic => new List<SalvoTarget> { Target(0, 1f, kinetic, true, 6000f) };
++            StrategyDecision held = Strategy.Decide(25, true, Railguns(17), 1f, human(19), EnhancedCounters(), -1000, 1, 17, s, 0, 17);
++            Check(!held.Fire && held.Reason == "below-saturation", "17 weapons, steady arsenal: hold; got " + held.Reason);
++            StrategyDecision shrinking = Strategy.Decide(25, true, Railguns(17), 1f, human(19), EnhancedCounters(), -1000, 1, 17, s, 0, 26);
++            Check(shrinking.Fire && shrinking.Reason == "attrition", "17 weapons, 26 last turn: fire them; got " + shrinking.Reason);
++            StrategyDecision pulse = Strategy.Decide(25, true, Railguns(17), 1f, human(19), EnhancedCounters(), 24, 0, 17, s, 0, 26);
++            Check(pulse.Fire && pulse.Reason == "attrition", "attrition fires even right after a strike; got " + pulse.Reason);
++            StrategyDecision peace = Strategy.Decide(15, false, Railguns(17), 1f, human(19), EnhancedCounters(), -1000, 0, 17, s, 0, 26);
++            Check(!peace.Fire, "no attrition fire before war");
++            Check(!Strategy.ShouldAbort(1, 17, "attrition", s), "an attrition strike is not called off");
++            Check(Strategy.ShouldAbort(1, 17, "saturated", s), "a saturated strike with 1 aimed weapon still is");
++
++            // Aim budget: clamp(total / all AI weapons, 30, 100) steps per weapon per frame (AIWeaponTargeting.BeginTurn).
++            Check(AimBudget.StepsPerWeapon(1200, 26) == 46, "1v1, 26 weapons: 46 steps; got " + AimBudget.StepsPerWeapon(1200, 26));
++            Check(AimBudget.StepsPerWeapon(1200, 11) == 100, "11 weapons: clamped to 100");
++            Check(AimBudget.StepsPerWeapon(1200, 60) == 30, "60 weapons: floor 30");
++            Check(AimBudget.StepsPerWeapon(2600, 26) == 100, "a 2600 budget gives 26 weapons the full 100");
++            Check(AimBudget.StepsPerWeapon(1200, 0) == 30, "no weapons: the floor");
++
++            // Placement backoff across turns (v0.13.1: Offshore Mines 6 abandoned at T14, 13 of 14 at T18).
++            var none = new Dictionary<string, int>();
++            var t14 = PlacementBackoff.Next(none, new Dictionary<string, int> { { "off", 6 } }, new Dictionary<string, int> { { "off", 6 } }, 14, 5);
++            Check(PlacementBackoff.Throttled(t14, "off", 18), "6 abandoned at T14: still throttled at T18");
++            Check(!PlacementBackoff.Throttled(t14, "off", 20), "released after 5 turns");
++            Check(!PlacementBackoff.Throttled(t14, "mine", 15), "other types untouched");
++            var t15 = PlacementBackoff.Next(t14, none, none, 15, 5);
++            Check(PlacementBackoff.Throttled(t15, "off", 18), "a turn without trying keeps the throttle");
++            var placed = PlacementBackoff.Next(t14, none, new Dictionary<string, int> { { "off", 2 } }, 15, 5);
++            Check(!PlacementBackoff.Throttled(placed, "off", 16), "two placed with no failure: released");
++            var partial = PlacementBackoff.Next(t14, new Dictionary<string, int> { { "off", 3 } }, new Dictionary<string, int> { { "off", 4 } }, 16, 5);
++            Check(PlacementBackoff.Throttled(partial, "off", 21), "1 of 4 placed, 3 failed: throttle renewed to T21");
++            var small = PlacementBackoff.Next(none, new Dictionary<string, int> { { "off", 2 } }, new Dictionary<string, int> { { "off", 2 } }, 14, 5);
++            Check(!PlacementBackoff.Throttled(small, "off", 15), "2 failures do not start a backoff");
++            Check(PlacementBackoff.Next(none, new Dictionary<string, int> { { "off", 6 } }, none, 14, 0).Count == 0, "turns 0 = off");
++
++            // A queued plant's connectors open slots: at T1 (0 free slots) the economy can buy a Mine after one plant.
++            Check(EconomyDirector.PlantSlots(true, 3) == 2 && EconomyDirector.PlantSlots(true, 4) == 3, "Solar 3 -> 2 slots, Nuclear 4 -> 3");
++            Check(EconomyDirector.PlantSlots(false, 2) == 0, "a Mine opens none");
++            EconOption mineT1 = new EconOption { Id = "mine", Kind = OptionKind.Producer, Energy = 300, Material = 300, MaterialGain = 100f, NeedsSlot = true };
++            EconOption solarT1 = new EconOption { Id = "solar", Kind = OptionKind.Plant, Energy = 250, Material = 400, EnergyGain = 100f };
++            // v0.13.1 Guts T1 after one Solar Plant: 750 energy and 200 material income, 500 energy and 950 material left.
++            EconomyBalance t1 = new EconomyBalance { EnergyIncome = 850, MaterialIncome = 200, EnergyBudget = 500, MaterialBudget = 950 };
++            Check(EconomyDirector.Best(new List<EconOption> { mineT1, solarT1 }, t1, 0) == solarT1, "0 slots: only another plant (v0.13.1: 3 Solar Plants)");
++            Check(EconomyDirector.Best(new List<EconOption> { mineT1, solarT1 }, t1, EconomyDirector.PlantSlots(true, 3)) == mineT1,
++                "the first plant's 2 slots: a Mine");
++
++            // Defense floor 0.25 (v0.13.1 T21: 140 non-city buildings, blind): 35 wanted, not 21.
++            Check(EconomyDirector.DesiredDefenses(0, 0f, 0.4f, 500f, 60, true, 140, 0.25f) == 35, "floor 0.25 x 140 = 35");
++        }
++
+         private static void V013Rules()
+         {
+             // Repair: weapons, then defenses, then power; most damaged first; within budgets and count.
+diff --git a/AI/tools/human_summary.py b/AI/tools/human_summary.py
+new file mode 100644
+index 0000000..d63ffc9
+--- /dev/null
++++ b/AI/tools/human_summary.py
+@@ -0,0 +1,48 @@
++"""Per-turn summary of the human telemetry: weapons, defenses, shots fired, research completed, counterintel.
++
++Usage: python AI/tools/human_summary.py docs/playtests/data/v0131-human-telemetry.jsonl
++"""
++import collections
++import json
++import sys
++
++path = sys.argv[1]
++last_state = {}
++shots = collections.Counter()
++hits_planet = collections.Counter()
++completed_at = {}
++
++for line in open(path, encoding="utf-8"):
++    d = json.loads(line)
++    t = d.get("turn")
++    if d.get("eventType") == "shot":
++        s = d.get("shot") or {}
++        shots[(t, s.get("weaponType"))] += 1
++        if s.get("hitOtherPlayerPlanet"):
++            hits_planet[t] += 1
++    state = d.get("state")
++    if state and state.get("player"):
++        last_state[t] = state["player"]
++        for r in state["player"].get("research", []):
++            if r.get("completed") and r["id"] not in completed_at:
++                completed_at[r["id"]] = t
++
++keys = ("bui_Railgun", "bui_Coilcannon", "bui_Missile", "bui_Laser", "bui_KineticDefense", "bui_IonDefense",
++        "bui_ShieldDefense", "bui_DataSecurityHub", "bui_TelescopeArray")
++print("turn  " + " ".join(k.replace("bui_", "")[:8].rjust(8) for k in keys) + "   shots(by type)  ci_mult")
++for t in sorted(last_state):
++    p = last_state[t]
++    b = {x["id"]: x["count"] for x in p.get("buildings", [])}
++    shot_str = ",".join("%s:%d" % (w.replace("type_", ""), n) for (tt, w), n in sorted(shots.items()) if tt == t)
++    print("%4d  " % t + " ".join(str(b.get(k, 0)).rjust(8) for k in keys) + "   " + (shot_str or "-")
++          + "  " + str(p.get("resources", {}).get("counterintelMultiplier")))
++
++print("\nresearch completed (turn first seen):")
++for tech, t in sorted(completed_at.items(), key=lambda x: (x[1], x[0])):
++    print("  T%d %s" % (t, tech))
++
++# Upgrades, if the snapshot carries them
++p = last_state[max(last_state)]
++for key in ("upgrades", "installedUpgrades"):
++    if key in p:
++        print("\n%s at end:" % key, p[key])
+diff --git a/AI/tools/human_turns.py b/AI/tools/human_turns.py
+new file mode 100644
+index 0000000..dfff39f
+--- /dev/null
++++ b/AI/tools/human_turns.py
+@@ -0,0 +1,38 @@
++"""Human turn timing and early builds from the telemetry.
++
++Usage: python AI/tools/human_turns.py docs/playtests/data/v0131-human-telemetry.jsonl
++Prints, per turn: seconds from round_start to turn_end (the human's planning time, during which the AI aims), and the
++human's building counts for the first turns.
++"""
++import datetime
++import json
++import sys
++
++
++def ts(s):
++    s = s.rstrip("Z")
++    if "." in s:
++        head, frac = s.split(".")
++        s = head + "." + frac[:6]
++    return datetime.datetime.fromisoformat(s)
++
++
++starts, ends, builds = {}, {}, {}
++for line in open(sys.argv[1], encoding="utf-8"):
++    d = json.loads(line)
++    t, kind = d.get("turn"), d.get("eventType")
++    if kind == "round_start" and t not in starts:
++        starts[t] = ts(d["observedAtUtc"])
++    if kind == "turn_end":
++        ends[t] = ts(d["observedAtUtc"])
++    st = d.get("state")
++    if st and st.get("player") and t is not None and t <= 4:
++        builds[t] = {b["id"]: b["count"] for b in st["player"].get("buildings", []) if not b["id"].startswith("cit_")}
++
++print("turn  human_seconds")
++for t in sorted(ends):
++    if t in starts:
++        print("%4d  %6.1f" % (t, (ends[t] - starts[t]).total_seconds()))
++print()
++for t in sorted(builds):
++    print("T%d builds: %s" % (t, builds[t]))

@@ -63,6 +63,9 @@ namespace InterplanetaryAI.Brain
         public float SustainableMaterialIncome = -1f;
         public float EnergySaturation = 1.5f; // energy income above this multiple of the wanted energy is saturated
         public int MaterialReserve;           // v0.12: material the economy may not spend (planet about to run dry)
+        public int SlotsLeft = 1;             // v0.14.1: free power slots left this turn (SlotStarved)
+        public int PlantsQueued;              // v0.14.1: plants queued this turn
+        public bool Opening;                  // v0.14.1: the first turns (SlotStarved applies)
     }
 
     public sealed class WeaponStats
@@ -180,11 +183,15 @@ namespace InterplanetaryAI.Brain
             return value / Math.Max(1f, cost);
         }
 
-        // v0.14: free power slots a newly placed plant adds: its connectors minus the one that links it to the grid (BuildingsData
-        // power_connectors: Solar and Floating 3, Nuclear 4). Buildings that do not distribute power add none.
-        public static int PlantSlots(bool distributesPower, int connectors)
+        // v0.14.1: a plant bought only for its power slots. With no free slot nothing that needs one can be queued, and a queued
+        // plant's connectors are not usable this turn (placement searches see existing buildings; the plant is built at turn
+        // end, AIActions.EndTurn; Sol v0.14 #1). v0.13.1 Guts at T1 (0 free slots, energy not short) bought 3 Solar Plants
+        // with 1,200 of 1,350 material, then left 750-975 energy unspent T2-T6. So in the opening: with no slot left, energy
+        // not short and a plant already queued this turn, no more plants; the material waits for next turn's Mines. Later
+        // turns keep buying plants for slots (weapons and defenses need them too).
+        public static bool SlotStarved(EconomyBalance b)
         {
-            return distributesPower ? Math.Max(0, connectors - 1) : 0;
+            return b.Opening && b.SlotsLeft <= 0 && b.PlantsQueued >= 1 && b.EnergyIncome >= WantedEnergy(b);
         }
 
         // v0.10: material is in glut when the banked stock is several turns of what this turn's energy can spend.
@@ -209,6 +216,7 @@ namespace InterplanetaryAI.Brain
                 if (o.Energy > b.EnergyBudget || o.Material > materialBudget) continue;
                 if (saturated && IsEnergyOnly(o)) continue;
                 if (b.MaterialGlut && IsExtractionOnly(o)) continue;
+                if (o.Kind == OptionKind.Plant && SlotStarved(b)) continue;
                 if (o.NeedsSlot && slotsLeft <= 0) continue;
                 float score = Score(o, wE, wM, eFactor, b.ScienceWeight, mFactor);
                 if (score > bestScore)

@@ -1,0 +1,27 @@
+READ-ONLY review. Do not edit, create or delete any file. Stay inside this repository: any path outside it is auto-rejected and ends your run. Finish with the complete written report.
+
+Strategy and code review of AI v0.14.0 (diff against ff7e2cf = v0.13.1 in docs/reviews/sol-ai-v0.14.diff). Evidence: docs/playtests/2026-11-01-v0.13.1.md (thirteenth match: 1v1 on a new map from turn 1, human won at T30). Data: docs/playtests/data/v0131-ai-decisions.jsonl (AI decision log, one JSON per line: e = director/economy/build/strategy/fire/accuracy/research/target, t = turn), docs/playtests/data/v0131-human-telemetry.jsonl (human: shot/damage/checkpoint events); python AI/tools/human_summary.py and AI/tools/human_turns.py summarise the human side. Your v0.13 review and its disposition: docs/reviews/sol-ai-v0.13.md, docs/reviews/sol-ai-v0.13-disposition.md. Progress: docs/PROGRESS.md. decompiled/ is the game source; docs/ruleset/embedded/enhanced/ the game data (CSV, columns = entities).
+
+Diagnosis behind v0.14 (verify against the data and the game code first; say where it is wrong):
+1. Defenses too few and late: 18-21 Kinetic (desired 19-27 from DefenseFloorShare 0.15 x non-city buildings, no visible enemy weapons) built at 3 a turn while 13-28k material sat idle; the human fired 100-120 Railgun projectiles a turn from T22; 70-80% of impacts met no defense in range (director lastNoDefenseNearby), ~90% stopped where one was. PlayerDefenseHandler: every in-range Normal powered defense rolls in turn until one succeeds, 100 energy per roll.
+2. Research gap: the human had Microwave Energy Transmission/Nanostructuring T13, Robotic Mining T14, Magnetic Radiation Shielding T15, then +100% energy and +60% material in one turn (T16); Guts got them T19-T22, Robotic Mining never; 18 vs 30 techs.
+3. T1: 0 free power slots, queued plants did not count their connectors, so the economy bought 3 Solar Plants (1,200 of 1,350 material) and could not buy a Mine.
+4. Strikes: 6/26 and 9/26 weapons found a trajectory (AIWeaponTargeting.BeginTurn: clamp(1200 / all AI weapons, 30, 100) steps per weapon per frame); then the AI held fire at 26 -> 17 -> 11 -> 10 live weapons.
+5. Placement: the same type re-queued in bulk after failing (13 Offshore Mines abandoned at T18 after 6 at T14).
+
+v0.14 changes:
+A. AI/Brain/Strategy.cs Attrition + Decide(lastWeapons): fire when live weapons fell >= max(AttritionMinLoss 2, AttritionLossShare 0.15 x last turn's), pulse or not; ShouldAbort exempts "attrition". StrategyPatches tracks LastWeapons (consecutive turns only).
+B. AI/Plugin.cs research plan: Nanostructuring, Microwave, Robotic Mining, Magnetic Radiation Shielding moved to #11-14 (after Experimental Matter Control); Orbital Assembly #17, Ultracapacitors #18. V013 plan migrates.
+C. DefenseFloorShare default 0.25 (migration 0.13 -> 0.14 when unchanged).
+D. AI/DirectorPatches.cs QueueBuilding: a queued power-distributing building adds EconomyDirector.PlantSlots (power_connectors - 1) to SlotsLeft; Abandon subtracts it again.
+E. AI/Brain/Memory.cs PlacementBackoff: a type with 3+ abandons is throttled (at most two queued a turn) for PlacementBackoffTurns (5), released by a turn where it was queued with no failure.
+F. AI/Patches.cs ApplyProcessorBudget in the AIWeaponTargeting.BeginTurn postfix: when AiProcessorResources > 0, sets ProcessorResourcesThisFrame and calls TrajectoryCalculator.ReallocateDesignatedStepAmount(clamp(total / all AI weapons, 30, 100)). Default 0 (off).
+
+Questions:
+1. Correctness of each change against the game code. D: are a queued plant's connectors really free for a Mine queued after it in the same turn (placement order, AIBuildingPlacementFinder searches, power-line reach), or do dependent placements fail and get refunded? Could the credit overcount (water plants, PlantsForUnpowered, plants that only connect)? F: is the postfix early enough (base.ProcessorResourcesThisFrame was already used for new entities' DesignatedStepAllowance in BeginTurn; does ReallocateDesignatedStepAmount reach them all), and is GetTotalAIWeaponAmount the right count?
+2. A: can attrition fire at a bad time (weapons unpowered by lost plants rather than destroyed; a weapon sold; the first war turn; an earlier save)? Should it require recent damage?
+3. C: with 0.25, what does the defense count, energy reserve (DefenseReserve, roll costs) and slot use look like at T15-T25 in this match's state (non-city buildings 44-150)? Does it starve weapons or the economy? Is a coverage-target or two-deep stacking rule (MarginalValue uses p = 1 for non-anti-nuke defenses) the better lever?
+4. B: walk the new order through Guts's science (~450-690 a turn): when do Robotic Mining, Magnetic Radiation Shielding, Orbital Assembly and Ultracapacitors land? Is anything important now too late (Kinetic via Maglev Servos, Ion via Plasma Channel Induction)?
+5. What did v0.14 not address that matters most for beating this human (2x economy, 120-shot salvos, counterintel blindness)? Rank at most 5 next moves with the number behind each.
+
+Report format: a verdict line ("Verdict: ship" / "fix first" / "rethink"), then findings ranked High/Medium/Low with file:line evidence, failure scenario and a concrete fix, then the ranked next moves.

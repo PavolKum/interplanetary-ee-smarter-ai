@@ -172,11 +172,12 @@ namespace InterplanetaryAI.Brain
             return hitsOnCommit < AbortThreshold(weapons, s);
         }
 
-        // v0.14: the arsenal is being destroyed: last turn's live weapons minus this turn's is at least
-        // max(AttritionMinLoss, AttritionLossShare x last turn's). lastWeapons < 0 = unknown.
-        public static bool Attrition(int weapons, int lastWeapons, StrategySettings s)
+        // v0.14: capacity-loss fire. Our live (Normal, powered) weapons fell by at least max(AttritionMinLoss, AttritionLossShare x
+        // last turn's) while under attack (impacts or damage last action phase). v0.14.1 (Sol v0.14 #5): the count also drops
+        // when plants are lost or weapons sold; without an attack that is no reason to fire. lastWeapons < 0 = unknown.
+        public static bool Attrition(int weapons, int lastWeapons, bool underAttack, StrategySettings s)
         {
-            if (s.AttritionLossShare <= 0f || weapons >= lastWeapons) return false; // lastWeapons < 0 (unknown) ends here too
+            if (!underAttack || s.AttritionLossShare <= 0f || weapons >= lastWeapons) return false; // lastWeapons < 0 (unknown) ends here too
             int lost = lastWeapons - weapons;
             return lost >= Math.Max(1, s.AttritionMinLoss) && lost >= s.AttritionLossShare * lastWeapons;
         }
@@ -185,7 +186,7 @@ namespace InterplanetaryAI.Brain
         // lastCommitId: the enemy our weapons were pointed at last turn (-1 none).
         public static StrategyDecision Decide(int turn, bool war, IDictionary<string, float> salvo, float accuracy, IList<SalvoTarget> targets,
             Dictionary<string, Dictionary<string, float>> counters, int lastStrikeTurn, int holdTurns, int weapons, StrategySettings s,
-            int lastCommitId = -1, int lastWeapons = -1)
+            int lastCommitId = -1, int lastWeapons = -1, bool underAttack = false)
         {
             StrategyDecision d = new StrategyDecision { War = war, Shots = weapons };
             float maxScore = 0f;
@@ -231,7 +232,7 @@ namespace InterplanetaryAI.Brain
                 d.Fire = true; // never sit on weapons forever, small arsenals included
                 d.Reason = "max-hold";
             }
-            else if (d.Passing > 0f && Attrition(weapons, lastWeapons, s))
+            else if (d.Passing > 0f && Attrition(weapons, lastWeapons, underAttack, s))
             {
                 // v0.14: use them or lose them, pulse or not (exempt from the abort, like max-hold).
                 d.Fire = true;

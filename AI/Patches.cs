@@ -69,11 +69,20 @@ namespace InterplanetaryAI
             try
             {
                 int ais = Math.Max(1, PlayerManager.GetAiPlayerAmount());
+                int weapons = PlayerManager.GetTotalAIWeaponAmount();
                 targeting.ProcessorResourcesThisFrame = Math.Max(1, total / ais);
-                int perWeapon = AimBudget.StepsPerWeapon(total, PlayerManager.GetTotalAIWeaponAmount());
+                int perWeapon = AimBudget.StepsPerWeapon(total, weapons);
                 Interplanetary.Weapons.Trajectories.TrajectoryCalculator calc =
                     s_trajectoryCalculator != null ? s_trajectoryCalculator.GetValue(targeting) as Interplanetary.Weapons.Trajectories.TrajectoryCalculator : null;
                 if (calc != null) calc.ReallocateDesignatedStepAmount(perWeapon);
+                // Sol v0.14 #6: log the denominator and the allowance actually given (once per AI turn, when weapons exist).
+                AICore core = (AICore)s_moduleCore.GetValue(targeting);
+                if (weapons > 0 && core != null && core.PlayerData.AIPlayer)
+                {
+                    Plugin.WriteDecision(new Json().Str("e", "aim-budget").Int("t", GameManager.CurrentTurn).Str("ai", core.PlayerData.UserNickName)
+                        .Int("total", total).Int("aiWeapons", weapons).Int("steps", perWeapon).Int("nativeSteps", AimBudget.StepsPerWeapon(1200, weapons))
+                        .Bool("applied", calc != null).ToString());
+                }
             }
             catch (Exception e)
             {
