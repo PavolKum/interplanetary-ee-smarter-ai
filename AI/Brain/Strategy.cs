@@ -73,6 +73,12 @@ namespace InterplanetaryAI.Brain
         // saturating salvo while the human destroyed them unfired. 0 = off.
         public float AttritionLossShare = 0.15f;
         public int AttritionMinLoss = 2;
+        // v0.15.2 return fire: under attack, fire when at least this share of the salvo is expected through and at least
+        // ReturnFireMinPassing shots, pulse or not. v0.15.1 Thistle held 5 turns (T19-T23, 82% through) and 4 turns (T34-T37,
+        // 64-70% through) only because the salvo fell short of MinPassingShots 12 (9.4-11.8) while the human hit it every
+        // turn; it lost a city and then 16 Railguns unfired. A high pass share means waiting buys nothing. 0 = off.
+        public float ReturnFirePassShare = 0.6f;
+        public float ReturnFireMinPassing = 4f;
     }
 
     public sealed class StrategyDecision
@@ -172,13 +178,20 @@ namespace InterplanetaryAI.Brain
 
         public static bool ShouldAbort(int hitsOnCommit, int weapons, string reason, StrategySettings s)
         {
-            if (reason == "max-hold" || reason == "attrition") return false;
+            if (reason == "max-hold" || reason == "attrition" || reason == "return-fire") return false;
             return hitsOnCommit < AbortThreshold(weapons, s);
         }
 
         // v0.14: capacity-loss fire. Our live (Normal, powered) weapons fell by at least max(AttritionMinLoss, AttritionLossShare x
         // last turn's) while under attack (impacts or damage last action phase). v0.14.1 (Sol v0.14 #5): the count also drops
         // when plants are lost or weapons sold; without an attack that is no reason to fire. lastWeapons < 0 = unknown.
+        // v0.15.2: under attack with a salvo whose defenses are not the limit (see ReturnFirePassShare).
+        public static bool ReturnFire(int weapons, float passing, float passShare, bool underAttack, StrategySettings s)
+        {
+            if (!underAttack || s.ReturnFirePassShare <= 0f || weapons < s.MinWeapons) return false;
+            return passShare >= s.ReturnFirePassShare && passing >= Math.Max(0.01f, s.ReturnFireMinPassing);
+        }
+
         public static bool Attrition(int weapons, int lastWeapons, bool underAttack, StrategySettings s)
         {
             if (!underAttack || s.AttritionLossShare <= 0f || weapons >= lastWeapons) return false; // lastWeapons < 0 (unknown) ends here too
@@ -241,6 +254,12 @@ namespace InterplanetaryAI.Brain
                 // v0.14: use them or lose them, pulse or not (exempt from the abort, like max-hold).
                 d.Fire = true;
                 d.Reason = "attrition";
+            }
+            else if (ReturnFire(weapons, d.Passing, d.PassShare, underAttack, s))
+            {
+                // v0.15.2: trade blows instead of waiting for a bigger salvo (exempt from the abort, like attrition).
+                d.Fire = true;
+                d.Reason = "return-fire";
             }
             else if (weapons >= s.MinWeapons && saturated && (pulseReady || broken))
             {

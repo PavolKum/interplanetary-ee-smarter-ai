@@ -276,6 +276,15 @@ namespace InterplanetaryAI.Brain
             return sprint ? Math.Max(normalPerTurn, sprintPerTurn) : normalPerTurn;
         }
 
+        // v0.15.2: intel wanted only to find unseen cities (not below the native minimum, not blind) waits while energy is below
+        // `reserve` (one Telescope + one power plant), so the economy step after it still gets a plant. v0.15.1 Thistle: intel
+        // (step 3) ran before the economy (step 6) and its 8 Telescopes at T6-T8 left no energy for plants; energy fell
+        // 925 -> 785 while v0.14.1 Bolide rose to 1425. The v0.15.1 material guard never bound (material was in glut).
+        public static bool IntelEnergyAllowed(bool unseenOnly, float energy, float reserve)
+        {
+            return !unseenOnly || energy >= reserve;
+        }
+
         // Anti-nuke defenses wanted over each city.
         public static int AntiNukePerCity(bool nukeSeen, int turn, int priorTurn, int perCitySeen, int perCityPrior)
         {

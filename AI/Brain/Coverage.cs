@@ -276,6 +276,15 @@ namespace InterplanetaryAI.Brain
             return false;
         }
 
+        // v0.15.2: the ring around a city where a defense of `radius` and footprint `ownRadius` both stands clear of the city
+        // (centre distance >= ownRadius + cityRadius + margin) and protects it (centre distance < radius - cityRadius/2 -
+        // margin). inner >= outer: no spot can protect that city.
+        public static void CityCoverRing(float radius, float ownRadius, float cityRadius, float margin, out float inner, out float outer)
+        {
+            inner = ownRadius + cityRadius + margin;
+            outer = radius - 0.5f * cityRadius - margin;
+        }
+
         // v0.15.1 measurement (Sol v0.15, "single fastest measurement"): the fewest qualifying defenses over any surviving
         // city, same reach rule as CityProtectionDeficit. -1 with no city.
         public static int MinCityCover(IList<Point> cities, IList<float> cityRadii, IList<Point> defenses, IList<float> defenseRadii)

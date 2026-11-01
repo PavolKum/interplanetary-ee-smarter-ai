@@ -56,6 +56,7 @@ namespace InterplanetaryAI.Tests
             V014Rules();
             V015Rules();
             V0151Rules();
+            V0152Rules();
 
             Console.WriteLine(s_checks + " checks, " + s_failures + " failed");
             return s_failures == 0 ? 0 : 1;
@@ -429,6 +430,41 @@ namespace InterplanetaryAI.Tests
             // Sol v0.15 #5: the sprint waits while material is short.
             Check(EconomyDirector.IntelPerTurnLimit(5, 6, 14, 2, 6, 3, 2, 600f, 650f) == 2, "material 600 < 650 reserve: normal limit");
             Check(EconomyDirector.IntelPerTurnLimit(5, 6, 14, 2, 6, 3, 2, 900f, 650f) == 3, "material 900: sprint");
+        }
+
+        private static void V0152Rules()
+        {
+            StrategySettings s = new StrategySettings { OverlapDefenses = 20f };
+            var counters = EnhancedCounters();
+            // Return fire (v0.15.1 Thistle T19-T23 and T34-T37: 64-82% through, held for MinPassingShots 12 while hit).
+            Check(Strategy.ReturnFire(8, 4.5f, 0.8f, true, s), "under attack, 8 weapons, 82% through, 4.5 shots: return fire");
+            Check(!Strategy.ReturnFire(8, 4.5f, 0.8f, false, s), "not under attack: hold for saturation as before");
+            Check(!Strategy.ReturnFire(8, 4.5f, 0.5f, true, s), "50% through (defenses are the limit): keep holding");
+            Check(!Strategy.ReturnFire(5, 4.5f, 0.8f, true, s), "fewer than MinWeapons: keep building");
+            Check(!Strategy.ReturnFire(8, 3f, 0.8f, true, s), "fewer than 4 shots through: no");
+            Check(!Strategy.ReturnFire(8, 4.5f, 0.8f, true, new StrategySettings { ReturnFirePassShare = 0f }), "share 0 = off");
+            Check(!Strategy.ShouldAbort(0, 20, "return-fire", s), "return fire is not called off at firing time");
+
+            // Through Decide: 13 Railguns at 4 Kinetic, below MinPassingShots, fires only under attack.
+            Func<bool, StrategyDecision> decide = attacked => Strategy.Decide(20, true, Railguns(13), 0.7f,
+                new List<SalvoTarget> { Target(0, 1f, 4, true, 6000f) }, counters, 18, 1, 13, s, 0, 13, attacked);
+            StrategyDecision held = decide(false), fired = decide(true);
+            Check(!held.Fire && held.Reason == "below-saturation", "13 Railguns, not attacked: below-saturation; got " + held.Reason + " " + held.Passing);
+            Check(fired.Fire && fired.Reason == "return-fire", "13 Railguns, attacked: return-fire; got " + fired.Reason + " share " + fired.PassShare);
+
+            // Intel energy guard (v0.15.1 Thistle: 8 Telescopes at T6-T8, no plant).
+            Check(!EconomyDirector.IntelEnergyAllowed(true, 400f, 450f), "unseen-only intel waits below the 450 reserve");
+            Check(EconomyDirector.IntelEnergyAllowed(true, 500f, 450f), "unseen-only intel with 500 energy: allowed");
+            Check(EconomyDirector.IntelEnergyAllowed(false, 100f, 450f), "intel needed (blind / below minimum): never held back");
+
+            // City-cover ring: Ion 5.3, footprint 1.1, city 1.9 -> 3.1 .. 4.25.
+            float inner, outer;
+            DefenseCoverage.CityCoverRing(5.3f, 1.1f, 1.9f, 0.1f, out inner, out outer);
+            Check(Math.Abs(inner - 3.1f) < 1e-4 && Math.Abs(outer - 4.25f) < 1e-4, "ring 3.1 .. 4.25; got " + inner + " .. " + outer);
+            var ringCity = new List<Point> { new Point(0, 0, 0) };
+            var ringLoss = new List<float> { 0.95f };
+            var ringIsCity = new List<bool> { true };
+            Check(DefenseCoverage.ClosesCityDeficit(new Point(outer, 0, 0), ringCity, ringLoss, ringIsCity, new[] { 0 }, 5.3f, 1), "the ring's outer edge still closes the deficit");
         }
 
         private static void V014Rules()

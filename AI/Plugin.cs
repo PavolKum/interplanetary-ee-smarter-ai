@@ -22,7 +22,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.15.1";
+        public const string VERSION = "0.15.2";
 
         internal static ManualLogSource Log;
 
@@ -101,6 +101,9 @@ namespace InterplanetaryAI
         internal static ConfigEntry<int> AbortBelowWeapons;
         internal static ConfigEntry<float> AimingWindowSeconds;
         internal static ConfigEntry<float> AttritionLossShare;
+        internal static ConfigEntry<float> ReturnFirePassShare;
+        internal static ConfigEntry<float> ReturnFireMinPassing;
+        internal static ConfigEntry<float> IntelSprintEnergyReserve;
         internal static ConfigEntry<int> AiProcessorResources;
         internal static ConfigEntry<int> PlacementBackoffTurns;
         internal static ConfigEntry<int> ResearchQueueDepth;
@@ -337,6 +340,8 @@ namespace InterplanetaryAI
             IntelSprintBuildings = Config.Bind("Director", "IntelSprintBuildings", 6,
                 "v0.15: intel buildings the sprint aims for (6 Telescopes x 8 intel = 48 >= a small city's 45 stealth before counterintel).");
             IntelSprintPerTurn = Config.Bind("Director", "IntelSprintPerTurn", 3, "v0.15: intel buildings a turn during the sprint.");
+            IntelSprintEnergyReserve = Config.Bind("Director", "IntelSprintEnergyReserve", 450f,
+                "v0.15.2: intel wanted only to find unseen enemy cities waits while energy is below this (a Telescope 200 + a power plant 250), so the economy still gets a plant that turn. v0.15.1 Thistle bought 8 Telescopes at T6-T8 and no plant; energy fell 925 -> 785. 0 = off.");
             IntelSprintMaterialReserve = Config.Bind("Director", "IntelSprintMaterialReserve", 650f,
                 "v0.15.1: the sprint's extra intel buildings wait while material is below this (a Telescope 300 + a Molecular Recycling project 350), so the opening economy keeps compounding (Sol v0.15 #5). The normal intel limit is unaffected.");
             CounterintelProjects = Config.Bind("Director", "CounterintelProjects", true,
@@ -424,6 +429,9 @@ namespace InterplanetaryAI
                 "v0.12: on a strike turn the AI keeps searching for trajectories until this many seconds after its turn began, or the human ends the turn if later (the game: 20). Hold turns keep 20. Longer = more weapons aimed, more waiting between turns. 20-120.");
             AttritionLossShare = Config.Bind("Strategy", "AttritionLossShare", 0.15f,
                 "v0.14: fire whatever aims when our live weapons dropped since last turn by at least this share (and at least 2), pulse or not. v0.13.1 Guts held at 26 -> 17 -> 11 -> 10 weapons while the human destroyed them unfired. 0 = off.");
+            ReturnFirePassShare = Config.Bind("Strategy", "ReturnFirePassShare", 0.6f,
+                "v0.15.2: under attack, fire when at least this share of the salvo is expected through (and ReturnFireMinPassing shots), pulse or not. v0.15.1 Thistle held at 64-82% through, short of MinPassingShots, while the human hit it every turn. 0 = off.");
+            ReturnFireMinPassing = Config.Bind("Strategy", "ReturnFireMinPassing", 4f, "v0.15.2: fewest expected shots through for return fire.");
             AiProcessorResources = Config.Bind("Strategy", "AiProcessorResources", 2600,
                 "v0.14: total trajectory-search budget per frame, shared by all AIs (the game: 1200). Each AI weapon gets clamp(this / all AI weapons, 30, 100) steps per frame: 1200 gives 26 weapons 46 steps, 2600 gives them the full 100. Higher = more weapons aimed in the same time, more CPU per frame during the human's turn. 0 = the game's 1200.");
             ReachFailMinShare = Config.Bind("Strategy", "ReachFailMinShare", 0.5f,
@@ -628,6 +636,8 @@ namespace InterplanetaryAI
             StrategyCfg.AbortBelowShare = Clamp01(AbortBelowShare.Value);
             StrategyCfg.AbortBelowWeapons = Math.Max(1, AbortBelowWeapons.Value);
             StrategyCfg.AttritionLossShare = Clamp01(AttritionLossShare.Value);
+            StrategyCfg.ReturnFirePassShare = Clamp01(ReturnFirePassShare.Value);
+            StrategyCfg.ReturnFireMinPassing = Math.Max(0f, ReturnFireMinPassing.Value);
 
             Build.Growth = BuildPlanner.Parse(GrowthWeights.Value, Build.Growth);
             Build.Pressure = BuildPlanner.Parse(PressureWeights.Value, Build.Pressure);

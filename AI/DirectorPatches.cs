@@ -576,8 +576,10 @@ namespace InterplanetaryAI
                 Plugin.IntelSprintBuildings.Value, Plugin.IntelSprintPerTurn.Value, Plugin.IntelPerTurn.Value,
                 core.Resources.Material, Plugin.IntelSprintMaterialReserve.Value);
             bool intelRoom = d.IntelBuildings + d.IntelThisTurn < Plugin.MaxIntelBuildings.Value && d.IntelThisTurn < intelLimit;
-            bool wantIntel = intel == IntelEvaluationState.BelowMinimum || d.BlindEnemies > 0 || d.UnseenCities > 0;
-            if (wantIntel && intelRoom && d.SlotsLeft > 0 && !d.FailedThisTurn.Contains("intel"))
+            bool intelNeeded = intel == IntelEvaluationState.BelowMinimum || d.BlindEnemies > 0;
+            bool wantIntel = intelNeeded || d.UnseenCities > 0;
+            bool intelEnergy = EconomyDirector.IntelEnergyAllowed(!intelNeeded, core.Resources.Energy, Plugin.IntelSprintEnergyReserve.Value);
+            if (wantIntel && intelRoom && intelEnergy && d.SlotsLeft > 0 && !d.FailedThisTurn.Contains("intel"))
             {
                 if (TryIntelBuilding(construction, core, d)) return true;
                 d.FailedThisTurn.Add("intel");
@@ -1654,6 +1656,8 @@ namespace InterplanetaryAI
         private sealed class CoverageState
         {
             public int Steps;
+            // v0.15.2 anti-missile search diagnostics: candidates tried and why each failed.
+            public int Tries, Invalid, Unplaced, NoAnchor, NotClosing;
         }
 
         private static readonly Dictionary<AIBuildingPlacementSearch, CoverageState> s_coverage = new Dictionary<AIBuildingPlacementSearch, CoverageState>();
@@ -1814,6 +1818,7 @@ namespace InterplanetaryAI
             }
             if (++st.Steps > CoverageStepCap)
             {
+                if (model.AntiNuke) LogCoverSearch(core, st, "gave-up");
                 AbandonSoon(search);
                 return true;
             }
@@ -1830,6 +1835,7 @@ namespace InterplanetaryAI
                 anchors.Add(new Point(p.x, p.y, p.z));
             }
             if (bases.Count == 0) return true; // nothing to connect to yet
+            if (model.AntiNuke) return AntiNukeStep(search, data, core, model, st, bases);
 
             // Widen as steps fail (Terra v0.7.2: a blocked best anchor must not trap the search): first the near-best
             // anchors, then every anchor with something uncovered, then any anchor at all (coverage is still scored).
@@ -1887,6 +1893,98 @@ namespace InterplanetaryAI
             result.PowerGridConnection = bestAnchor.Power;
             s_setSearchComplete.Invoke(search, new object[] { true });
             return true;
+        }
+
+        // v0.15.2: city-cover step. v0.15.1 sampled around power anchors in random directions and accepted only spots that
+        // closed a city deficit; in the Thistle match every Ion search from T26 to T33 was refunded and no city ever had cover.
+        // Now the candidates are drawn on the ring around a city still below the target (CityCoverRing), and the spot is
+        // then connected to the nearest anchor with a free slot inside the game's power-line rule.
+        private static bool AntiNukeStep(AIBuildingPlacementSearch search, BuildingData data, AICore core, CoverageModel model, CoverageState st,
+            List<BaseBuilding> bases)
+        {
+            List<int> deficient = new List<int>();
+            for (int i = 0; i < model.Targets.Count; i++)
+            {
+                if (model.IsCity[i] && model.Counts[i] < model.PerCity) deficient.Add(i);
+            }
+            if (deficient.Count == 0)
+            {
+                LogCoverSearch(core, st, "no-deficit");
+                AbandonSoon(search); // every city already covered (an earlier search closed it): refund
+                return true;
+            }
+            float scale = data.building_scale.IsValueSet ? data.building_scale.Value : 1f;
+            float ownRadius = (data.building_radius.IsValueSet ? data.building_radius.Value : 1f) * scale;
+            float ownReach = data.power_connector_range.IsValueSet ? data.power_connector_range.Value : 0f;
+            Vector3 planetCentre = core.Planet.transform.position;
+            float bestScore = -1f;
+            BuildingPlacementResult bestResult = null;
+            BaseBuilding bestAnchor = null;
+            for (int n = 0; n < CoverageCandidatesPerStep; n++)
+            {
+                int ci = deficient[Plugin.Rng.Next(deficient.Count)];
+                Point cp = model.Targets[ci];
+                Vector3 cityPos = new Vector3(cp.X, cp.Y, cp.Z);
+                float inner, outer;
+                DefenseCoverage.CityCoverRing(model.Radius, ownRadius, 2f * model.Loss[ci], 0.1f, out inner, out outer);
+                if (outer <= inner) continue; // this defense cannot protect this city from anywhere
+                Vector3 up = (cityPos - planetCentre).normalized;
+                Vector3 t1 = Vector3.Cross(up, Mathf.Abs(up.y) < 0.9f ? Vector3.up : Vector3.right).normalized;
+                Vector3 t2 = Vector3.Cross(up, t1);
+                float angle = (float)(Plugin.Rng.NextDouble() * Math.PI * 2.0);
+                float distance = inner + (float)Plugin.Rng.NextDouble() * (outer - inner);
+                Vector3 world = cityPos + (t1 * Mathf.Cos(angle) + t2 * Mathf.Sin(angle)) * distance + up * 2f;
+                Ray ray = new Ray(world, -up);
+                st.Tries++;
+                s_candidatesThisFrame++;
+                if (!core.Construction.IsBuildingPlacementValid(data, core.Planet, ray)) { st.Invalid++; continue; }
+                BuildingPlacementResult placed = core.PlayerData.BuildingHandler.TryPlaceBuilding(data, ray, core.Planet, null);
+                if (placed == null || !placed.IsSuccessful) { st.Unplaced++; continue; }
+                Vector3 at = placed.BuildingWorldPosition;
+                if (!DefenseCoverage.ClosesCityDeficit(new Point(at.x, at.y, at.z), model.Targets, model.Loss, model.IsCity, model.Counts, model.Radius, model.PerCity))
+                {
+                    st.NotClosing++;
+                    continue;
+                }
+                BaseBuilding anchor = null;
+                float anchorDistance = float.MaxValue;
+                foreach (BaseBuilding b in bases)
+                {
+                    float lineLimit = ownRadius + b.Radius + Math.Max(ownReach, b.Power.PowerConnectorRange);
+                    float dist = Vector3.Distance(at, b.transform.position);
+                    if (dist <= lineLimit && dist < anchorDistance) { anchor = b; anchorDistance = dist; }
+                }
+                if (anchor == null) { st.NoAnchor++; continue; }
+                float score = DefenseCoverage.MarginalValue(new Point(at.x, at.y, at.z), model.Targets, model.Values, model.Counts, model.Radius, model.P, model.Loss);
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestResult = placed;
+                    bestAnchor = anchor;
+                }
+            }
+            if (bestResult == null) return true; // nothing legal and connected this step: try again next step
+
+            AIBuildingPlacementResult result = (AIBuildingPlacementResult)s_searchResult.GetValue(search);
+            result.Result = bestResult;
+            result.PowerGridConnection = bestAnchor.Power;
+            s_setSearchComplete.Invoke(search, new object[] { true });
+            LogCoverSearch(core, st, "placed");
+            return true;
+        }
+
+        private static void LogCoverSearch(AICore core, CoverageState st, string outcome)
+        {
+            try
+            {
+                Plugin.WriteDecision(new Json().Str("e", "cover-search").Int("t", GameManager.CurrentTurn).Str("ai", core.PlayerData.UserNickName)
+                    .Str("outcome", outcome).Int("steps", st.Steps).Int("tries", st.Tries).Int("invalid", st.Invalid).Int("unplaced", st.Unplaced)
+                    .Int("notClosing", st.NotClosing).Int("noAnchor", st.NoAnchor).ToString());
+            }
+            catch (Exception e)
+            {
+                ReportOnce("cover-search-log", e);
+            }
         }
 
         // Share of our buildings (by value) and number of our cities inside a Kinetic Defense's radius, for the decision log.
