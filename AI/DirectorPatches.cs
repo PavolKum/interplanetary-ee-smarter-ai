@@ -34,6 +34,7 @@ namespace InterplanetaryAI
             // this turn
             public int Turn = -1;
             public bool Started;
+            public bool Ended;            // v0.16.2: EndTurn recorded EndEnergyLeft / EndMaterialLeft
             public bool War;
             public bool Defensive;        // v0.10: defense floor and reserve from DefenseFromTurn (before weapons)
             public int SlotsAtStart;
@@ -147,6 +148,14 @@ namespace InterplanetaryAI
             public int AntiNukeNearCities; // v0.15.1: intact (any state) anti-missile defenses within reach of a city
             public int PowerEnergySpent;  // v0.13.1: energy spent this turn on energy-only purchases (plants, energy upgrades)
             public int AimedWeapons;                // own weapons needing a trajectory (not lasers, not superweapons), queued included
+            // v0.16.2 (matches 18-19): material binds (energy left over, material spent down) -> extraction first
+            public int EndMaterialLeft;             // material unspent when the turn's construction ended
+            public int LastMaterialLeft, LastMaterialBudget;
+            public bool MaterialBound;
+            public int ExtractionFirstMaterial, ExtractionFirstBought;
+            public float ExtractionCeiling = -1f;   // material income the planet sustains to PlanetGuardHorizonTurn (-1 unlimited)
+            public readonly Dictionary<string, int> ExtractionFirstQueued = new Dictionary<string, int>(); // building id -> queued by step 2b
+            public int EnergyAtStart;               // energy at construction start, before the defense reserve and repairs
             // across turns
             public int WaterCooldownUntil;
             // v0.14: building type -> last turn it stays throttled (at most two queued a turn) after 3+ placements gave up
@@ -263,6 +272,21 @@ namespace InterplanetaryAI
             }
         }
 
+        // v0.16.2 (free fire, Terra v0.16.2 #3): last turn's actual construction surplus (energy-only purchases are spent, not
+        // surplus) and what last turn used from its construction start (defense reserve, repairs, construction). Read at the
+        // strategy decision, before this turn's director state replaces it. False = unknown (no state, not the turn just
+        // before, or the turn never ended).
+        internal static bool FreeFireInputs(PlayerData me, int turn, out int lastUnspent, out int lastUses)
+        {
+            lastUnspent = -1;
+            lastUses = -1;
+            DirectorState d;
+            if (me == null || !s_states.TryGetValue(me.PlayerID, out d) || !d.Started || !d.Ended || d.Turn != turn - 1) return false;
+            lastUnspent = Math.Max(0, d.EndEnergyLeft);
+            lastUses = Math.Max(0, d.EnergyAtStart - lastUnspent);
+            return true;
+        }
+
         private static DirectorState StateOf(PlayerData ai)
         {
             DirectorState state;
@@ -285,6 +309,9 @@ namespace InterplanetaryAI
             // v0.13.1 (Sol v0.13 #1): energy spent on more energy counts as unspent, else buying plants hides the glut that
             // should stop them (v0.11.1 Beam T24: 6.7k of 27.9k left = 24%, under the 30% threshold, while it bought plants).
             int lastLeft = consecutive ? d.EndEnergyLeft + d.PowerEnergySpent : 0, lastBudget = consecutive ? d.TurnStartEnergy : 0;
+            // v0.16.2 (Terra v0.16.2 M1): only from a turn whose EndTurn recorded the material left.
+            bool ended = consecutive && d.Started && d.Ended;
+            int lastMaterialLeft = ended ? d.EndMaterialLeft : 0, lastMaterialBudget = ended ? d.TurnStartMaterial : 0;
             // A throttled type stays throttled while its placements still fail (a capped turn has at most two failures).
             Dictionary<string, int> lastAbandons = new Dictionary<string, int>();
             if (consecutive)
@@ -298,7 +325,7 @@ namespace InterplanetaryAI
             }
             Dictionary<string, int> backoff = turn > d.Turn ? NextBackoff(d, Plugin.PlacementBackoffTurns.Value) : new Dictionary<string, int>();
             d = new DirectorState { WaterCooldownUntil = waterCooldown, Turn = turn, LastEnergyLeft = lastLeft, LastEnergyBudget = lastBudget,
-                BackoffUntil = backoff };
+                LastMaterialLeft = lastMaterialLeft, LastMaterialBudget = lastMaterialBudget, BackoffUntil = backoff };
             foreach (KeyValuePair<string, int> pair in lastAbandons) d.AbandonedLastTurn[pair.Key] = pair.Value;
             s_states[core.PlayerData.PlayerID] = d;
 
@@ -313,6 +340,8 @@ namespace InterplanetaryAI
                 d.PlanetDrain = drain;
                 d.PlanetPool = limited ? Math.Max(0, res.PlanetMaterial) : -1;
                 d.SustainableMaterial = EconomyDirector.SustainableMaterialIncome(res.PlanetMaterial, res.Material, limited, turn, Plugin.MaterialHorizonTurn.Value, 3);
+                // v0.16.2 (Terra v0.16.2 M2): extraction first runs to the drain guard's horizon (T36), not MaterialHorizonTurn (T45).
+                d.ExtractionCeiling = EconomyDirector.SustainableMaterialIncome(res.PlanetMaterial, res.Material, limited, turn, Plugin.PlanetGuardHorizonTurn.Value, 3);
                 d.MaterialReserve = EconomyDirector.EconomyReserve(res.PlanetMaterial, drain, limited, Plugin.BankWarningTurns.Value, Plugin.MaterialReserve.Value);
                 int[] sold;
                 if (s_soldThisTurn.TryGetValue(me.PlayerID, out sold) && sold[0] == turn) { d.SoldMines = sold[1]; d.SoldMaterial = sold[2]; }
@@ -347,6 +376,10 @@ namespace InterplanetaryAI
             CountProjects(core, d);
             d.EnergyGlut = Plugin.EnergyGlutShare.Value > 0f
                 && EconomyDirector.IsEnergyGlut(d.LastEnergyLeft, d.LastEnergyBudget, Plugin.EnergyGlutShare.Value, Plugin.EnergyGlutMin.Value);
+            // v0.16.2 (matches 18-19): energy left over while material ran out -> material binds (extraction first, no energy gains).
+            d.MaterialBound = turn >= Plugin.MaterialBoundFromTurn.Value
+                && EconomyDirector.IsMaterialBound(d.LastEnergyLeft, d.LastEnergyBudget, d.LastMaterialLeft, d.LastMaterialBudget,
+                    Plugin.MaterialBoundEnergyShare.Value, Plugin.MaterialBoundStockShare.Value, Plugin.MaterialBoundMinEnergy.Value);
             d.Defensive = d.War || EconomyDirector.WarPhase(turn, Plugin.DefenseFromTurn.Value, recentDamage, Plugin.WarDamageTrigger.Value);
             int visibleEnemyWeapons = 0;
             foreach (int n in economy.EnemyWeapons.Values) visibleEnemyWeapons += n;
@@ -608,6 +641,7 @@ namespace InterplanetaryAI
         private static void StartConstruction(AICore core, DirectorState d, EconomyPatches.AiEconomyState economy)
         {
             d.Started = true;
+            d.EnergyAtStart = core.Resources.Energy; // v0.16.2: before the defense reserve and repairs (free fire)
             d.SlotsAtStart = CountFreeSlots(core);
             d.SlotsLeft = d.SlotsAtStart;
             d.DefenseTurnCap = EconomyDirector.DefensesPerTurnCap(d.DesiredDefenses, d.OwnDefenses, Plugin.DefensesPerTurn.Value,
@@ -755,6 +789,20 @@ namespace InterplanetaryAI
             {
                 if (TryCounterDefense(construction, core, economy, d)) return true;
                 d.FailedThisTurn.Add("counter-defense");
+            }
+
+            // 3d. v0.16.2 (matches 18-19): material binds. Economy comes after defenses and weapons, so mines got the leftovers:
+            // match 19 Brain spent 5.8-8.9k material a turn on defenses, weapons and upgrades, bought 0-2 mines T20-T25, and left
+            // 13-89% of its energy unspent (match 18: 57-66%) with 55-69% of the planet unmined. While material binds, up to
+            // ExtractionFirstShare of the turn's material goes to extraction before defenses and weapons, to the drain guard's
+            // horizon (the guard still applies). Terra v0.16.2 #1: after the anti-nuke and counter-defense steps, and a mine
+            // must leave MaterialBoundMinSlots power slots for the defenses.
+            if (d.MaterialBound && !d.FailedThisTurn.Contains("extraction-first")
+                && EconomyDirector.ExtractionFirstRoom(Plugin.ExtractionFirstShare.Value, d.TurnStartMaterial, d.ExtractionFirstMaterial,
+                    d.MaterialIncome, d.ExtractionCeiling) > 0)
+            {
+                if (TryEconomy(construction, core, economy, d, true)) return true;
+                d.FailedThisTurn.Add("extraction-first");
             }
 
             // 4. Defenses: known threats, damage taken, and at war a floor scaled to what we own (v0.5).
@@ -1277,13 +1325,25 @@ namespace InterplanetaryAI
 
         // ---- economy -------------------------------------------------------------------------------
 
-        private static bool TryEconomy(AIConstruction construction, AICore core, EconomyPatches.AiEconomyState economy, DirectorState d)
+        // v0.16.2: extractionFirst = the material-binds step (2b): extraction-only options, within ExtractionFirstRoom.
+        private static bool TryEconomy(AIConstruction construction, AICore core, EconomyPatches.AiEconomyState economy, DirectorState d,
+            bool extractionFirst = false)
         {
             List<EconOption> options = new List<EconOption>();
             float planetFactor = EconomyDirector.PlanetMaterialFactor(core.PlayerData.ResourceHandler.PlanetMaterial, d.MaterialIncome, 10);
             AddUpgradeOptions(core, d, options, planetFactor);
             AddProjectOptions(construction, core, d, options, planetFactor);
             AddBuildingOptions(core, d, options, planetFactor);
+            int extractionRoom = int.MaxValue;
+            if (extractionFirst)
+            {
+                options.RemoveAll(o => !EconomyDirector.IsExtractionOnly(o));
+                extractionRoom = EconomyDirector.ExtractionFirstRoom(Plugin.ExtractionFirstShare.Value, d.TurnStartMaterial, d.ExtractionFirstMaterial,
+                    d.MaterialIncome, d.ExtractionCeiling);
+                if (options.Count == 0 || extractionRoom <= 0) return false;
+            }
+            // Terra v0.16.2 #1: a mine queued by step 3d leaves MaterialBoundMinSlots power slots for the defenses after it.
+            int slotsForOptions = extractionFirst ? d.SlotsLeft - Math.Max(0, Plugin.MaterialBoundMinSlots.Value) : d.SlotsLeft;
 
             EconomyBalance balance = new EconomyBalance
             {
@@ -1298,7 +1358,10 @@ namespace InterplanetaryAI
                 // Turn-start stock against turn-start energy: spending during the turn must not flip it.
                 MaterialGlut = Plugin.MaterialGlutRatio.Value > 0f
                     && EconomyDirector.IsMaterialGlut(d.TurnStartMaterial, d.TurnStartEnergy, Plugin.MaterialGlutRatio.Value, Plugin.MaterialGlutMin.Value),
-                EnergyGlut = d.EnergyGlut,
+                // v0.16.2: while material binds, energy gains are worth nothing (the glut weights) unless power slots run short
+                // (Terra v0.16.2 #2: the slot exception holds for the energy glut too, so a plant for slots stays buyable).
+                EnergyGlut = extractionFirst
+                    || EconomyDirector.UseGlutWeights(d.EnergyGlut, d.MaterialBound, d.SlotsLeft, Plugin.MaterialBoundMinSlots.Value),
                 SustainableMaterialIncome = d.SustainableMaterial,
                 EnergySaturation = Plugin.EnergySaturation.Value,
                 MaterialReserve = d.MaterialReserve,
@@ -1306,11 +1369,15 @@ namespace InterplanetaryAI
                 PlantsQueued = d.PlantsQueued,
                 Opening = d.Turn <= 3,
             };
-            d.MaterialGlut = balance.MaterialGlut;
-            d.EnergySaturated = EconomyDirector.EnergySaturated(balance);
+            if (extractionFirst) balance.MaterialBudget = Math.Min(balance.MaterialBudget, extractionRoom + Math.Max(0, d.MaterialReserve));
+            else
+            {
+                d.MaterialGlut = balance.MaterialGlut;
+                d.EnergySaturated = EconomyDirector.EnergySaturated(balance);
+            }
             for (int attempt = 0; attempt < 6; attempt++)
             {
-                EconOption best = EconomyDirector.Best(options, balance, d.SlotsLeft);
+                EconOption best = EconomyDirector.Best(options, balance, slotsForOptions);
                 if (best == null) return false;
                 if (Execute(construction, core, d, best))
                 {
@@ -1323,6 +1390,13 @@ namespace InterplanetaryAI
                         d.PlanetDrain += Math.Max(0f, best.PlanetDrainAdd); // v0.16.1
                     }
                     if (EconomyDirector.IsEnergyOnly(best)) d.PowerEnergySpent += best.Energy;
+                    if (extractionFirst)
+                    {
+                        d.ExtractionFirstMaterial += best.Material;
+                        d.ExtractionFirstBought++;
+                        // Terra v0.16.2 M3: a building can still be refunded if its placement fails (Abandon reverses this).
+                        if (best.Kind == OptionKind.Producer || best.Kind == OptionKind.Plant) Increment(d.ExtractionFirstQueued, best.Id);
+                    }
                     return true;
                 }
                 options.Remove(best);
@@ -2657,6 +2731,15 @@ namespace InterplanetaryAI
             d.Refunds++;
             d.Reopened = true;
             Record(d, "abandoned:" + id);
+            // v0.16.2 (Terra v0.16.2 M3): a refunded step-3d building gives its share of the extraction-first allowance back.
+            int firstQueued;
+            if (d.ExtractionFirstQueued.TryGetValue(id, out firstQueued) && firstQueued > 0)
+            {
+                d.ExtractionFirstQueued[id] = firstQueued - 1;
+                d.ExtractionFirstMaterial = Math.Max(0, d.ExtractionFirstMaterial - material);
+                d.ExtractionFirstBought = Math.Max(0, d.ExtractionFirstBought - 1);
+                d.FailedThisTurn.Remove("extraction-first"); // another extraction type may still place (this one is in FailedThisTurn)
+            }
             // Undo what the purchase was expected to change.
             PlayerData me = core.PlayerData;
             d.EnergyIncome -= Value(data.turn_yield_energy) * me.StatHandler.GetGlobalStatModifier(GlobalStatModifierID.TurnYieldEnergy);
@@ -2698,6 +2781,8 @@ namespace InterplanetaryAI
             DirectorState d;
             if (!s_states.TryGetValue(core.PlayerData.PlayerID, out d) || !d.Started) return;
             d.EndEnergyLeft = core.Resources.Energy;
+            d.EndMaterialLeft = core.Resources.Material; // v0.16.2
+            d.Ended = true;
             int upgradesInstalled = 0;
             foreach (BaseBuilding building in core.PlayerData.BuildingHandler.Buildings)
             {
@@ -2725,6 +2810,7 @@ namespace InterplanetaryAI
                 .Int("warTurn", d.WarTurn).Bool("lossless", d.LosslessDone).Int("permanentProjects", d.PermanentProjects)
                 .Int("jamming", d.JammingActive).Int("sstar", d.SstarActive).Int("rareMaterial", d.RareMaterialActive)
                 .Int("extractionBlocked", d.ExtractionBlocked).Int("intelBatchSize", MemoryOf(core.PlayerData.PlayerID).Intel.BatchSize).Int("projectSlotsFree", d.ProjectSlotsFree)
+                .Bool("materialBound", d.MaterialBound).Int("extractionFirstMaterial", d.ExtractionFirstMaterial).Int("extractionFirstBought", d.ExtractionFirstBought) // v0.16.2
                 .Int("projectSlotsTotal", d.ProjectSlotsTotal).Str("projectSlots", d.ProjectSlots).Int("permanentsBlocked", d.PermanentsBlocked)
                 .Str("intelPolicy", d.IntelPolicy).Int("intelAllowed", d.IntelAllowed)
                 .Num("intelSpent", MemoryOf(core.PlayerData.PlayerID).Intel.SpentEnergy).Num("intelCredited", MemoryOf(core.PlayerData.PlayerID).Intel.CreditedEnergy)

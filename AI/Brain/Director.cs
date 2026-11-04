@@ -186,6 +186,35 @@ namespace InterplanetaryAI.Brain
             return lastEnergyLeft >= minimum && lastEnergyLeft >= share * Math.Max(1, lastEnergyBudget);
         }
 
+        // v0.16.2 (matches 18-19): material, not energy, binds. Last turn ended with at least energyShare of its energy budget
+        // (and minEnergy) unspent while its material was spent down to at most materialShare of the turn's material. Match 19
+        // T20-T25: 13-55% of energy unspent with 13-142 material left of 5.8-8.9k; the planet kept 55-69% to the end.
+        public static bool IsMaterialBound(int lastEnergyLeft, int lastEnergyBudget, int lastMaterialLeft, int lastMaterialBudget,
+            float energyShare, float materialShare, int minEnergy)
+        {
+            if (energyShare <= 0f || lastEnergyBudget <= 0 || lastMaterialBudget <= 0) return false;
+            return lastEnergyLeft >= Math.Max(minEnergy, energyShare * lastEnergyBudget)
+                && lastMaterialLeft <= Math.Max(0f, materialShare) * lastMaterialBudget;
+        }
+
+        // v0.16.2: material the extraction-first step may still spend this turn: up to share x the turn's material, and only
+        // while material income (queued gains included) is below what the planet can sustain to the horizon (-1 = unlimited).
+        public static int ExtractionFirstRoom(float share, int turnStartMaterial, int spentThisTurn, float materialIncome, float sustainable)
+        {
+            if (share <= 0f || turnStartMaterial <= 0) return 0;
+            if (sustainable >= 0f && materialIncome >= sustainable) return 0;
+            return Math.Max(0, (int)(share * turnStartMaterial) - Math.Max(0, spentThisTurn));
+        }
+
+        // v0.16.2: the energy-glut weights (energy gains worth nothing) apply in energy glut and while material binds, unless
+        // power slots run short: then plants stay buyable for their slots (a mine needs one). Terra v0.16.2 #2: the slot
+        // exception covers the energy glut as well (v0.16.1 scored plants 0 in glut whatever the slots).
+        public static bool UseGlutWeights(bool energyGlut, bool materialBound, int slotsLeft, int minSlots)
+        {
+            if (!energyGlut && !materialBound) return false;
+            return slotsLeft >= minSlots;
+        }
+
         public static float Score(EconOption o, float energyWeight, float materialWeight, float energyCostFactor, float scienceWeight = 1f,
             float materialCostFactor = 1f)
         {

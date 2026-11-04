@@ -27,6 +27,7 @@ namespace InterplanetaryAI
             public int HoldTurns;
             public int ReleasedEnergy;
             public float GuidedFiring, UnguidedFiring, ArtilleryProjectiles; // v0.16 item 4 (logged)
+            public int FreeEnergy = -1, FiringCost;                          // v0.16.2 free fire (logged)
             public bool Reported;               // this turn's firing has been counted
             public int LastCommitId = -1;       // the enemy the weapons were pointed at last turn
             public int LastWeapons = -1;        // v0.14: live weapons counted at last turn's decision (attrition)
@@ -238,6 +239,7 @@ namespace InterplanetaryAI
                     targets.Add(new SalvoTarget
                     {
                         VisibleCityPops = visiblePops,
+                        IsHuman = view.IsHuman, // v0.16.2 human first (the lobby shows who is human)
                         PlayerId = view.PlayerId,
                         Name = view.Name,
                         Score = view.Score,
@@ -255,9 +257,17 @@ namespace InterplanetaryAI
                 // v0.16 item 4 (S3): "funded" = the guided firing fits the war firing budget (WarUpkeepShare x income).
                 bool guidedFunded = guidedFiring <= Plugin.WarUpkeepShare.Value * me.ResourceHandler.EnergyProductionPerTurn;
                 float guidedPopDamage = guidedCount > 0 ? guidedPopSum / guidedCount : 0f;
+                // v0.16.2: who hit us last phase (return fire answers the attacker), and whether holding would free energy that
+                // last turn shows goes unspent (free fire). The game reserved this turn's firing cost in AIResources.BeginTurn.
+                Dictionary<int, int> impactsBy = new Dictionary<int, int>(Plugin.Ledger.LastDefender(me.PlayerID).EnemyImpactsBy);
+                state.FiringCost = Math.Max(0, core.Resources.EnergyUpkeep);
+                int lastUnspent, lastUses;
+                state.FreeEnergy = DirectorPatches.FreeFireInputs(me, turn, out lastUnspent, out lastUses)
+                    ? (int)Strategy.FreeEnergy(lastUnspent, lastUses, core.Resources.Energy, state.FiringCost) : -1;
                 decision = Strategy.Decide(turn, war, salvo, accuracy, targets, DefensePlanner.Counters, state.LastStrikeTurn, state.HoldTurns,
                     weapons, Plugin.StrategyCfg, state.LastCommitId, state.LastWeapons, underAttack, accuracyById, hitLastPhase,
-                    guidedIds, guidedPopDamage, guidedFunded, AverageById(popSumById, countById));
+                    guidedIds, guidedPopDamage, guidedFunded, AverageById(popSumById, countById),
+                    impactsBy, state.FreeEnergy, state.FiringCost);
                 state.GuidedFiring = guidedFiring;
                 state.UnguidedFiring = unguidedFiring;
                 state.ArtilleryProjectiles = artilleryProjectiles;
@@ -385,6 +395,9 @@ namespace InterplanetaryAI
                     .Bool("precision", d.Precision).Int("visibleCities", d.VisibleCities).Num("guidedArriving", d.GuidedArriving)
                     .Num("guidedPassing", d.GuidedPassing).Int("smallestVisibleCityPop", d.SmallestVisibleCityPop).Num("guidedPopDamage", d.GuidedPopDamage)
                     .Num("guidedFiring", state.GuidedFiring).Num("unguidedFiring", state.UnguidedFiring).Num("artilleryProjectiles", state.ArtilleryProjectiles)
+                    // v0.16.2: human-first commit, return fire from the commit only, free fire inputs
+                    .Bool("humanFirst", d.HumanFirst).Bool("hitByCommit", d.HitByCommit)
+                    .Int("freeEnergy", state.FreeEnergy).Int("firingCost", state.FiringCost)
                     .ToString());
             }
             catch (Exception e)

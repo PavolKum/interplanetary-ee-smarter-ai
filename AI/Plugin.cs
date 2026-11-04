@@ -24,7 +24,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.16.1";
+        public const string VERSION = "0.16.2";
 
         internal static ManualLogSource Log;
 
@@ -320,6 +320,16 @@ namespace InterplanetaryAI
         internal static ConfigEntry<float> IntelStopMinBudgetUse;    // v0.16.1
         internal static ConfigEntry<bool> PlanetDrainGuard;          // v0.16.1
         internal static ConfigEntry<int> PlanetGuardHorizonTurn;     // v0.16.1
+        internal static ConfigEntry<float> HumanFirstShare;          // v0.16.2
+        internal static ConfigEntry<float> HumanFirstMinPassing;     // v0.16.2
+        internal static ConfigEntry<bool> FreeFire;                  // v0.16.2
+        internal static ConfigEntry<float> FreeFireMinPassing;       // v0.16.2
+        internal static ConfigEntry<float> MaterialBoundEnergyShare; // v0.16.2
+        internal static ConfigEntry<float> MaterialBoundStockShare;  // v0.16.2
+        internal static ConfigEntry<int> MaterialBoundMinEnergy;     // v0.16.2
+        internal static ConfigEntry<int> MaterialBoundFromTurn;      // v0.16.2
+        internal static ConfigEntry<int> MaterialBoundMinSlots;      // v0.16.2
+        internal static ConfigEntry<float> ExtractionFirstShare;     // v0.16.2
         internal static ConfigEntry<float> AntiNukeCityValue;
         internal static ConfigEntry<int> NukeMemoryTurns;
         internal static ConfigEntry<float> CoverageCityValue;
@@ -663,6 +673,22 @@ namespace InterplanetaryAI
                 "v0.16.1: extra planet drain (mines, mine yield upgrades, Rare Material / Molecular Recycling projects) only while today's drain to PlanetGuardHorizonTurn plus the new drain fits in the remaining planet pool.");
             PlanetGuardHorizonTurn = Config.Bind("Director", "PlanetGuardHorizonTurn", 36,
                 "v0.16.1: the turn the planet pool should last to under the drain guard (matches 14-17 ended T29-T39; match 16's human ran dry at T30 and won).");
+            // ---- v0.16.2 (matches 18-19, docs/playtests/2026-11-04-v0.16.1-match19.md) ----
+            HumanFirstShare = Config.Bind("Strategy", "HumanFirstShare", 0.9f,
+                "v0.16.2: the human is the commit target when his score is at least this share of the best enemy score and HumanFirstMinPassing shots are expected through his defenses. Match 19: Asona saw two human cities and still struck the dying AIs (passing x a leader bonus capped at 1.5). A human who does not lead is still chosen by value. 0 = off.");
+            HumanFirstMinPassing = Config.Bind("Strategy", "HumanFirstMinPassing", 4f, "v0.16.2: fewest expected shots through the human's defenses for the human-first commit.");
+            FreeFire = Config.Bind("Strategy", "FreeFire", true,
+                "v0.16.2: fire instead of holding when last turn's construction already left at least this turn's firing cost unspent and this turn's energy still covers last turn's use (holding would only add to unspent energy). Match 19 held T21-T25 with 0.8-41k energy unspent a turn.");
+            FreeFireMinPassing = Config.Bind("Strategy", "FreeFireMinPassing", 4f, "v0.16.2: fewest expected shots through the commit's defenses for free fire.");
+            MaterialBoundEnergyShare = Config.Bind("Director", "MaterialBoundEnergyShare", 0.2f,
+                "v0.16.2: material binds when last turn left at least this share of its energy (and MaterialBoundMinEnergy) unspent while its material was spent down to MaterialBoundStockShare. Then extraction goes first and energy gains are worth nothing. 0 = off.");
+            MaterialBoundStockShare = Config.Bind("Director", "MaterialBoundStockShare", 0.1f, "v0.16.2: most material left at turn end, as a share of the turn's material, that counts as spent down.");
+            MaterialBoundMinEnergy = Config.Bind("Director", "MaterialBoundMinEnergy", 600, "v0.16.2: least unspent energy that can count as left over (two mines' worth).");
+            MaterialBoundFromTurn = Config.Bind("Director", "MaterialBoundFromTurn", 6, "v0.16.2: first turn the material-binds rule applies (the opening has its own plant/slot rules).");
+            MaterialBoundMinSlots = Config.Bind("Director", "MaterialBoundMinSlots", 4,
+                "v0.16.2: with fewer free power slots than this, plants stay buyable while material binds or energy is in glut (a mine needs a slot), and a mine bought by the extraction-first step leaves this many slots for the defenses.");
+            ExtractionFirstShare = Config.Bind("Director", "ExtractionFirstShare", 0.35f,
+                "v0.16.2: while material binds, up to this share of the turn's material goes to extraction (mines, mine yield upgrades, material projects) before intel, defenses and weapons, while material income is below what the planet sustains to MaterialHorizonTurn. The planet drain guard still applies. 0 = off.");
             if (migrated.Value == "0.14")
             {
                 // v0.16 (council v0.16): each unchanged v0.15 default moves once.
@@ -774,6 +800,10 @@ namespace InterplanetaryAI
             StrategyCfg.PrecisionMinGuided = Math.Max(0f, PrecisionMinGuided.Value);
             StrategyCfg.PrecisionMinShare = Clamp01(PrecisionMinShare.Value);
             StrategyCfg.PrecisionKillShare = Math.Max(0f, PrecisionKillShare.Value);
+            StrategyCfg.HumanFirstShare = Math.Max(0f, HumanFirstShare.Value);
+            StrategyCfg.HumanFirstMinPassing = Math.Max(0f, HumanFirstMinPassing.Value);
+            StrategyCfg.FreeFire = FreeFire.Value;
+            StrategyCfg.FreeFireMinPassing = Math.Max(0f, FreeFireMinPassing.Value);
 
             Build.Growth = BuildPlanner.Parse(GrowthWeights.Value, Build.Growth);
             Build.Pressure = BuildPlanner.Parse(PressureWeights.Value, Build.Pressure);

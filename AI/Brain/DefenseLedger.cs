@@ -23,6 +23,8 @@ namespace InterplanetaryAI.Brain
         public int Disconnected;       // a defense in range had no power
         public int EnergySpent;
         public readonly Dictionary<string, int> ImpactsByWeapon = new Dictionary<string, int>(); // what hit us (shown in playback)
+        // v0.16.2: EnemyImpacts by shooter (the playback shows which planet fired), so return fire answers the attacker.
+        public readonly Dictionary<int, int> EnemyImpactsBy = new Dictionary<int, int>();
     }
 
     public sealed class DefenseLedger
@@ -57,7 +59,13 @@ namespace InterplanetaryAI.Brain
                 m_pendingDefender[defenderId] = d;
             }
             d.Impacts++;
-            if (shooterId >= 0 && shooterId != defenderId) d.EnemyImpacts++; // v0.15.3 (Sol v0.15.2 #2)
+            if (shooterId >= 0 && shooterId != defenderId)
+            {
+                d.EnemyImpacts++; // v0.15.3 (Sol v0.15.2 #2)
+                int fromShooter;
+                d.EnemyImpactsBy.TryGetValue(shooterId, out fromShooter);
+                d.EnemyImpactsBy[shooterId] = fromShooter + 1; // v0.16.2
+            }
             int byWeapon;
             d.ImpactsByWeapon.TryGetValue(weaponId ?? "?", out byWeapon);
             d.ImpactsByWeapon[weaponId ?? "?"] = byWeapon + 1;

@@ -106,6 +106,8 @@ def main():
                       f" intel {r.get('intelBuildings', '?')} blind {r.get('blindEnemies', '?')} reserveE {r.get('defenseReserve', '?')}"
                       f"{' WAR' if r['war'] else ''}{' HOLD+' + str(r.get('releasedEnergy')) + 'E' if r.get('holdingFire') else ''}"
                       f"{' GLUT' if r.get('materialGlut') else ''}{' EGLUT' if r.get('energyGlut') else ''}{' ESAT' if r.get('energySaturated') else ''}"
+                      f"{' MBOUND' if r.get('materialBound') else ''}"
+                      f"{' XFIRST ' + str(r.get('extractionFirstBought')) + 'x/' + str(r.get('extractionFirstMaterial')) + 'M' if r.get('extractionFirstBought') else ''}"
                       f" planet {e.get('planetMaterial', '?')} stockM {r.get('materialStart', '?')}"
                       f"{' keepM ' + str(r.get('materialReserve')) if r.get('materialReserve') else ''}"
                       f"{' SOLD ' + str(r.get('soldMines')) + ' mines +' + str(r.get('soldMaterial')) + 'M' if r.get('soldMines') else ''}"
@@ -122,7 +124,10 @@ def main():
                 defenses = r.get("defensesBy") or {}
                 per = " ".join(f"{k}:{passing.get(k)}thru/{defenses.get(k)}def" for k in passing)
                 print(f"T{r['t']} {r['ai']}: {'FIRE' if r.get('fire') else 'hold'} ({r.get('reason')}) shots {r.get('shots')} "
-                      f"-> {r.get('commit') or '-'} ~{r.get('passing')} through ({r.get('passShare')}) | {per}", flush=True)
+                      f"-> {r.get('commit') or '-'} ~{r.get('passing')} through ({r.get('passShare')})"
+                      f"{' HUMAN-FIRST' if r.get('humanFirst') else ''}"
+                      f"{' (free E ' + str(r.get('freeEnergy')) + ' vs fire ' + str(r.get('firingCost')) + ')' if r.get('reason') in ('free-fire', 'below-saturation', 'pulse-wait') and r.get('freeEnergy') is not None else ''}"
+                      f" | {per}", flush=True)
             elif kind == "abort":
                 print(f"T{r['t']} {r['ai']}: STRIKE ABORTED - {r.get('hitsOnCommit')} of {r.get('shots')} weapons on target (needed {r.get('needed')})", flush=True)
             elif kind == "superweapon":

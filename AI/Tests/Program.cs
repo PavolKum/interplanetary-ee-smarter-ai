@@ -59,6 +59,7 @@ namespace InterplanetaryAI.Tests
             V0152Rules();
             V016Rules();
             V0161Rules();
+            V0162Rules();
 
             Console.WriteLine(s_checks + " checks, " + s_failures + " failed");
             return s_failures == 0 ? 0 : 1;
@@ -1531,6 +1532,134 @@ namespace InterplanetaryAI.Tests
             // Terra v0.16.1 #4: reserve only placeable Jamming copies.
             Check(SlotPolicy.LeavesRoom(true, 0, 1), "no city can take another Jamming: nothing reserved");
             Check(!SlotPolicy.LeavesRoom(true, 2, 2), "two placeable copies wanted, 2 free: another project waits");
+        }
+
+        // ---- v0.16.2 (matches 18-19, docs/playtests/2026-11-04-v0.16.1-match19.md) ----------------------
+
+        private static void V0162Rules()
+        {
+            StrategySettings s = new StrategySettings();
+            var counters = EnhancedCounters();
+
+            // Human first. Match 19 T29: the human leads (1.45) with 10 through; the dying Turing (0.44) lets 18 through.
+            // Value rule: human 10 x 1.5 = 15, Turing 18 x 1.15 = 20.7 (above the 1.25 x 15 stickiness bar).
+            Func<SalvoTarget> human = () => new SalvoTarget { PlayerId = 0, Name = "jogi", IsHuman = true, Score = 1.45f, DefensesSeen = true, Shots = Railguns(10) };
+            Func<SalvoTarget> turing = () => new SalvoTarget { PlayerId = 2, Name = "Turing", Score = 0.44f, DefensesSeen = true, Shots = Railguns(18) };
+            StrategyDecision d = Strategy.Decide(29, true, Railguns(30), 1f, new List<SalvoTarget> { human(), turing() }, counters, 26, 0, 30, s, 0);
+            Check(d.CommitTargetId == 0 && d.HumanFirst, "the leading human is the commit, not the dying AI; got " + d.CommitTargetId);
+            d = Strategy.Decide(29, true, Railguns(30), 1f, new List<SalvoTarget> { human(), turing() }, counters, 26, 0, 30, new StrategySettings { HumanFirstShare = 0f }, 0);
+            Check(d.CommitTargetId == 2 && !d.HumanFirst, "HumanFirstShare 0: the v0.16.1 value rule picks Turing (the check can fail); got " + d.CommitTargetId);
+            SalvoTarget far = human();
+            far.Shots = Railguns(3);
+            d = Strategy.Decide(29, true, Railguns(30), 1f, new List<SalvoTarget> { far, turing() }, counters, 26, 0, 30, s, 0);
+            Check(d.CommitTargetId == 2 && !d.HumanFirst, "a human almost out of reach (3 through) is left to the value rule; got " + d.CommitTargetId);
+            SalvoTarget trailing = human();
+            trailing.Score = 0.5f;
+            SalvoTarget rival = new SalvoTarget { PlayerId = 2, Score = 1f, DefensesSeen = true, Shots = Railguns(19) };
+            d = Strategy.Decide(26, true, Railguns(40), 1f, new List<SalvoTarget> { trailing, rival }, counters, -1000, 0, 40, s, -1);
+            Check(d.CommitTargetId == 2 && !d.HumanFirst, "a human who does not lead is chosen by value only; got " + d.CommitTargetId);
+            SalvoTarget close = human();
+            close.Score = 0.95f;
+            d = Strategy.Decide(26, true, Railguns(40), 1f, new List<SalvoTarget> { close, new SalvoTarget { PlayerId = 2, Score = 1f, DefensesSeen = true, Shots = Railguns(25) } },
+                counters, -1000, 0, 40, s, -1);
+            Check(d.CommitTargetId == 0 && d.HumanFirst, "a human at 95% of the best score counts as leading; got " + d.CommitTargetId);
+            SalvoTarget stuck = human();
+            stuck.LowYieldTurns = s.LowYieldTurns;
+            d = Strategy.Decide(29, true, Railguns(30), 1f, new List<SalvoTarget> { stuck, turing() }, counters, 26, 0, 30, s, 0);
+            Check(!d.HumanFirst && d.CommitTargetId == 2, "a human our weapons found no trajectory onto (low yield) is left to the value rule");
+
+            // Return fire answers the committed target's own shots (match 19 T30-T35: the human hit Asona, Asona shot Brain).
+            Func<SalvoTarget> brain = () => new SalvoTarget { PlayerId = 1, Name = "Brain", Score = 1f, DefensesSeen = true, Shots = Railguns(8) };
+            d = Strategy.Decide(31, true, Railguns(30), 1f, new List<SalvoTarget> { brain() }, counters, 30, 0, 30, s, 1, 30, true, null, true,
+                lastPhaseImpactsBy: new Dictionary<int, int> { { 0, 12 } });
+            Check(!d.Fire && d.Reason == "below-saturation" && !d.HitByCommit, "only the human hit us; the commit is Brain: no return fire; got " + d.Reason);
+            d = Strategy.Decide(31, true, Railguns(30), 1f, new List<SalvoTarget> { brain() }, counters, 30, 0, 30, s, 1, 30, true, null, true,
+                lastPhaseImpactsBy: new Dictionary<int, int> { { 0, 12 }, { 1, 3 } });
+            Check(d.Fire && d.Reason == "return-fire" && d.HitByCommit, "Brain hit us: return fire at Brain; got " + d.Reason);
+            d = Strategy.Decide(31, true, Railguns(30), 1f, new List<SalvoTarget> { brain() }, counters, 30, 0, 30, s, 1, 30, true, null, true);
+            Check(d.Fire && d.Reason == "return-fire", "no per-shooter map: any enemy impact counts (v0.15.3)");
+
+            // Free fire. 20 Railguns at 19 Kinetic (6k energy): ~8 through, below saturation.
+            StrategySettings so = new StrategySettings { OverlapDefenses = 20f };
+            Func<List<SalvoTarget>> kin19 = () => new List<SalvoTarget> { Target(0, 1f, 19, true, 6000f) };
+            d = Strategy.Decide(23, true, Railguns(20), 1f, kin19(), counters, -1000, 2, 20, so, 0, freeEnergy: 33613f, firingCost: 3000f);
+            Check(d.Fire && d.Reason == "free-fire", "below saturation with 33.6k unspent last turn and a 3k salvo: fire; got " + d.Reason);
+            d = Strategy.Decide(23, true, Railguns(20), 1f, kin19(), counters, -1000, 2, 20, so, 0, freeEnergy: 754f, firingCost: 2200f);
+            Check(!d.Fire && d.Reason == "below-saturation", "754 unspent vs a 2,200 salvo: holding still funds construction; got " + d.Reason);
+            d = Strategy.Decide(23, true, Railguns(20), 1f, kin19(), counters, -1000, 2, 20, so, 0, freeEnergy: -1f, firingCost: 3000f);
+            Check(!d.Fire, "last turn unknown: hold");
+            d = Strategy.Decide(23, true, Railguns(20), 1f, kin19(), counters, -1000, 2, 20, new StrategySettings { OverlapDefenses = 20f, FreeFire = false }, 0,
+                freeEnergy: 33613f, firingCost: 3000f);
+            Check(!d.Fire && d.Reason == "below-saturation", "FreeFire off: the v0.16.1 hold (the check can fail); got " + d.Reason);
+            d = Strategy.Decide(15, false, Railguns(20), 1f, kin19(), counters, -1000, 0, 20, so, 0, freeEnergy: 33613f, firingCost: 3000f);
+            Check(!d.Fire && d.Reason == "peace", "free fire needs war; got " + d.Reason);
+            d = Strategy.Decide(23, true, Railguns(5), 1f, kin19(), counters, -1000, 2, 5, so, 0, freeEnergy: 33613f, firingCost: 3000f);
+            Check(!d.Fire && d.Reason == "building", "free fire needs MinWeapons; got " + d.Reason);
+            d = Strategy.Decide(24, true, Railguns(35), 1f, kin19(), counters, 23, 0, 35, so, 0, freeEnergy: 33613f, firingCost: 3000f);
+            Check(d.Fire && d.Reason == "free-fire", "a pulse wait with energy to spare fires; got " + d.Reason);
+            Check(Strategy.ShouldAbort(2, 30, "free-fire", s), "free fire is called off when almost nothing aimed at the commit");
+            // Terra v0.16.2: not into defenses that stop almost everything (FreeFireMinPassing 4): 6 Railguns at 19 Kinetic.
+            d = Strategy.Decide(23, true, Railguns(6), 1f, kin19(), counters, -1000, 2, 6, so, 0, freeEnergy: 33613f, firingCost: 600f);
+            Check(d.Passing < so.FreeFireMinPassing && !d.Fire, "setup + rule: under 4 expected through, no free fire; got " + d.Passing + " " + d.Reason);
+
+            // Free energy (Terra v0.16.2 #3): last turn's actual surplus, capped by this turn's energy beyond last turn's use.
+            // Match 19 Brain T23 -> T24: 33,613 left of a 35,513 construction start (1,900 used); T24 net 38,967 after a 3,000 reservation.
+            Check(Math.Abs(Strategy.FreeEnergy(33613f, 1900f, 38967f, 3000f) - 33613f) < 0.5f, "a glut turn: the whole surplus is free");
+            Check(Math.Abs(Strategy.FreeEnergy(1442f, 4150f, 4754f, 1200f) - 1442f) < 0.5f, "T20 -> T21 shape: 1,442 free, enough for a 1,200 salvo");
+            Check(Strategy.FreeEnergy(3000f, 5000f, 3000f, 1200f) < 1200f, "income fell: this turn cannot fund last turn's use and a salvo");
+            Check(Strategy.FreeEnergy(-1f, 0f, 9000f, 1000f) < 0f, "last turn unknown: -1");
+
+            // Who hit us, by shooter; our own shots are not an enemy's.
+            DefenseLedger ledger = new DefenseLedger(3);
+            ledger.Record(5, 0, "wea_Railgun", false, 0, 0, 0, 0, true);
+            ledger.Record(5, 0, "wea_Railgun", true, 0, 0, 0, 0, true);
+            ledger.Record(5, 2, "wea_Railgun", false, 0, 0, 0, 0, true);
+            ledger.Record(5, 5, "wea_Railgun", false, 0, 0, 0, 0, true);
+            ledger.Roll(5);
+            DefenderStats last = ledger.LastDefender(5);
+            int fromHuman, fromTuring, fromSelf;
+            Check(last.EnemyImpactsBy.TryGetValue(0, out fromHuman) && fromHuman == 2 && last.EnemyImpactsBy.TryGetValue(2, out fromTuring) && fromTuring == 1
+                && !last.EnemyImpactsBy.TryGetValue(5, out fromSelf) && last.EnemyImpacts == 3, "impacts by shooter: human 2, Turing 1, our own shot not counted");
+
+            // Material binds. Match 19 Brain T22 -> T23: 1,661 of 6,461 energy unspent, 121 of 8,896 material left.
+            Check(EconomyDirector.IsMaterialBound(1661, 6461, 121, 8896, 0.2f, 0.1f, 600), "26% of energy unspent with 1% of material left: material binds");
+            Check(!EconomyDirector.IsMaterialBound(292, 3942, 14, 4439, 0.2f, 0.1f, 600), "T14 shape: 7% unspent, energy binds");
+            Check(!EconomyDirector.IsMaterialBound(1661, 6461, 4000, 8896, 0.2f, 0.1f, 600), "material left over too: something else binds");
+            Check(!EconomyDirector.IsMaterialBound(500, 2000, 10, 2000, 0.2f, 0.1f, 600), "500 unspent is under the 600 minimum");
+            Check(!EconomyDirector.IsMaterialBound(1661, 6461, 121, 8896, 0f, 0.1f, 600), "share 0 = off");
+            Check(!EconomyDirector.IsMaterialBound(1661, 0, 121, 8896, 0.2f, 0.1f, 600), "no budget recorded last turn: not bound");
+
+            // Extraction first: up to the share, only below the sustainable material income.
+            Check(EconomyDirector.ExtractionFirstRoom(0.35f, 8896, 0, 6400f, 11700f) == 3113, "35% of 8,896 while income 6.4k < sustainable 11.7k");
+            Check(EconomyDirector.ExtractionFirstRoom(0.35f, 8896, 3000, 6400f, 11700f) == 113, "3,000 of it spent: 113 left");
+            Check(EconomyDirector.ExtractionFirstRoom(0.35f, 8896, 0, 12000f, 11700f) == 0, "income at the sustainable rate: no extraction first");
+            Check(EconomyDirector.ExtractionFirstRoom(0.35f, 8896, 0, 12000f, -1f) == 3113, "unlimited planet: the share only");
+            Check(EconomyDirector.ExtractionFirstRoom(0f, 8896, 0, 6400f, 11700f) == 0, "share 0 = off");
+            // Terra v0.16.2 M2: the ceiling runs to the drain guard's T36, not MaterialHorizonTurn T45. T20, 282k planet + 9k stock.
+            float to45 = EconomyDirector.SustainableMaterialIncome(282000, 9000, true, 20, 45, 3);
+            float to36 = EconomyDirector.SustainableMaterialIncome(282000, 9000, true, 20, 36, 3);
+            Check(EconomyDirector.ExtractionFirstRoom(0.35f, 8896, 0, 12500f, to45) == 0 && EconomyDirector.ExtractionFirstRoom(0.35f, 8896, 0, 12500f, to36) > 0,
+                "12.5k income: past the T45 rate (" + to45 + ") but under the T36 rate (" + to36 + ")");
+
+            // While material binds, a mine beats more energy (match 19 T23: 11 Floating Plant yield upgrades, 0 mines).
+            EconOption energyUp = new EconOption { Id = "upg_FloatingEnergyYield2", Kind = OptionKind.Upgrade, Energy = 50, Material = 200, EnergyGain = 400f };
+            EconOption mine = new EconOption { Id = "bui_OffshoreMine", Kind = OptionKind.Producer, Energy = 300, Material = 350, MaterialGain = 125f, NeedsSlot = true };
+            List<EconOption> opts = new List<EconOption> { energyUp, mine };
+            EconomyBalance bal = new EconomyBalance { EnergyIncome = 6461, MaterialIncome = 6400, WeaponUpkeep = 3000, TargetRatio = 1f, EnergyBudget = 6461, MaterialBudget = 8896 };
+            Check(EconomyDirector.Best(opts, bal, 140) == energyUp, "setup: energy under 1.0 x material + upkeep picks the energy upgrade");
+            bal.EnergyGlut = EconomyDirector.UseGlutWeights(false, true, 140, 4);
+            Check(EconomyDirector.Best(opts, bal, 140) == mine, "material binds: the mine, not more energy");
+            Check(!EconomyDirector.UseGlutWeights(false, true, 2, 4), "material binds but power slots short: normal weights");
+            Check(!EconomyDirector.UseGlutWeights(false, false, 140, 4), "neither glut nor bound: normal weights");
+            Check(EconomyDirector.UseGlutWeights(true, false, 140, 4), "energy glut with slots: glut weights (v0.11)");
+            // Terra v0.16.2 #2, combined: energy glut AND no free slot. The mine cannot be placed; a plant for slots must stay buyable.
+            EconOption plant = new EconOption { Id = "bui_FloatingPlant", Kind = OptionKind.Plant, Energy = 250, Material = 300, EnergyGain = 100f };
+            List<EconOption> slotShort = new List<EconOption> { plant, mine };
+            EconomyBalance glut = new EconomyBalance { EnergyIncome = 40000, MaterialIncome = 6000, TargetRatio = 1f, EnergyBudget = 39000, MaterialBudget = 6000,
+                EnergyGlut = true };
+            Check(EconomyDirector.Best(slotShort, glut, 0) == null, "setup: glut weights with 0 slots buy nothing (the v0.16.1 stall)");
+            glut.EnergyGlut = EconomyDirector.UseGlutWeights(true, true, 0, 4);
+            Check(EconomyDirector.Best(slotShort, glut, 0) == plant, "0 slots in glut and material-bound: the plant for its slots");
         }
 
         private static void Check(bool condition, string what)

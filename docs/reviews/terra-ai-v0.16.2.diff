@@ -1,0 +1,597 @@
+diff --git a/AI/Brain/DefenseLedger.cs b/AI/Brain/DefenseLedger.cs
+index f7fe91b..093b73c 100644
+--- a/AI/Brain/DefenseLedger.cs
++++ b/AI/Brain/DefenseLedger.cs
+@@ -23,6 +23,8 @@ namespace InterplanetaryAI.Brain
+         public int Disconnected;       // a defense in range had no power
+         public int EnergySpent;
+         public readonly Dictionary<string, int> ImpactsByWeapon = new Dictionary<string, int>(); // what hit us (shown in playback)
++        // v0.16.2: EnemyImpacts by shooter (the playback shows which planet fired), so return fire answers the attacker.
++        public readonly Dictionary<int, int> EnemyImpactsBy = new Dictionary<int, int>();
+     }
+ 
+     public sealed class DefenseLedger
+@@ -57,7 +59,13 @@ namespace InterplanetaryAI.Brain
+                 m_pendingDefender[defenderId] = d;
+             }
+             d.Impacts++;
+-            if (shooterId >= 0 && shooterId != defenderId) d.EnemyImpacts++; // v0.15.3 (Sol v0.15.2 #2)
++            if (shooterId >= 0 && shooterId != defenderId)
++            {
++                d.EnemyImpacts++; // v0.15.3 (Sol v0.15.2 #2)
++                int fromShooter;
++                d.EnemyImpactsBy.TryGetValue(shooterId, out fromShooter);
++                d.EnemyImpactsBy[shooterId] = fromShooter + 1; // v0.16.2
++            }
+             int byWeapon;
+             d.ImpactsByWeapon.TryGetValue(weaponId ?? "?", out byWeapon);
+             d.ImpactsByWeapon[weaponId ?? "?"] = byWeapon + 1;
+diff --git a/AI/Brain/Director.cs b/AI/Brain/Director.cs
+index 4ccb015..82b77dc 100644
+--- a/AI/Brain/Director.cs
++++ b/AI/Brain/Director.cs
+@@ -186,6 +186,33 @@ namespace InterplanetaryAI.Brain
+             return lastEnergyLeft >= minimum && lastEnergyLeft >= share * Math.Max(1, lastEnergyBudget);
+         }
+ 
++        // v0.16.2 (matches 18-19): material, not energy, binds. Last turn ended with at least energyShare of its energy budget
++        // (and minEnergy) unspent while its material was spent down to at most materialShare of the turn's material. Match 19
++        // T20-T25: 13-55% of energy unspent with 13-142 material left of 5.8-8.9k; the planet kept 55-69% to the end.
++        public static bool IsMaterialBound(int lastEnergyLeft, int lastEnergyBudget, int lastMaterialLeft, int lastMaterialBudget,
++            float energyShare, float materialShare, int minEnergy)
++        {
++            if (energyShare <= 0f || lastEnergyBudget <= 0 || lastMaterialBudget <= 0) return false;
++            return lastEnergyLeft >= Math.Max(minEnergy, energyShare * lastEnergyBudget)
++                && lastMaterialLeft <= Math.Max(0f, materialShare) * lastMaterialBudget;
++        }
++
++        // v0.16.2: material the extraction-first step may still spend this turn: up to share x the turn's material, and only
++        // while material income (queued gains included) is below what the planet can sustain to the horizon (-1 = unlimited).
++        public static int ExtractionFirstRoom(float share, int turnStartMaterial, int spentThisTurn, float materialIncome, float sustainable)
++        {
++            if (share <= 0f || turnStartMaterial <= 0) return 0;
++            if (sustainable >= 0f && materialIncome >= sustainable) return 0;
++            return Math.Max(0, (int)(share * turnStartMaterial) - Math.Max(0, spentThisTurn));
++        }
++
++        // v0.16.2: while material binds, energy gains are worth nothing (the energy-glut weights), unless power slots run short:
++        // then plants stay buyable (a mine needs a slot).
++        public static bool MaterialBoundGlut(bool materialBound, int slotsLeft, int minSlots)
++        {
++            return materialBound && slotsLeft >= minSlots;
++        }
++
+         public static float Score(EconOption o, float energyWeight, float materialWeight, float energyCostFactor, float scienceWeight = 1f,
+             float materialCostFactor = 1f)
+         {
+diff --git a/AI/Brain/Strategy.cs b/AI/Brain/Strategy.cs
+index 213d114..ef373f6 100644
+--- a/AI/Brain/Strategy.cs
++++ b/AI/Brain/Strategy.cs
+@@ -28,6 +28,7 @@ namespace InterplanetaryAI.Brain
+         public Dictionary<string, int[]> Observed; // weapon id -> our recent [impacts, intercepted] at it
+         public int LowYieldTurns;                  // v0.12: consecutive turns our weapons aimed at it found almost no trajectory
+         public List<int> VisibleCityPops;          // v0.16: population of its cities we see NOW (intact, Visible); null/empty = none
++        public bool IsHuman;                       // v0.16.2: the human-first commit rule (Decide)
+ 
+         // outputs
+         public float Arriving;     // projectiles expected to arrive (after accuracy)
+@@ -88,6 +89,18 @@ namespace InterplanetaryAI.Brain
+         public float PrecisionMinGuided = 6f;
+         public float PrecisionMinShare = 0.9f;
+         public float PrecisionKillShare = 1f;
++        // v0.16.2 (match 19): the human first while he leads. The commit value (shots through x at most 1 + LeaderInfluence)
++        // lets any undefended enemy outbid a defended leader: at T29 Asona saw two human cities (score 1.45, 10 through) and
++        // committed to the dying Turing (0.44, 18 through), then to Brain until it died; 116 of its 174 aims went at the
++        // other AIs. When the human's score is at least HumanFirstShare x the best score and at least HumanFirstMinPassing of
++        // the salvo is expected through his defenses, he is the commit. A human who does not lead is still chosen by value
++        // (v0.10.1: the softer human over the higher-scored rival). 0 = off.
++        public float HumanFirstShare = 0.9f;
++        public float HumanFirstMinPassing = 4f;
++        // v0.16.2 (match 19): holding fire gives the firing energy to construction; when last turn already ended with at
++        // least this turn's firing cost unspent, holding buys nothing. T21-T25 all three AIs held below saturation with
++        // 0.8-41k energy unspent each turn, and fired blind on max-hold at T26. Fire instead ("free-fire").
++        public bool FreeFire = true;
+     }
+ 
+     public sealed class StrategyDecision
+@@ -107,6 +120,9 @@ namespace InterplanetaryAI.Brain
+         public int SmallestVisibleCityPop;
+         public float GuidedPopDamage;
+         public bool Precision;
++        // v0.16.2
++        public bool HumanFirst;      // the commit went to the leading human (HumanFirstShare)
++        public bool HitByCommit;     // the committed target's shots reached us in the last action phase (return fire)
+     }
+ 
+     public static class Strategy
+@@ -254,6 +270,21 @@ namespace InterplanetaryAI.Brain
+             return passShare >= s.ReturnFirePassShare && passing >= Math.Max(0.01f, s.ReturnFireMinPassing);
+         }
+ 
++        // v0.16.2: holding would release energy that last turn shows goes unspent (unspentLastTurn < 0 = unknown: hold).
++        public static bool FreeFireHolds(int weapons, float passing, float unspentLastTurn, float firingCost, StrategySettings s)
++        {
++            return s.FreeFire && weapons >= s.MinWeapons && passing > 0f && firingCost > 0f && unspentLastTurn >= firingCost;
++        }
++
++        // v0.16.2: the leading human is the commit when enough of the salvo reaches through his defenses (HumanFirstShare).
++        public static bool HumanFirstHolds(SalvoTarget human, float maxScore, StrategySettings s)
++        {
++            // A human our weapons found almost no trajectory onto (v0.12 low yield) is left to the value rule, which discounts him.
++            return human != null && s.HumanFirstShare > 0f && maxScore > 0f && human.Score >= s.HumanFirstShare * maxScore
++                && human.Passing >= Math.Max(0.01f, s.HumanFirstMinPassing)
++                && !(s.LowYieldTurns > 0 && human.LowYieldTurns >= s.LowYieldTurns);
++        }
++
+         public static bool Attrition(int weapons, int lastWeapons, bool underAttack, StrategySettings s)
+         {
+             if (!underAttack || s.AttritionLossShare <= 0f || weapons >= lastWeapons) return false; // lastWeapons < 0 (unknown) ends here too
+@@ -267,15 +298,18 @@ namespace InterplanetaryAI.Brain
+             Dictionary<string, Dictionary<string, float>> counters, int lastStrikeTurn, int holdTurns, int weapons, StrategySettings s,
+             int lastCommitId = -1, int lastWeapons = -1, bool underAttack = false, IDictionary<string, float> accuracyById = null,
+             bool hitLastPhase = false, ICollection<string> guidedIds = null, float guidedPopDamage = 0f, bool guidedFunded = false,
+-            IDictionary<string, float> guidedPopDamageById = null)
++            IDictionary<string, float> guidedPopDamageById = null,
++            IDictionary<int, int> lastPhaseImpactsBy = null, float unspentLastTurn = -1f, float firingCost = 0f)
+         {
+             StrategyDecision d = new StrategyDecision { War = war, Shots = weapons };
+             float maxScore = 0f;
++            SalvoTarget human = null;
+             foreach (SalvoTarget t in targets)
+             {
+                 EstimateSalvo(salvo, t, accuracy, counters, s, accuracyById);
+                 d.Targets.Add(t);
+                 maxScore = Math.Max(maxScore, t.Score);
++                if (t.IsHuman && human == null) human = t;
+             }
+             SalvoTarget best = null, previous = null;
+             foreach (SalvoTarget t in targets)
+@@ -287,6 +321,12 @@ namespace InterplanetaryAI.Brain
+             }
+             // Stay on last turn's target unless another is clearly better: a new target costs a turn of aiming.
+             if (previous != null && best != previous && best.Value < s.CommitStickiness * previous.Value) best = previous;
++            // v0.16.2: the leading human is the commit whenever enough of the salvo reaches him (HumanFirstShare).
++            if (HumanFirstHolds(human, maxScore, s))
++            {
++                d.HumanFirst = true;
++                best = human;
++            }
+             if (best == null || weapons <= 0)
+             {
+                 d.Reason = "no-weapons";
+@@ -305,6 +345,15 @@ namespace InterplanetaryAI.Brain
+             // Match 16 held at T21 (9 Missiles, 7.65 through at 100%) and T22 (10.0 through) below MinPassingShots 12
+             // while two cities were visible; at T23 none was. Both lanes' conditions must hold (PrecisionOpportunity).
+             EstimatePrecision(d, best, salvo, accuracy, counters, s, accuracyById, guidedIds, guidedPopDamage, guidedFunded, guidedPopDamageById);
++            // v0.16.2 (match 19): return fire answers the committed target's own shots. v0.15.3 counted any enemy impact, so the
++            // human's volleys on Asona (T30-T35) were answered by firing at Brain. Without the per-shooter map: any impact.
++            bool hitByCommit = hitLastPhase;
++            if (lastPhaseImpactsBy != null)
++            {
++                int fromCommit;
++                hitByCommit = lastPhaseImpactsBy.TryGetValue(best.PlayerId, out fromCommit) && fromCommit > 0;
++            }
++            d.HitByCommit = hitByCommit;
+             bool pulseReady = turn - lastStrikeTurn >= Math.Max(1, s.StrikeEvery);
+             bool saturated = d.Passing >= s.MinPassingShots && (d.PassShare >= s.MinPassShare || d.Passing >= s.BigSalvoShots);
+             bool broken = d.PassShare >= s.BrokenPassShare && d.Passing >= s.MinPassingShots;
+@@ -323,7 +372,7 @@ namespace InterplanetaryAI.Brain
+                 d.Fire = true;
+                 d.Reason = "attrition";
+             }
+-            else if (ReturnFire(weapons, d.Passing, d.PassShare, hitLastPhase, s))
++            else if (ReturnFire(weapons, d.Passing, d.PassShare, hitByCommit, s))
+             {
+                 // v0.15.2: trade blows instead of waiting for a bigger salvo (v0.15.3: the abort still applies).
+                 d.Fire = true;
+@@ -340,6 +389,12 @@ namespace InterplanetaryAI.Brain
+                 d.Fire = true;
+                 d.Reason = pulseReady ? "saturated" : "broken";
+             }
++            else if (FreeFireHolds(weapons, d.Passing, unspentLastTurn, firingCost, s))
++            {
++                // v0.16.2: holding would only add to energy that goes unspent (subject to the abort).
++                d.Fire = true;
++                d.Reason = "free-fire";
++            }
+             else
+             {
+                 d.Reason = weapons < s.MinWeapons ? "building" : !saturated ? "below-saturation" : "pulse-wait";
+diff --git a/AI/DirectorPatches.cs b/AI/DirectorPatches.cs
+index fba8fd4..024639f 100644
+--- a/AI/DirectorPatches.cs
++++ b/AI/DirectorPatches.cs
+@@ -34,6 +34,7 @@ namespace InterplanetaryAI
+             // this turn
+             public int Turn = -1;
+             public bool Started;
++            public bool Ended;            // v0.16.2: EndTurn recorded EndEnergyLeft / EndMaterialLeft
+             public bool War;
+             public bool Defensive;        // v0.10: defense floor and reserve from DefenseFromTurn (before weapons)
+             public int SlotsAtStart;
+@@ -147,6 +148,11 @@ namespace InterplanetaryAI
+             public int AntiNukeNearCities; // v0.15.1: intact (any state) anti-missile defenses within reach of a city
+             public int PowerEnergySpent;  // v0.13.1: energy spent this turn on energy-only purchases (plants, energy upgrades)
+             public int AimedWeapons;                // own weapons needing a trajectory (not lasers, not superweapons), queued included
++            // v0.16.2 (matches 18-19): material binds (energy left over, material spent down) -> extraction first
++            public int EndMaterialLeft;             // material unspent when the turn's construction ended
++            public int LastMaterialLeft, LastMaterialBudget;
++            public bool MaterialBound;
++            public int ExtractionFirstMaterial, ExtractionFirstBought;
+             // across turns
+             public int WaterCooldownUntil;
+             // v0.14: building type -> last turn it stays throttled (at most two queued a turn) after 3+ placements gave up
+@@ -263,6 +269,16 @@ namespace InterplanetaryAI
+             }
+         }
+ 
++        // v0.16.2 (free fire): energy last turn's construction left unspent (energy-only purchases count as unspent, as for the
++        // energy glut). Read at the strategy decision, before this turn's director state replaces it. -1 = unknown (no state,
++        // not the turn just before, or the turn never ended).
++        internal static int UnspentEnergyLastTurn(PlayerData me, int turn)
++        {
++            DirectorState d;
++            if (me == null || !s_states.TryGetValue(me.PlayerID, out d) || !d.Started || !d.Ended || d.Turn != turn - 1) return -1;
++            return Math.Max(0, d.EndEnergyLeft) + Math.Max(0, d.PowerEnergySpent);
++        }
++
+         private static DirectorState StateOf(PlayerData ai)
+         {
+             DirectorState state;
+@@ -285,6 +301,7 @@ namespace InterplanetaryAI
+             // v0.13.1 (Sol v0.13 #1): energy spent on more energy counts as unspent, else buying plants hides the glut that
+             // should stop them (v0.11.1 Beam T24: 6.7k of 27.9k left = 24%, under the 30% threshold, while it bought plants).
+             int lastLeft = consecutive ? d.EndEnergyLeft + d.PowerEnergySpent : 0, lastBudget = consecutive ? d.TurnStartEnergy : 0;
++            int lastMaterialLeft = consecutive ? d.EndMaterialLeft : 0, lastMaterialBudget = consecutive ? d.TurnStartMaterial : 0; // v0.16.2
+             // A throttled type stays throttled while its placements still fail (a capped turn has at most two failures).
+             Dictionary<string, int> lastAbandons = new Dictionary<string, int>();
+             if (consecutive)
+@@ -298,7 +315,7 @@ namespace InterplanetaryAI
+             }
+             Dictionary<string, int> backoff = turn > d.Turn ? NextBackoff(d, Plugin.PlacementBackoffTurns.Value) : new Dictionary<string, int>();
+             d = new DirectorState { WaterCooldownUntil = waterCooldown, Turn = turn, LastEnergyLeft = lastLeft, LastEnergyBudget = lastBudget,
+-                BackoffUntil = backoff };
++                LastMaterialLeft = lastMaterialLeft, LastMaterialBudget = lastMaterialBudget, BackoffUntil = backoff };
+             foreach (KeyValuePair<string, int> pair in lastAbandons) d.AbandonedLastTurn[pair.Key] = pair.Value;
+             s_states[core.PlayerData.PlayerID] = d;
+ 
+@@ -347,6 +364,10 @@ namespace InterplanetaryAI
+             CountProjects(core, d);
+             d.EnergyGlut = Plugin.EnergyGlutShare.Value > 0f
+                 && EconomyDirector.IsEnergyGlut(d.LastEnergyLeft, d.LastEnergyBudget, Plugin.EnergyGlutShare.Value, Plugin.EnergyGlutMin.Value);
++            // v0.16.2 (matches 18-19): energy left over while material ran out -> material binds (extraction first, no energy gains).
++            d.MaterialBound = turn >= Plugin.MaterialBoundFromTurn.Value
++                && EconomyDirector.IsMaterialBound(d.LastEnergyLeft, d.LastEnergyBudget, d.LastMaterialLeft, d.LastMaterialBudget,
++                    Plugin.MaterialBoundEnergyShare.Value, Plugin.MaterialBoundStockShare.Value, Plugin.MaterialBoundMinEnergy.Value);
+             d.Defensive = d.War || EconomyDirector.WarPhase(turn, Plugin.DefenseFromTurn.Value, recentDamage, Plugin.WarDamageTrigger.Value);
+             int visibleEnemyWeapons = 0;
+             foreach (int n in economy.EnemyWeapons.Values) visibleEnemyWeapons += n;
+@@ -695,6 +716,18 @@ namespace InterplanetaryAI
+                 d.FailedThisTurn.Add("unpowered-plant");
+             }
+ 
++            // 2b. v0.16.2 (matches 18-19): material binds. Economy comes after defenses and weapons, so mines got the leftovers:
++            // match 19 Brain spent 5.8-8.9k material a turn on defenses, weapons and upgrades, bought 0-2 mines T20-T25, and left
++            // 13-89% of its energy unspent (match 18: 57-66%) with 55-69% of the planet unmined. While material binds, up to
++            // ExtractionFirstShare of the turn's material goes to extraction first (planet drain guard still applies).
++            if (d.MaterialBound && !d.FailedThisTurn.Contains("extraction-first")
++                && EconomyDirector.ExtractionFirstRoom(Plugin.ExtractionFirstShare.Value, d.TurnStartMaterial, d.ExtractionFirstMaterial,
++                    d.MaterialIncome, d.SustainableMaterial) > 0)
++            {
++                if (TryEconomy(construction, core, economy, d, true)) return true;
++                d.FailedThisTurn.Add("extraction-first");
++            }
++
+             // 3. Intel. v0.16 item 5 (council B3/A5, Pavol's P2): a bounded bid judged by our own visibility results replaces
+             // v0.15's escalation while any enemy city was unseen (that count read the enemy's real surviving cities, and
+             // match 16 bought 30 Telescopes, 4,940 E of upkeep, against counterintel x16-27). Native BelowMinimum (the
+@@ -1277,13 +1310,23 @@ namespace InterplanetaryAI
+ 
+         // ---- economy -------------------------------------------------------------------------------
+ 
+-        private static bool TryEconomy(AIConstruction construction, AICore core, EconomyPatches.AiEconomyState economy, DirectorState d)
++        // v0.16.2: extractionFirst = the material-binds step (2b): extraction-only options, within ExtractionFirstRoom.
++        private static bool TryEconomy(AIConstruction construction, AICore core, EconomyPatches.AiEconomyState economy, DirectorState d,
++            bool extractionFirst = false)
+         {
+             List<EconOption> options = new List<EconOption>();
+             float planetFactor = EconomyDirector.PlanetMaterialFactor(core.PlayerData.ResourceHandler.PlanetMaterial, d.MaterialIncome, 10);
+             AddUpgradeOptions(core, d, options, planetFactor);
+             AddProjectOptions(construction, core, d, options, planetFactor);
+             AddBuildingOptions(core, d, options, planetFactor);
++            int extractionRoom = int.MaxValue;
++            if (extractionFirst)
++            {
++                options.RemoveAll(o => !EconomyDirector.IsExtractionOnly(o));
++                extractionRoom = EconomyDirector.ExtractionFirstRoom(Plugin.ExtractionFirstShare.Value, d.TurnStartMaterial, d.ExtractionFirstMaterial,
++                    d.MaterialIncome, d.SustainableMaterial);
++                if (options.Count == 0 || extractionRoom <= 0) return false;
++            }
+ 
+             EconomyBalance balance = new EconomyBalance
+             {
+@@ -1298,7 +1341,8 @@ namespace InterplanetaryAI
+                 // Turn-start stock against turn-start energy: spending during the turn must not flip it.
+                 MaterialGlut = Plugin.MaterialGlutRatio.Value > 0f
+                     && EconomyDirector.IsMaterialGlut(d.TurnStartMaterial, d.TurnStartEnergy, Plugin.MaterialGlutRatio.Value, Plugin.MaterialGlutMin.Value),
+-                EnergyGlut = d.EnergyGlut,
++                // v0.16.2: while material binds, energy gains are worth nothing (the glut weights) unless slots run short.
++                EnergyGlut = d.EnergyGlut || extractionFirst || EconomyDirector.MaterialBoundGlut(d.MaterialBound, d.SlotsLeft, Plugin.MaterialBoundMinSlots.Value),
+                 SustainableMaterialIncome = d.SustainableMaterial,
+                 EnergySaturation = Plugin.EnergySaturation.Value,
+                 MaterialReserve = d.MaterialReserve,
+@@ -1306,8 +1350,12 @@ namespace InterplanetaryAI
+                 PlantsQueued = d.PlantsQueued,
+                 Opening = d.Turn <= 3,
+             };
+-            d.MaterialGlut = balance.MaterialGlut;
+-            d.EnergySaturated = EconomyDirector.EnergySaturated(balance);
++            if (extractionFirst) balance.MaterialBudget = Math.Min(balance.MaterialBudget, extractionRoom + Math.Max(0, d.MaterialReserve));
++            else
++            {
++                d.MaterialGlut = balance.MaterialGlut;
++                d.EnergySaturated = EconomyDirector.EnergySaturated(balance);
++            }
+             for (int attempt = 0; attempt < 6; attempt++)
+             {
+                 EconOption best = EconomyDirector.Best(options, balance, d.SlotsLeft);
+@@ -1323,6 +1371,11 @@ namespace InterplanetaryAI
+                         d.PlanetDrain += Math.Max(0f, best.PlanetDrainAdd); // v0.16.1
+                     }
+                     if (EconomyDirector.IsEnergyOnly(best)) d.PowerEnergySpent += best.Energy;
++                    if (extractionFirst)
++                    {
++                        d.ExtractionFirstMaterial += best.Material;
++                        d.ExtractionFirstBought++;
++                    }
+                     return true;
+                 }
+                 options.Remove(best);
+@@ -2698,6 +2751,8 @@ namespace InterplanetaryAI
+             DirectorState d;
+             if (!s_states.TryGetValue(core.PlayerData.PlayerID, out d) || !d.Started) return;
+             d.EndEnergyLeft = core.Resources.Energy;
++            d.EndMaterialLeft = core.Resources.Material; // v0.16.2
++            d.Ended = true;
+             int upgradesInstalled = 0;
+             foreach (BaseBuilding building in core.PlayerData.BuildingHandler.Buildings)
+             {
+@@ -2725,6 +2780,7 @@ namespace InterplanetaryAI
+                 .Int("warTurn", d.WarTurn).Bool("lossless", d.LosslessDone).Int("permanentProjects", d.PermanentProjects)
+                 .Int("jamming", d.JammingActive).Int("sstar", d.SstarActive).Int("rareMaterial", d.RareMaterialActive)
+                 .Int("extractionBlocked", d.ExtractionBlocked).Int("intelBatchSize", MemoryOf(core.PlayerData.PlayerID).Intel.BatchSize).Int("projectSlotsFree", d.ProjectSlotsFree)
++                .Bool("materialBound", d.MaterialBound).Int("extractionFirstMaterial", d.ExtractionFirstMaterial).Int("extractionFirstBought", d.ExtractionFirstBought) // v0.16.2
+                 .Int("projectSlotsTotal", d.ProjectSlotsTotal).Str("projectSlots", d.ProjectSlots).Int("permanentsBlocked", d.PermanentsBlocked)
+                 .Str("intelPolicy", d.IntelPolicy).Int("intelAllowed", d.IntelAllowed)
+                 .Num("intelSpent", MemoryOf(core.PlayerData.PlayerID).Intel.SpentEnergy).Num("intelCredited", MemoryOf(core.PlayerData.PlayerID).Intel.CreditedEnergy)
+diff --git a/AI/Plugin.cs b/AI/Plugin.cs
+index fc07593..00de2a4 100644
+--- a/AI/Plugin.cs
++++ b/AI/Plugin.cs
+@@ -24,7 +24,7 @@ namespace InterplanetaryAI
+     {
+         public const string GUID = "pavol.interplanetary.ai";
+         public const string NAME = "Interplanetary EE: Smarter AI";
+-        public const string VERSION = "0.16.1";
++        public const string VERSION = "0.16.2";
+ 
+         internal static ManualLogSource Log;
+ 
+@@ -320,6 +320,15 @@ namespace InterplanetaryAI
+         internal static ConfigEntry<float> IntelStopMinBudgetUse;    // v0.16.1
+         internal static ConfigEntry<bool> PlanetDrainGuard;          // v0.16.1
+         internal static ConfigEntry<int> PlanetGuardHorizonTurn;     // v0.16.1
++        internal static ConfigEntry<float> HumanFirstShare;          // v0.16.2
++        internal static ConfigEntry<float> HumanFirstMinPassing;     // v0.16.2
++        internal static ConfigEntry<bool> FreeFire;                  // v0.16.2
++        internal static ConfigEntry<float> MaterialBoundEnergyShare; // v0.16.2
++        internal static ConfigEntry<float> MaterialBoundStockShare;  // v0.16.2
++        internal static ConfigEntry<int> MaterialBoundMinEnergy;     // v0.16.2
++        internal static ConfigEntry<int> MaterialBoundFromTurn;      // v0.16.2
++        internal static ConfigEntry<int> MaterialBoundMinSlots;      // v0.16.2
++        internal static ConfigEntry<float> ExtractionFirstShare;     // v0.16.2
+         internal static ConfigEntry<float> AntiNukeCityValue;
+         internal static ConfigEntry<int> NukeMemoryTurns;
+         internal static ConfigEntry<float> CoverageCityValue;
+@@ -663,6 +672,20 @@ namespace InterplanetaryAI
+                 "v0.16.1: extra planet drain (mines, mine yield upgrades, Rare Material / Molecular Recycling projects) only while today's drain to PlanetGuardHorizonTurn plus the new drain fits in the remaining planet pool.");
+             PlanetGuardHorizonTurn = Config.Bind("Director", "PlanetGuardHorizonTurn", 36,
+                 "v0.16.1: the turn the planet pool should last to under the drain guard (matches 14-17 ended T29-T39; match 16's human ran dry at T30 and won).");
++            // ---- v0.16.2 (matches 18-19, docs/playtests/2026-11-04-v0.16.1-match19.md) ----
++            HumanFirstShare = Config.Bind("Strategy", "HumanFirstShare", 0.9f,
++                "v0.16.2: the human is the commit target when his score is at least this share of the best enemy score and HumanFirstMinPassing shots are expected through his defenses. Match 19: Asona saw two human cities and still struck the dying AIs (passing x a leader bonus capped at 1.5). A human who does not lead is still chosen by value. 0 = off.");
++            HumanFirstMinPassing = Config.Bind("Strategy", "HumanFirstMinPassing", 4f, "v0.16.2: fewest expected shots through the human's defenses for the human-first commit.");
++            FreeFire = Config.Bind("Strategy", "FreeFire", true,
++                "v0.16.2: fire instead of holding when last turn already left at least this turn's firing cost unspent (holding would only add to unspent energy). Match 19 held T21-T25 with 0.8-41k energy unspent a turn.");
++            MaterialBoundEnergyShare = Config.Bind("Director", "MaterialBoundEnergyShare", 0.2f,
++                "v0.16.2: material binds when last turn left at least this share of its energy (and MaterialBoundMinEnergy) unspent while its material was spent down to MaterialBoundStockShare. Then extraction goes first and energy gains are worth nothing. 0 = off.");
++            MaterialBoundStockShare = Config.Bind("Director", "MaterialBoundStockShare", 0.1f, "v0.16.2: most material left at turn end, as a share of the turn's material, that counts as spent down.");
++            MaterialBoundMinEnergy = Config.Bind("Director", "MaterialBoundMinEnergy", 600, "v0.16.2: least unspent energy that can count as left over (two mines' worth).");
++            MaterialBoundFromTurn = Config.Bind("Director", "MaterialBoundFromTurn", 6, "v0.16.2: first turn the material-binds rule applies (the opening has its own plant/slot rules).");
++            MaterialBoundMinSlots = Config.Bind("Director", "MaterialBoundMinSlots", 4, "v0.16.2: with fewer free power slots than this, plants stay buyable while material binds (a mine needs a slot).");
++            ExtractionFirstShare = Config.Bind("Director", "ExtractionFirstShare", 0.35f,
++                "v0.16.2: while material binds, up to this share of the turn's material goes to extraction (mines, mine yield upgrades, material projects) before intel, defenses and weapons, while material income is below what the planet sustains to MaterialHorizonTurn. The planet drain guard still applies. 0 = off.");
+             if (migrated.Value == "0.14")
+             {
+                 // v0.16 (council v0.16): each unchanged v0.15 default moves once.
+@@ -774,6 +797,9 @@ namespace InterplanetaryAI
+             StrategyCfg.PrecisionMinGuided = Math.Max(0f, PrecisionMinGuided.Value);
+             StrategyCfg.PrecisionMinShare = Clamp01(PrecisionMinShare.Value);
+             StrategyCfg.PrecisionKillShare = Math.Max(0f, PrecisionKillShare.Value);
++            StrategyCfg.HumanFirstShare = Math.Max(0f, HumanFirstShare.Value);
++            StrategyCfg.HumanFirstMinPassing = Math.Max(0f, HumanFirstMinPassing.Value);
++            StrategyCfg.FreeFire = FreeFire.Value;
+ 
+             Build.Growth = BuildPlanner.Parse(GrowthWeights.Value, Build.Growth);
+             Build.Pressure = BuildPlanner.Parse(PressureWeights.Value, Build.Pressure);
+diff --git a/AI/StrategyPatches.cs b/AI/StrategyPatches.cs
+index a0256eb..c0e0912 100644
+--- a/AI/StrategyPatches.cs
++++ b/AI/StrategyPatches.cs
+@@ -27,6 +27,7 @@ namespace InterplanetaryAI
+             public int HoldTurns;
+             public int ReleasedEnergy;
+             public float GuidedFiring, UnguidedFiring, ArtilleryProjectiles; // v0.16 item 4 (logged)
++            public int UnspentLastTurn = -1, FiringCost;                     // v0.16.2 free fire (logged)
+             public bool Reported;               // this turn's firing has been counted
+             public int LastCommitId = -1;       // the enemy the weapons were pointed at last turn
+             public int LastWeapons = -1;        // v0.14: live weapons counted at last turn's decision (attrition)
+@@ -238,6 +239,7 @@ namespace InterplanetaryAI
+                     targets.Add(new SalvoTarget
+                     {
+                         VisibleCityPops = visiblePops,
++                        IsHuman = view.IsHuman, // v0.16.2 human first (the lobby shows who is human)
+                         PlayerId = view.PlayerId,
+                         Name = view.Name,
+                         Score = view.Score,
+@@ -255,9 +257,15 @@ namespace InterplanetaryAI
+                 // v0.16 item 4 (S3): "funded" = the guided firing fits the war firing budget (WarUpkeepShare x income).
+                 bool guidedFunded = guidedFiring <= Plugin.WarUpkeepShare.Value * me.ResourceHandler.EnergyProductionPerTurn;
+                 float guidedPopDamage = guidedCount > 0 ? guidedPopSum / guidedCount : 0f;
++                // v0.16.2: who hit us last phase (return fire answers the attacker), and whether holding would free energy that
++                // last turn shows goes unspent (free fire). The game reserved this turn's firing cost in AIResources.BeginTurn.
++                Dictionary<int, int> impactsBy = new Dictionary<int, int>(Plugin.Ledger.LastDefender(me.PlayerID).EnemyImpactsBy);
++                state.UnspentLastTurn = DirectorPatches.UnspentEnergyLastTurn(me, turn);
++                state.FiringCost = Math.Max(0, core.Resources.EnergyUpkeep);
+                 decision = Strategy.Decide(turn, war, salvo, accuracy, targets, DefensePlanner.Counters, state.LastStrikeTurn, state.HoldTurns,
+                     weapons, Plugin.StrategyCfg, state.LastCommitId, state.LastWeapons, underAttack, accuracyById, hitLastPhase,
+-                    guidedIds, guidedPopDamage, guidedFunded, AverageById(popSumById, countById));
++                    guidedIds, guidedPopDamage, guidedFunded, AverageById(popSumById, countById),
++                    impactsBy, state.UnspentLastTurn, state.FiringCost);
+                 state.GuidedFiring = guidedFiring;
+                 state.UnguidedFiring = unguidedFiring;
+                 state.ArtilleryProjectiles = artilleryProjectiles;
+@@ -385,6 +393,9 @@ namespace InterplanetaryAI
+                     .Bool("precision", d.Precision).Int("visibleCities", d.VisibleCities).Num("guidedArriving", d.GuidedArriving)
+                     .Num("guidedPassing", d.GuidedPassing).Int("smallestVisibleCityPop", d.SmallestVisibleCityPop).Num("guidedPopDamage", d.GuidedPopDamage)
+                     .Num("guidedFiring", state.GuidedFiring).Num("unguidedFiring", state.UnguidedFiring).Num("artilleryProjectiles", state.ArtilleryProjectiles)
++                    // v0.16.2: human-first commit, return fire from the commit only, free fire inputs
++                    .Bool("humanFirst", d.HumanFirst).Bool("hitByCommit", d.HitByCommit)
++                    .Int("unspentLastTurn", state.UnspentLastTurn).Int("firingCost", state.FiringCost)
+                     .ToString());
+             }
+             catch (Exception e)
+diff --git a/AI/Tests/Program.cs b/AI/Tests/Program.cs
+index 59db37f..2e38bf4 100644
+--- a/AI/Tests/Program.cs
++++ b/AI/Tests/Program.cs
+@@ -59,6 +59,7 @@ namespace InterplanetaryAI.Tests
+             V0152Rules();
+             V016Rules();
+             V0161Rules();
++            V0162Rules();
+ 
+             Console.WriteLine(s_checks + " checks, " + s_failures + " failed");
+             return s_failures == 0 ? 0 : 1;
+@@ -1533,6 +1534,110 @@ namespace InterplanetaryAI.Tests
+             Check(!SlotPolicy.LeavesRoom(true, 2, 2), "two placeable copies wanted, 2 free: another project waits");
+         }
+ 
++        // ---- v0.16.2 (matches 18-19, docs/playtests/2026-11-04-v0.16.1-match19.md) ----------------------
++
++        private static void V0162Rules()
++        {
++            StrategySettings s = new StrategySettings();
++            var counters = EnhancedCounters();
++
++            // Human first. Match 19 T29: the human leads (1.45) with 10 through; the dying Turing (0.44) lets 18 through.
++            // Value rule: human 10 x 1.5 = 15, Turing 18 x 1.15 = 20.7 (above the 1.25 x 15 stickiness bar).
++            Func<SalvoTarget> human = () => new SalvoTarget { PlayerId = 0, Name = "jogi", IsHuman = true, Score = 1.45f, DefensesSeen = true, Shots = Railguns(10) };
++            Func<SalvoTarget> turing = () => new SalvoTarget { PlayerId = 2, Name = "Turing", Score = 0.44f, DefensesSeen = true, Shots = Railguns(18) };
++            StrategyDecision d = Strategy.Decide(29, true, Railguns(30), 1f, new List<SalvoTarget> { human(), turing() }, counters, 26, 0, 30, s, 0);
++            Check(d.CommitTargetId == 0 && d.HumanFirst, "the leading human is the commit, not the dying AI; got " + d.CommitTargetId);
++            d = Strategy.Decide(29, true, Railguns(30), 1f, new List<SalvoTarget> { human(), turing() }, counters, 26, 0, 30, new StrategySettings { HumanFirstShare = 0f }, 0);
++            Check(d.CommitTargetId == 2 && !d.HumanFirst, "HumanFirstShare 0: the v0.16.1 value rule picks Turing (the check can fail); got " + d.CommitTargetId);
++            SalvoTarget far = human();
++            far.Shots = Railguns(3);
++            d = Strategy.Decide(29, true, Railguns(30), 1f, new List<SalvoTarget> { far, turing() }, counters, 26, 0, 30, s, 0);
++            Check(d.CommitTargetId == 2 && !d.HumanFirst, "a human almost out of reach (3 through) is left to the value rule; got " + d.CommitTargetId);
++            SalvoTarget trailing = human();
++            trailing.Score = 0.5f;
++            SalvoTarget rival = new SalvoTarget { PlayerId = 2, Score = 1f, DefensesSeen = true, Shots = Railguns(19) };
++            d = Strategy.Decide(26, true, Railguns(40), 1f, new List<SalvoTarget> { trailing, rival }, counters, -1000, 0, 40, s, -1);
++            Check(d.CommitTargetId == 2 && !d.HumanFirst, "a human who does not lead is chosen by value only; got " + d.CommitTargetId);
++            SalvoTarget close = human();
++            close.Score = 0.95f;
++            d = Strategy.Decide(26, true, Railguns(40), 1f, new List<SalvoTarget> { close, new SalvoTarget { PlayerId = 2, Score = 1f, DefensesSeen = true, Shots = Railguns(25) } },
++                counters, -1000, 0, 40, s, -1);
++            Check(d.CommitTargetId == 0 && d.HumanFirst, "a human at 95% of the best score counts as leading; got " + d.CommitTargetId);
++            SalvoTarget stuck = human();
++            stuck.LowYieldTurns = s.LowYieldTurns;
++            d = Strategy.Decide(29, true, Railguns(30), 1f, new List<SalvoTarget> { stuck, turing() }, counters, 26, 0, 30, s, 0);
++            Check(!d.HumanFirst && d.CommitTargetId == 2, "a human our weapons found no trajectory onto (low yield) is left to the value rule");
++
++            // Return fire answers the committed target's own shots (match 19 T30-T35: the human hit Asona, Asona shot Brain).
++            Func<SalvoTarget> brain = () => new SalvoTarget { PlayerId = 1, Name = "Brain", Score = 1f, DefensesSeen = true, Shots = Railguns(8) };
++            d = Strategy.Decide(31, true, Railguns(30), 1f, new List<SalvoTarget> { brain() }, counters, 30, 0, 30, s, 1, 30, true, null, true,
++                lastPhaseImpactsBy: new Dictionary<int, int> { { 0, 12 } });
++            Check(!d.Fire && d.Reason == "below-saturation" && !d.HitByCommit, "only the human hit us; the commit is Brain: no return fire; got " + d.Reason);
++            d = Strategy.Decide(31, true, Railguns(30), 1f, new List<SalvoTarget> { brain() }, counters, 30, 0, 30, s, 1, 30, true, null, true,
++                lastPhaseImpactsBy: new Dictionary<int, int> { { 0, 12 }, { 1, 3 } });
++            Check(d.Fire && d.Reason == "return-fire" && d.HitByCommit, "Brain hit us: return fire at Brain; got " + d.Reason);
++            d = Strategy.Decide(31, true, Railguns(30), 1f, new List<SalvoTarget> { brain() }, counters, 30, 0, 30, s, 1, 30, true, null, true);
++            Check(d.Fire && d.Reason == "return-fire", "no per-shooter map: any enemy impact counts (v0.15.3)");
++
++            // Free fire. 20 Railguns at 19 Kinetic (6k energy): ~8 through, below saturation.
++            StrategySettings so = new StrategySettings { OverlapDefenses = 20f };
++            Func<List<SalvoTarget>> kin19 = () => new List<SalvoTarget> { Target(0, 1f, 19, true, 6000f) };
++            d = Strategy.Decide(23, true, Railguns(20), 1f, kin19(), counters, -1000, 2, 20, so, 0, unspentLastTurn: 33613f, firingCost: 3000f);
++            Check(d.Fire && d.Reason == "free-fire", "below saturation with 33.6k unspent last turn and a 3k salvo: fire; got " + d.Reason);
++            d = Strategy.Decide(23, true, Railguns(20), 1f, kin19(), counters, -1000, 2, 20, so, 0, unspentLastTurn: 754f, firingCost: 2200f);
++            Check(!d.Fire && d.Reason == "below-saturation", "754 unspent vs a 2,200 salvo: holding still funds construction; got " + d.Reason);
++            d = Strategy.Decide(23, true, Railguns(20), 1f, kin19(), counters, -1000, 2, 20, so, 0, unspentLastTurn: -1f, firingCost: 3000f);
++            Check(!d.Fire, "last turn unknown: hold");
++            d = Strategy.Decide(23, true, Railguns(20), 1f, kin19(), counters, -1000, 2, 20, new StrategySettings { OverlapDefenses = 20f, FreeFire = false }, 0,
++                unspentLastTurn: 33613f, firingCost: 3000f);
++            Check(!d.Fire && d.Reason == "below-saturation", "FreeFire off: the v0.16.1 hold (the check can fail); got " + d.Reason);
++            d = Strategy.Decide(15, false, Railguns(20), 1f, kin19(), counters, -1000, 0, 20, so, 0, unspentLastTurn: 33613f, firingCost: 3000f);
++            Check(!d.Fire && d.Reason == "peace", "free fire needs war; got " + d.Reason);
++            d = Strategy.Decide(23, true, Railguns(5), 1f, kin19(), counters, -1000, 2, 5, so, 0, unspentLastTurn: 33613f, firingCost: 3000f);
++            Check(!d.Fire && d.Reason == "building", "free fire needs MinWeapons; got " + d.Reason);
++            d = Strategy.Decide(24, true, Railguns(35), 1f, kin19(), counters, 23, 0, 35, so, 0, unspentLastTurn: 33613f, firingCost: 3000f);
++            Check(d.Fire && d.Reason == "free-fire", "a pulse wait with energy to spare fires; got " + d.Reason);
++            Check(Strategy.ShouldAbort(2, 30, "free-fire", s), "free fire is called off when almost nothing aimed at the commit");
++
++            // Who hit us, by shooter; our own shots are not an enemy's.
++            DefenseLedger ledger = new DefenseLedger(3);
++            ledger.Record(5, 0, "wea_Railgun", false, 0, 0, 0, 0, true);
++            ledger.Record(5, 0, "wea_Railgun", true, 0, 0, 0, 0, true);
++            ledger.Record(5, 2, "wea_Railgun", false, 0, 0, 0, 0, true);
++            ledger.Record(5, 5, "wea_Railgun", false, 0, 0, 0, 0, true);
++            ledger.Roll(5);
++            DefenderStats last = ledger.LastDefender(5);
++            int fromHuman, fromTuring, fromSelf;
++            Check(last.EnemyImpactsBy.TryGetValue(0, out fromHuman) && fromHuman == 2 && last.EnemyImpactsBy.TryGetValue(2, out fromTuring) && fromTuring == 1
++                && !last.EnemyImpactsBy.TryGetValue(5, out fromSelf) && last.EnemyImpacts == 3, "impacts by shooter: human 2, Turing 1, our own shot not counted");
++
++            // Material binds. Match 19 Brain T22 -> T23: 1,661 of 6,461 energy unspent, 121 of 8,896 material left.
++            Check(EconomyDirector.IsMaterialBound(1661, 6461, 121, 8896, 0.2f, 0.1f, 600), "26% of energy unspent with 1% of material left: material binds");
++            Check(!EconomyDirector.IsMaterialBound(292, 3942, 14, 4439, 0.2f, 0.1f, 600), "T14 shape: 7% unspent, energy binds");
++            Check(!EconomyDirector.IsMaterialBound(1661, 6461, 4000, 8896, 0.2f, 0.1f, 600), "material left over too: something else binds");
++            Check(!EconomyDirector.IsMaterialBound(500, 2000, 10, 2000, 0.2f, 0.1f, 600), "500 unspent is under the 600 minimum");
++            Check(!EconomyDirector.IsMaterialBound(1661, 6461, 121, 8896, 0f, 0.1f, 600), "share 0 = off");
++            Check(!EconomyDirector.IsMaterialBound(1661, 0, 121, 8896, 0.2f, 0.1f, 600), "no budget recorded last turn: not bound");
++
++            // Extraction first: up to the share, only below the sustainable material income.
++            Check(EconomyDirector.ExtractionFirstRoom(0.35f, 8896, 0, 6400f, 11700f) == 3113, "35% of 8,896 while income 6.4k < sustainable 11.7k");
++            Check(EconomyDirector.ExtractionFirstRoom(0.35f, 8896, 3000, 6400f, 11700f) == 113, "3,000 of it spent: 113 left");
++            Check(EconomyDirector.ExtractionFirstRoom(0.35f, 8896, 0, 12000f, 11700f) == 0, "income at the sustainable rate: no extraction first");
++            Check(EconomyDirector.ExtractionFirstRoom(0.35f, 8896, 0, 12000f, -1f) == 3113, "unlimited planet: the share only");
++            Check(EconomyDirector.ExtractionFirstRoom(0f, 8896, 0, 6400f, 11700f) == 0, "share 0 = off");
++
++            // While material binds, a mine beats more energy (match 19 T23: 11 Floating Plant yield upgrades, 0 mines).
++            EconOption energyUp = new EconOption { Id = "upg_FloatingEnergyYield2", Kind = OptionKind.Upgrade, Energy = 50, Material = 200, EnergyGain = 400f };
++            EconOption mine = new EconOption { Id = "bui_OffshoreMine", Kind = OptionKind.Producer, Energy = 300, Material = 350, MaterialGain = 125f, NeedsSlot = true };
++            List<EconOption> opts = new List<EconOption> { energyUp, mine };
++            EconomyBalance bal = new EconomyBalance { EnergyIncome = 6461, MaterialIncome = 6400, WeaponUpkeep = 3000, TargetRatio = 1f, EnergyBudget = 6461, MaterialBudget = 8896 };
++            Check(EconomyDirector.Best(opts, bal, 140) == energyUp, "setup: energy under 1.0 x material + upkeep picks the energy upgrade");
++            bal.EnergyGlut = EconomyDirector.MaterialBoundGlut(true, 140, 4);
++            Check(EconomyDirector.Best(opts, bal, 140) == mine, "material binds: the mine, not more energy");
++            Check(!EconomyDirector.MaterialBoundGlut(true, 2, 4), "power slots short: plants stay buyable");
++            Check(!EconomyDirector.MaterialBoundGlut(false, 140, 4), "not bound: normal weights");
++        }
++
+         private static void Check(bool condition, string what)
+         {
+             s_checks++;

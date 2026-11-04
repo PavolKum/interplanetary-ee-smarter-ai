@@ -28,6 +28,7 @@ namespace InterplanetaryAI.Brain
         public Dictionary<string, int[]> Observed; // weapon id -> our recent [impacts, intercepted] at it
         public int LowYieldTurns;                  // v0.12: consecutive turns our weapons aimed at it found almost no trajectory
         public List<int> VisibleCityPops;          // v0.16: population of its cities we see NOW (intact, Visible); null/empty = none
+        public bool IsHuman;                       // v0.16.2: the human-first commit rule (Decide)
 
         // outputs
         public float Arriving;     // projectiles expected to arrive (after accuracy)
@@ -88,6 +89,20 @@ namespace InterplanetaryAI.Brain
         public float PrecisionMinGuided = 6f;
         public float PrecisionMinShare = 0.9f;
         public float PrecisionKillShare = 1f;
+        // v0.16.2 (match 19): the human first while he leads. The commit value (shots through x at most 1 + LeaderInfluence)
+        // lets any undefended enemy outbid a defended leader: at T29 Asona saw two human cities (score 1.45, 10 through) and
+        // committed to the dying Turing (0.44, 18 through), then to Brain until it died; 116 of its 174 aims went at the
+        // other AIs. When the human's score is at least HumanFirstShare x the best score and at least HumanFirstMinPassing of
+        // the salvo is expected through his defenses, he is the commit. A human who does not lead is still chosen by value
+        // (v0.10.1: the softer human over the higher-scored rival). 0 = off.
+        public float HumanFirstShare = 0.9f;
+        public float HumanFirstMinPassing = 4f;
+        // v0.16.2 (match 19): holding fire gives the firing energy to construction; when last turn already ended with at
+        // least this turn's firing cost unspent, holding buys nothing. T21-T25 all three AIs held below saturation with
+        // 0.8-41k energy unspent each turn, and fired blind on max-hold at T26. Fire instead ("free-fire"), when at least
+        // FreeFireMinPassing shots are expected through (Terra v0.16.2: not salvos that the defenses stop almost entirely).
+        public bool FreeFire = true;
+        public float FreeFireMinPassing = 4f;
     }
 
     public sealed class StrategyDecision
@@ -107,6 +122,9 @@ namespace InterplanetaryAI.Brain
         public int SmallestVisibleCityPop;
         public float GuidedPopDamage;
         public bool Precision;
+        // v0.16.2
+        public bool HumanFirst;      // the commit went to the leading human (HumanFirstShare)
+        public bool HitByCommit;     // the committed target's shots reached us in the last action phase (return fire)
     }
 
     public static class Strategy
@@ -254,6 +272,33 @@ namespace InterplanetaryAI.Brain
             return passShare >= s.ReturnFirePassShare && passing >= Math.Max(0.01f, s.ReturnFireMinPassing);
         }
 
+        // v0.16.2: holding would release energy that would go unspent (freeEnergy < 0 = unknown: hold).
+        public static bool FreeFireHolds(int weapons, float passing, float freeEnergy, float firingCost, StrategySettings s)
+        {
+            return s.FreeFire && weapons >= s.MinWeapons && passing >= Math.Max(0.01f, s.FreeFireMinPassing) && firingCost > 0f
+                && freeEnergy >= firingCost;
+        }
+
+        // v0.16.2 (Terra v0.16.2 #3): energy a salvo can take without cutting this turn below last turn's use. Last turn's
+        // actual construction surplus (energy-only purchases are spent, not surplus), capped by how much this turn would have
+        // beyond last turn's use (reserve, repairs, construction) if it held: an income drop or new demand shrinks it.
+        // lastUses = energy at last turn's construction start - its surplus; energyNowNet = this turn's energy with the firing
+        // reservation taken. -1 = unknown.
+        public static float FreeEnergy(float lastUnspent, float lastUses, float energyNowNet, float firingCost)
+        {
+            if (lastUnspent < 0f || lastUses < 0f) return -1f;
+            return Math.Min(lastUnspent, energyNowNet + Math.Max(0f, firingCost) - lastUses);
+        }
+
+        // v0.16.2: the leading human is the commit when enough of the salvo reaches through his defenses (HumanFirstShare).
+        public static bool HumanFirstHolds(SalvoTarget human, float maxScore, StrategySettings s)
+        {
+            // A human our weapons found almost no trajectory onto (v0.12 low yield) is left to the value rule, which discounts him.
+            return human != null && s.HumanFirstShare > 0f && maxScore > 0f && human.Score >= s.HumanFirstShare * maxScore
+                && human.Passing >= Math.Max(0.01f, s.HumanFirstMinPassing)
+                && !(s.LowYieldTurns > 0 && human.LowYieldTurns >= s.LowYieldTurns);
+        }
+
         public static bool Attrition(int weapons, int lastWeapons, bool underAttack, StrategySettings s)
         {
             if (!underAttack || s.AttritionLossShare <= 0f || weapons >= lastWeapons) return false; // lastWeapons < 0 (unknown) ends here too
@@ -267,15 +312,18 @@ namespace InterplanetaryAI.Brain
             Dictionary<string, Dictionary<string, float>> counters, int lastStrikeTurn, int holdTurns, int weapons, StrategySettings s,
             int lastCommitId = -1, int lastWeapons = -1, bool underAttack = false, IDictionary<string, float> accuracyById = null,
             bool hitLastPhase = false, ICollection<string> guidedIds = null, float guidedPopDamage = 0f, bool guidedFunded = false,
-            IDictionary<string, float> guidedPopDamageById = null)
+            IDictionary<string, float> guidedPopDamageById = null,
+            IDictionary<int, int> lastPhaseImpactsBy = null, float freeEnergy = -1f, float firingCost = 0f)
         {
             StrategyDecision d = new StrategyDecision { War = war, Shots = weapons };
             float maxScore = 0f;
+            SalvoTarget human = null;
             foreach (SalvoTarget t in targets)
             {
                 EstimateSalvo(salvo, t, accuracy, counters, s, accuracyById);
                 d.Targets.Add(t);
                 maxScore = Math.Max(maxScore, t.Score);
+                if (t.IsHuman && human == null) human = t;
             }
             SalvoTarget best = null, previous = null;
             foreach (SalvoTarget t in targets)
@@ -287,6 +335,12 @@ namespace InterplanetaryAI.Brain
             }
             // Stay on last turn's target unless another is clearly better: a new target costs a turn of aiming.
             if (previous != null && best != previous && best.Value < s.CommitStickiness * previous.Value) best = previous;
+            // v0.16.2: the leading human is the commit whenever enough of the salvo reaches him (HumanFirstShare).
+            if (HumanFirstHolds(human, maxScore, s))
+            {
+                d.HumanFirst = true;
+                best = human;
+            }
             if (best == null || weapons <= 0)
             {
                 d.Reason = "no-weapons";
@@ -305,6 +359,15 @@ namespace InterplanetaryAI.Brain
             // Match 16 held at T21 (9 Missiles, 7.65 through at 100%) and T22 (10.0 through) below MinPassingShots 12
             // while two cities were visible; at T23 none was. Both lanes' conditions must hold (PrecisionOpportunity).
             EstimatePrecision(d, best, salvo, accuracy, counters, s, accuracyById, guidedIds, guidedPopDamage, guidedFunded, guidedPopDamageById);
+            // v0.16.2 (match 19): return fire answers the committed target's own shots. v0.15.3 counted any enemy impact, so the
+            // human's volleys on Asona (T30-T35) were answered by firing at Brain. Without the per-shooter map: any impact.
+            bool hitByCommit = hitLastPhase;
+            if (lastPhaseImpactsBy != null)
+            {
+                int fromCommit;
+                hitByCommit = lastPhaseImpactsBy.TryGetValue(best.PlayerId, out fromCommit) && fromCommit > 0;
+            }
+            d.HitByCommit = hitByCommit;
             bool pulseReady = turn - lastStrikeTurn >= Math.Max(1, s.StrikeEvery);
             bool saturated = d.Passing >= s.MinPassingShots && (d.PassShare >= s.MinPassShare || d.Passing >= s.BigSalvoShots);
             bool broken = d.PassShare >= s.BrokenPassShare && d.Passing >= s.MinPassingShots;
@@ -323,7 +386,7 @@ namespace InterplanetaryAI.Brain
                 d.Fire = true;
                 d.Reason = "attrition";
             }
-            else if (ReturnFire(weapons, d.Passing, d.PassShare, hitLastPhase, s))
+            else if (ReturnFire(weapons, d.Passing, d.PassShare, hitByCommit, s))
             {
                 // v0.15.2: trade blows instead of waiting for a bigger salvo (v0.15.3: the abort still applies).
                 d.Fire = true;
@@ -339,6 +402,12 @@ namespace InterplanetaryAI.Brain
             {
                 d.Fire = true;
                 d.Reason = pulseReady ? "saturated" : "broken";
+            }
+            else if (FreeFireHolds(weapons, d.Passing, freeEnergy, firingCost, s))
+            {
+                // v0.16.2: holding would only add to energy that goes unspent (subject to the abort).
+                d.Fire = true;
+                d.Reason = "free-fire";
             }
             else
             {
