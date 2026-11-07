@@ -1115,7 +1115,7 @@ namespace InterplanetaryAI
         {
             if (!Plugin.Active || !Plugin.DirectorEnabled.Value) return;
             PlayerData me = __instance.PlayerData;
-            if (me == null || !me.AIPlayer) return;
+            if (me == null || !Plugin.IsSmart(me)) return;
             SellDryMines(me);
             // v0.16 (Sol v0.16 re-check round 2): repairs moved to StartConstruction, after this turn's defense reserve.
         }
@@ -2912,17 +2912,17 @@ namespace InterplanetaryAI
                 if (data != null && Plugin.CoveragePlacement.Value && data.defense_functionality.IsValueSet)
                 {
                     AICore defenseCore = (AICore)s_searchCore.GetValue(__instance);
-                    if (defenseCore != null && defenseCore.PlayerData.AIPlayer && CoverageStep(__instance, data, defenseCore)) return false;
+                    if (defenseCore != null && Plugin.IsSmart(defenseCore.PlayerData) && CoverageStep(__instance, data, defenseCore)) return false;
                     return true;
                 }
                 if (data != null && Plugin.ShelterPlacement.Value && !data.defense_functionality.IsValueSet)
                 {
                     AICore shelterCore = (AICore)s_searchCore.GetValue(__instance);
-                    if (shelterCore != null && shelterCore.PlayerData.AIPlayer && ShelterStep(__instance, data, shelterCore)) return false;
+                    if (shelterCore != null && Plugin.IsSmart(shelterCore.PlayerData) && ShelterStep(__instance, data, shelterCore)) return false;
                 }
                 if (data == null || !IsWaterOnly(data)) return true;
                 AICore core = (AICore)s_searchCore.GetValue(__instance);
-                if (core == null || !core.PlayerData.AIPlayer) return true;
+                if (core == null || !Plugin.IsSmart(core.PlayerData)) return true;
 
                 if (!__instance.m_needsPowerGrid)
                 {
@@ -2965,7 +2965,7 @@ namespace InterplanetaryAI
                     AIBuildingPlacementSearch search = searches[i];
                     if (search.IsComplete || (int)s_searchSteps.GetValue(search) < cap) continue;
                     AICore core = (AICore)s_searchCore.GetValue(search);
-                    if (core == null || !core.PlayerData.AIPlayer) continue;
+                    if (core == null || !Plugin.IsSmart(core.PlayerData)) continue;
                     searches.RemoveAt(i);
                     Abandon(core, __instance, (BuildingData)s_searchBuilding.GetValue(search));
                 }

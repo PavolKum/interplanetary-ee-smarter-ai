@@ -24,7 +24,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.17.0";
+        public const string VERSION = "0.17.2";
 
         internal static ManualLogSource Log;
 
@@ -40,6 +40,7 @@ namespace InterplanetaryAI
         internal static ConfigEntry<bool> RefreshFiringList;
         internal static ConfigEntry<bool> AccuracyOverride;
         internal static ConfigEntry<string> AccuracyByLevel;
+        internal static ConfigEntry<string> SmartLevels;             // v0.17.1
         internal static ConfigEntry<bool> FireMisses;
         internal static ConfigEntry<bool> SmartStrikes;
         internal static ConfigEntry<float> WeaponBuildingShare;
@@ -378,6 +379,8 @@ namespace InterplanetaryAI
 
             AccuracyOverride = Config.Bind("Accuracy", "Override", true,
                 "Native AIs plan deliberate misses each turn (accuracy 0.4 / 0.75 / 0.9 / 1.0 by difficulty). Override that plan.");
+            SmartLevels = Config.Bind("General", "SmartLevels", "3",
+                "v0.17.1 (read at game start; restart after a change): lobby AI levels (0 Easy, 1 Medium, 2 Hard, 3 Impossible; comma-separated) that run the Smarter AI. Every other AI runs the game's original AI untouched (native aim: 0.4 / 0.75 / 0.9 / 1.0). \"0,1,2,3\" = every AI is the Smarter AI (v0.17.0 behaviour).");
             AccuracyByLevel = Config.Bind("Accuracy", "AccuracyByLevel", "0.4,0.7,0.7,0.7",
                 "Planned hit share per difficulty level, lowest first, comma-separated. Default = human parity: the human's planet-contact rate over 6 recorded matches (Oct 2026) was 58% overall and 67% in the last two; 0.7 planned allows for shots lost to defenses. Easy keeps the native 0.4.");
             FireMisses = Config.Bind("Accuracy", "FireMisses", true,
@@ -738,6 +741,8 @@ namespace InterplanetaryAI
             Reach = new ReachabilityMemory(Math.Max(0, ReachabilityMemoryTurns.Value));
             ApplyConfig();
             Config.SettingChanged += (sender, args) => ApplyConfig();
+            // v0.17.1 (Terra v0.17.1 #3): read once; a live change could leave an AI half smart, half original mid-match.
+            SmartLevelSet = ParseLevels(SmartLevels.Value);
 
             m_harmony = new Harmony(GUID);
             int patched = 0;
@@ -761,7 +766,11 @@ namespace InterplanetaryAI
             patched += TryPatch(typeof(AIBuildingPlacementSearch), "step", "SearchStepPrefix", null, typeof(DirectorPatches));
             patched += TryPatch(typeof(AIBuildingPlacementFinder), "Update", "FinderUpdatePrefix", null, typeof(DirectorPatches));
             patched += TryPatch(typeof(PlayerDefenseHandler), "IsHitIntercepted", "BeforeIntercept", "AfterIntercept", typeof(LedgerPatches));
-            int laserPatches = EnableLasers.Value ? LaserPatches.Install(new Harmony(GUID + ".lasers")) : 0;
+            // Terra v0.17.1 #1: the laser patches have no owner check (transpiled bans), so they would change the original
+            // AIs too; they install only when every level runs the Smarter AI.
+            bool everyLevelSmart = SmartLevelSet.Contains(0) && SmartLevelSet.Contains(1) && SmartLevelSet.Contains(2) && SmartLevelSet.Contains(3);
+            if (EnableLasers.Value && !everyLevelSmart) Log.LogWarning("Lasers stay off: SmartLevels does not cover every level, and the laser patches would change the original AIs.");
+            int laserPatches = EnableLasers.Value && everyLevelSmart ? LaserPatches.Install(new Harmony(GUID + ".lasers")) : 0;
             int guards = TurnGuard.Install(m_harmony); // v0.17
             Log.LogInfo(NAME + " " + VERSION + " loaded; " + patched + " of 16 hooks patched; turn guard " + guards + " of 9. Director " + (DirectorEnabled.Value ? "on" : "off")
                 + ", war from turn " + WarFromTurn.Value + ". Accuracy by level: " + AccuracyByLevel.Value
@@ -866,6 +875,28 @@ namespace InterplanetaryAI
         internal static bool Active
         {
             get { return Enabled.Value && !GameManager.OnlineGame && !GameSessionManager.OnlineGame; }
+        }
+
+        // v0.17.1 (Pavol, 7 Nov: "our version on the impossible", the original AI on the other levels): the Smarter AI runs
+        // only for AI players whose lobby level is in SmartLevels; every other AI runs the game's own code, aim included.
+        // One lobby with the Smarter AI on Impossible and the original on Hard / Medium / Easy compares them directly.
+        internal static HashSet<int> SmartLevelSet = new HashSet<int> { 3 };
+
+        internal static bool IsSmart(PlayerData player)
+        {
+            return Active && player != null && player.AIPlayer && SmartLevelSet.Contains(player.AILevel);
+        }
+
+        internal static HashSet<int> ParseLevels(string text)
+        {
+            HashSet<int> set = new HashSet<int>();
+            if (string.IsNullOrEmpty(text)) return set;
+            foreach (string part in text.Split(','))
+            {
+                int level;
+                if (int.TryParse(part.Trim(), out level)) set.Add(level);
+            }
+            return set;
         }
 
         internal static void ResetMatchMemory()

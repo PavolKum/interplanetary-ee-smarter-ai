@@ -83,7 +83,7 @@ namespace InterplanetaryAI
         // so the reserve lands after the construction queue took its allotment and before any construction.
         private static void CoreBeginTurnPostfix(AICore __instance)
         {
-            if (!Plugin.Active || !__instance.PlayerData.AIPlayer) return;
+            if (!Plugin.IsSmart(__instance.PlayerData)) return; // v0.17.1: humans and original AIs untouched
             StrategyPatches.ClearDecision(__instance.PlayerData.PlayerID); // a failure below must not leave last turn's hold
             try
             {
@@ -291,7 +291,7 @@ namespace InterplanetaryAI
             try
             {
                 AICore core = (AICore)s_moduleCore.GetValue(__instance);
-                if (core == null || !core.PlayerData.AIPlayer) return true;
+                if (core == null || !Plugin.IsSmart(core.PlayerData)) return true;
                 AiEconomyState state = StateOf(core.PlayerData);
                 if (Plugin.DirectorEnabled.Value) return DirectorPatches.TryConstruct(__instance, core, state, ref __result);
 
@@ -413,7 +413,7 @@ namespace InterplanetaryAI
             try
             {
                 AICore core = (AICore)s_constructionModuleCore.GetValue(__instance);
-                if (core == null || !core.PlayerData.AIPlayer) return true;
+                if (core == null || !Plugin.IsSmart(core.PlayerData)) return true;
                 AiEconomyState state = StateOf(core.PlayerData);
 
                 // Cheapest affordable, available variant of each threat-relevant defense building.
@@ -482,7 +482,7 @@ namespace InterplanetaryAI
             try
             {
                 AICore core = (AICore)s_moduleCore.GetValue(__instance);
-                if (core == null || !core.PlayerData.AIPlayer) return;
+                if (core == null || !Plugin.IsSmart(core.PlayerData)) return;
                 if (GameSessionManager.CurrentGameSettings.TechTree != 1) return;
                 PlayerTechnologyHandler tech = core.PlayerData.TechnologyHandler;
                 int pid = core.PlayerData.PlayerID;
@@ -623,10 +623,43 @@ namespace InterplanetaryAI
 
         // ---- logging ----------------------------------------------------------------------------
 
+        // v0.17.1: one record per turn for an AI running the game's original code (lobby level not in SmartLevels), read
+        // from its own player data only, so the write-up can compare it with the Smarter AI. Changes nothing.
+        private static void ObserveOriginal(AICore core)
+        {
+            try
+            {
+                PlayerData me = core.PlayerData;
+                Dictionary<string, int> buildings = new Dictionary<string, int>();
+                foreach (BaseBuilding building in me.BuildingHandler.Buildings)
+                {
+                    if (building == null || building.CurrentState != BaseBuilding.BuildingState.Normal) continue;
+                    string id = building.IsCity ? "city" : building.BuildingData.id.Value.Replace("bui_", "");
+                    int n;
+                    buildings.TryGetValue(id, out n);
+                    buildings[id] = n + 1;
+                }
+                Plugin.WriteDecision(new Json().Str("e", "original").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName).Int("lvl", me.AILevel)
+                    .Int("energy", core.Resources.Energy).Int("material", core.Resources.Material)
+                    .Int("energyPerTurn", me.ResourceHandler.EnergyProductionPerTurn).Int("materialPerTurn", me.ResourceHandler.MaterialProductionPerTurn)
+                    .Int("sciencePerTurn", me.ResourceHandler.ScienceProductionPerTurn).Int("planetMaterial", me.ResourceHandler.PlanetMaterial)
+                    .Int("population", me.ResourceHandler.TotalPopulation).Map("buildings", buildings).ToString());
+            }
+            catch (Exception e)
+            {
+                ReportOnce("observe-original", e);
+            }
+        }
+
         // End of the AI's turn: what the construction mix actually did this turn.
         private static void CoreEndTurnPostfix(AICore __instance)
         {
             if (!Plugin.Active || !__instance.PlayerData.AIPlayer) return;
+            if (!Plugin.IsSmart(__instance.PlayerData))
+            {
+                ObserveOriginal(__instance); // v0.17.1: an original AI is only watched
+                return;
+            }
             try
             {
                 AiEconomyState state;

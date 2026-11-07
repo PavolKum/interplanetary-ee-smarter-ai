@@ -68,7 +68,14 @@ namespace InterplanetaryAI
         {
             if (__exception == null) return null;
             if (!Plugin.Active) return __exception; // Terra v0.17 H1: online or disabled, the game's behaviour is untouched
-            Report(__instance != null ? __instance.GetType().Name : "module", NameOf(__instance), __exception);
+            AICore owner = CoreOf(__instance);
+            if (owner == null || !Plugin.IsSmart(owner.PlayerData))
+            {
+                // v0.17.1: an original AI keeps the game's behaviour (logged, not swallowed).
+                Report(__instance != null ? __instance.GetType().Name : "module", owner != null && owner.PlayerData != null ? owner.PlayerData.UserNickName : "?", __exception, false);
+                return __exception;
+            }
+            Report(__instance != null ? __instance.GetType().Name : "module", NameOf(__instance), __exception, true);
             // Terra v0.17 H2: the failed module keeps whatever it set before the throw. Accepted: propagating stops every
             // later module (match 20: no construction at all for ten turns), which is worse than one half-begun module.
             return null; // the module loop goes on
@@ -78,8 +85,21 @@ namespace InterplanetaryAI
         private static Exception CoreFinalizer(Exception __exception, AICore __instance)
         {
             if (__exception == null) return null;
-            if (Plugin.Active) Report("AICore", __instance != null && __instance.PlayerData != null ? __instance.PlayerData.UserNickName : "?", __exception);
+            if (Plugin.Active) Report("AICore", __instance != null && __instance.PlayerData != null ? __instance.PlayerData.UserNickName : "?", __exception, false);
             return __exception;
+        }
+
+        private static AICore CoreOf(object module)
+        {
+            try
+            {
+                FieldInfo field = AccessTools.Field(typeof(AIModule), "m_core");
+                return field != null && module != null ? field.GetValue(module) as AICore : null;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
         }
 
         private static string NameOf(object module)
@@ -96,16 +116,16 @@ namespace InterplanetaryAI
             }
         }
 
-        private static void Report(string where, string ai, Exception e)
+        private static void Report(string where, string ai, Exception e, bool swallowed)
         {
             try
             {
-                if (s_reported.Add(where + ":" + e.GetType().Name))
-                    Plugin.Log.LogError("Turn guard: " + where + ".BeginTurn threw for " + ai + " (swallowed so the turn goes on; reported once): " + e);
+                if (s_reported.Add(where + ":" + ai + ":" + swallowed + ":" + e.GetType().Name)) // Terra v0.17.1 #4
+                    Plugin.Log.LogError("Turn guard: " + where + ".BeginTurn threw for " + ai + (swallowed ? " (swallowed so the turn goes on" : " (passed on to the game: original AI or outside the module loop") + "; reported once): " + e);
                 string message = e.GetType().Name + ": " + e.Message;
                 if (message.Length > 300) message = message.Substring(0, 300);
                 Plugin.WriteDecision(new Json().Str("e", "turn-start-error").Int("t", GameManager.CurrentTurn).Str("ai", ai)
-                    .Str("module", where).Str("error", message).ToString());
+                    .Str("module", where).Bool("swallowed", swallowed).Str("error", message).ToString());
             }
             catch (Exception)
             {

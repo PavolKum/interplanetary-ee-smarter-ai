@@ -30,7 +30,7 @@ def main():
         first_init -= 1
     if first_init >= 0:
         for r in rows[first_init:last_init + 1]:
-            print(f"  init {r['ai']:<8} id={r['id']} lvl={r['lvl']} active={r['active']} acc {r['nativeAcc']} -> {r['acc']}")
+            print(f"  init {r['ai']:<8} id={r['id']} lvl={r['lvl']} active={r['active']} acc {r.get('nativeAcc')} -> {r.get('acc', 'n/a') if r.get('smart', True) else 'native'}" + (" ORIGINAL AI" if r.get('smart') is False else ""))
         rows = rows[last_init + 1:]
 
     turns = sorted({r["t"] for r in rows})

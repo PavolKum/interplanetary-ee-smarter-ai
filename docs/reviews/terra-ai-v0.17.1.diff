@@ -1,0 +1,377 @@
+diff --git a/AI/DirectorPatches.cs b/AI/DirectorPatches.cs
+index adfae03..c565d07 100644
+--- a/AI/DirectorPatches.cs
++++ b/AI/DirectorPatches.cs
+@@ -1115,7 +1115,7 @@ namespace InterplanetaryAI
+         {
+             if (!Plugin.Active || !Plugin.DirectorEnabled.Value) return;
+             PlayerData me = __instance.PlayerData;
+-            if (me == null || !me.AIPlayer) return;
++            if (me == null || !Plugin.IsSmart(me)) return;
+             SellDryMines(me);
+             // v0.16 (Sol v0.16 re-check round 2): repairs moved to StartConstruction, after this turn's defense reserve.
+         }
+@@ -2912,17 +2912,17 @@ namespace InterplanetaryAI
+                 if (data != null && Plugin.CoveragePlacement.Value && data.defense_functionality.IsValueSet)
+                 {
+                     AICore defenseCore = (AICore)s_searchCore.GetValue(__instance);
+-                    if (defenseCore != null && defenseCore.PlayerData.AIPlayer && CoverageStep(__instance, data, defenseCore)) return false;
++                    if (defenseCore != null && Plugin.IsSmart(defenseCore.PlayerData) && CoverageStep(__instance, data, defenseCore)) return false;
+                     return true;
+                 }
+                 if (data != null && Plugin.ShelterPlacement.Value && !data.defense_functionality.IsValueSet)
+                 {
+                     AICore shelterCore = (AICore)s_searchCore.GetValue(__instance);
+-                    if (shelterCore != null && shelterCore.PlayerData.AIPlayer && ShelterStep(__instance, data, shelterCore)) return false;
++                    if (shelterCore != null && Plugin.IsSmart(shelterCore.PlayerData) && ShelterStep(__instance, data, shelterCore)) return false;
+                 }
+                 if (data == null || !IsWaterOnly(data)) return true;
+                 AICore core = (AICore)s_searchCore.GetValue(__instance);
+-                if (core == null || !core.PlayerData.AIPlayer) return true;
++                if (core == null || !Plugin.IsSmart(core.PlayerData)) return true;
+ 
+                 if (!__instance.m_needsPowerGrid)
+                 {
+@@ -2965,7 +2965,7 @@ namespace InterplanetaryAI
+                     AIBuildingPlacementSearch search = searches[i];
+                     if (search.IsComplete || (int)s_searchSteps.GetValue(search) < cap) continue;
+                     AICore core = (AICore)s_searchCore.GetValue(search);
+-                    if (core == null || !core.PlayerData.AIPlayer) continue;
++                    if (core == null || !Plugin.IsSmart(core.PlayerData)) continue;
+                     searches.RemoveAt(i);
+                     Abandon(core, __instance, (BuildingData)s_searchBuilding.GetValue(search));
+                 }
+diff --git a/AI/EconomyPatches.cs b/AI/EconomyPatches.cs
+index 2bae6f7..c251290 100644
+--- a/AI/EconomyPatches.cs
++++ b/AI/EconomyPatches.cs
+@@ -83,7 +83,7 @@ namespace InterplanetaryAI
+         // so the reserve lands after the construction queue took its allotment and before any construction.
+         private static void CoreBeginTurnPostfix(AICore __instance)
+         {
+-            if (!Plugin.Active || !__instance.PlayerData.AIPlayer) return;
++            if (!Plugin.IsSmart(__instance.PlayerData)) return; // v0.17.1: humans and original AIs untouched
+             StrategyPatches.ClearDecision(__instance.PlayerData.PlayerID); // a failure below must not leave last turn's hold
+             try
+             {
+@@ -291,7 +291,7 @@ namespace InterplanetaryAI
+             try
+             {
+                 AICore core = (AICore)s_moduleCore.GetValue(__instance);
+-                if (core == null || !core.PlayerData.AIPlayer) return true;
++                if (core == null || !Plugin.IsSmart(core.PlayerData)) return true;
+                 AiEconomyState state = StateOf(core.PlayerData);
+                 if (Plugin.DirectorEnabled.Value) return DirectorPatches.TryConstruct(__instance, core, state, ref __result);
+ 
+@@ -413,7 +413,7 @@ namespace InterplanetaryAI
+             try
+             {
+                 AICore core = (AICore)s_constructionModuleCore.GetValue(__instance);
+-                if (core == null || !core.PlayerData.AIPlayer) return true;
++                if (core == null || !Plugin.IsSmart(core.PlayerData)) return true;
+                 AiEconomyState state = StateOf(core.PlayerData);
+ 
+                 // Cheapest affordable, available variant of each threat-relevant defense building.
+@@ -482,7 +482,7 @@ namespace InterplanetaryAI
+             try
+             {
+                 AICore core = (AICore)s_moduleCore.GetValue(__instance);
+-                if (core == null || !core.PlayerData.AIPlayer) return;
++                if (core == null || !Plugin.IsSmart(core.PlayerData)) return;
+                 if (GameSessionManager.CurrentGameSettings.TechTree != 1) return;
+                 PlayerTechnologyHandler tech = core.PlayerData.TechnologyHandler;
+                 int pid = core.PlayerData.PlayerID;
+@@ -623,10 +623,43 @@ namespace InterplanetaryAI
+ 
+         // ---- logging ----------------------------------------------------------------------------
+ 
++        // v0.17.1: one record per turn for an AI running the game's original code (lobby level not in SmartLevels), read
++        // from its own player data only, so the write-up can compare it with the Smarter AI. Changes nothing.
++        private static void ObserveOriginal(AICore core)
++        {
++            try
++            {
++                PlayerData me = core.PlayerData;
++                Dictionary<string, int> buildings = new Dictionary<string, int>();
++                foreach (BaseBuilding building in me.BuildingHandler.Buildings)
++                {
++                    if (building == null || building.CurrentState != BaseBuilding.BuildingState.Normal) continue;
++                    string id = building.IsCity ? "city" : building.BuildingData.id.Value.Replace("bui_", "");
++                    int n;
++                    buildings.TryGetValue(id, out n);
++                    buildings[id] = n + 1;
++                }
++                Plugin.WriteDecision(new Json().Str("e", "original").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName).Int("lvl", me.AILevel)
++                    .Int("energy", core.Resources.Energy).Int("material", core.Resources.Material)
++                    .Int("energyPerTurn", me.ResourceHandler.EnergyProductionPerTurn).Int("materialPerTurn", me.ResourceHandler.MaterialProductionPerTurn)
++                    .Int("sciencePerTurn", me.ResourceHandler.ScienceProductionPerTurn).Int("planetMaterial", me.ResourceHandler.PlanetMaterial)
++                    .Int("population", me.ResourceHandler.TotalPopulation).Map("buildings", buildings).ToString());
++            }
++            catch (Exception e)
++            {
++                ReportOnce("observe-original", e);
++            }
++        }
++
+         // End of the AI's turn: what the construction mix actually did this turn.
+         private static void CoreEndTurnPostfix(AICore __instance)
+         {
+             if (!Plugin.Active || !__instance.PlayerData.AIPlayer) return;
++            if (!Plugin.IsSmart(__instance.PlayerData))
++            {
++                ObserveOriginal(__instance); // v0.17.1: an original AI is only watched
++                return;
++            }
+             try
+             {
+                 AiEconomyState state;
+diff --git a/AI/Patches.cs b/AI/Patches.cs
+index 74f4aef..0bb5321 100644
+--- a/AI/Patches.cs
++++ b/AI/Patches.cs
+@@ -43,10 +43,10 @@ namespace InterplanetaryAI
+                 PlayerData me = __instance.PlayerData;
+                 if (!me.AIPlayer) return;
+                 // v0.12: the long aiming window by default; with the strategy on, hold turns go back to the game's 20 s.
+-                if (Plugin.Active) StrategyPatches.SetAimWindow(__instance, Plugin.AimingWindowSeconds.Value);
++                if (Plugin.IsSmart(me)) StrategyPatches.SetAimWindow(__instance, Plugin.AimingWindowSeconds.Value);
+                 Plugin.WriteDecision(new Json()
+                     .Str("e", "init").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName).Int("id", me.PlayerID).Int("lvl", me.AILevel)
+-                    .Bool("active", Plugin.Active).Num("acc", AccuracyPlan.ForLevel(Plugin.Accuracy, me.AILevel))
++                    .Bool("active", Plugin.Active).Bool("smart", Plugin.IsSmart(me)) // v0.17.1: false = the original AI.Num("acc", AccuracyPlan.ForLevel(Plugin.Accuracy, me.AILevel))
+                     .Bool("shadows", GameSessionManager.CurrentGameSettings != null && GameSessionManager.CurrentGameSettings.SeenBuildingsShadows) // Sol v0.15.2 #7
+                     .Num("nativeAcc", __instance.Difficulty != null ? __instance.Difficulty.Accuracy : -1f).ToString());
+             }
+@@ -64,6 +64,33 @@ namespace InterplanetaryAI
+         // AiProcessorResources replaces the 1200; the per-weapon clamp stays. 0 = the game's budget.
+         private static readonly FieldInfo s_trajectoryCalculator = AccessTools.Field(typeof(AIWeaponTargeting), "m_trajectoryCalculator");
+ 
++        // v0.17.1: does this targeting module / goal belong to a Smarter AI (Plugin.IsSmart)?
++        private static bool SmartModule(AIWeaponTargeting targeting)
++        {
++            try
++            {
++                AICore core = targeting != null ? (AICore)s_moduleCore.GetValue(targeting) : null;
++                return core != null && Plugin.IsSmart(core.PlayerData);
++            }
++            catch (Exception)
++            {
++                return false;
++            }
++        }
++
++        private static bool SmartGoal(AIWeaponTargetingGoal goal)
++        {
++            try
++            {
++                AICore core = goal != null ? (AICore)s_goalCore.GetValue(goal) : null;
++                return core != null && Plugin.IsSmart(core.PlayerData);
++            }
++            catch (Exception)
++            {
++                return false;
++            }
++        }
++
+         private static void ApplyProcessorBudget(AIWeaponTargeting targeting)
+         {
+             int total = Plugin.AiProcessorResources.Value;
+@@ -79,7 +106,7 @@ namespace InterplanetaryAI
+                 if (calc != null) calc.ReallocateDesignatedStepAmount(perWeapon);
+                 // Sol v0.14 #6: log the denominator and the allowance actually given (once per AI turn, when weapons exist).
+                 AICore core = (AICore)s_moduleCore.GetValue(targeting);
+-                if (weapons > 0 && core != null && core.PlayerData.AIPlayer)
++                if (weapons > 0 && core != null && Plugin.IsSmart(core.PlayerData))
+                 {
+                     Plugin.WriteDecision(new Json().Str("e", "aim-budget").Int("t", GameManager.CurrentTurn).Str("ai", core.PlayerData.UserNickName)
+                         .Int("total", total).Int("aiWeapons", weapons).Int("steps", perWeapon).Int("nativeSteps", AimBudget.StepsPerWeapon(1200, weapons))
+@@ -94,12 +121,13 @@ namespace InterplanetaryAI
+ 
+         private static void TargetingBeginTurnPostfix(AIWeaponTargeting __instance)
+         {
+-            if (Plugin.Active) ApplyProcessorBudget(__instance);
++            if (!SmartModule(__instance)) return; // v0.17.1: an original AI's targeting stays native
++            ApplyProcessorBudget(__instance);
+             if (!Plugin.Active || !Plugin.SmartTargeting.Value) return;
+             try
+             {
+                 AICore core = (AICore)s_moduleCore.GetValue(__instance);
+-                if (core == null || !core.PlayerData.AIPlayer) return;
++                if (core == null || !Plugin.IsSmart(core.PlayerData)) return;
+                 // Backstop for the Initialize reset: the init-time turn value is not proven fresh, but the first targeting
+                 // of a new match or an earlier save always shows the turn going backwards. Runs here, before this turn's
+                 // economy and strategy state are built (EconomyPatches.CoreBeginTurnPostfix), never after.
+@@ -128,7 +156,7 @@ namespace InterplanetaryAI
+             {
+                 AICore core = (AICore)s_moduleCore.GetValue(__instance);
+                 List<AITargetableWeapon> weapons = (List<AITargetableWeapon>)s_targetableWeapons.GetValue(__instance);
+-                if (core == null || !core.PlayerData.AIPlayer || weapons == null || weapons.Count == 0) return;
++                if (core == null || !Plugin.IsSmart(core.PlayerData) || weapons == null || weapons.Count == 0) return;
+                 List<CelestialBody> planets = core.EnemyPlanets;
+                 if (planets == null || planets.Count == 0) return;
+ 
+@@ -291,7 +319,7 @@ namespace InterplanetaryAI
+                 if (total == 0) return;
+                 AICore core = (AICore)s_goalCore.GetValue(__instance);
+                 PlayerData me = core.PlayerData;
+-                if (!me.AIPlayer) return;
++                if (!Plugin.IsSmart(me)) return; // v0.17.1: an original AI keeps its native aim
+ 
+                 float levelAccuracy = AccuracyPlan.ForLevel(Plugin.Accuracy, me.AILevel);
+                 // v0.15: live weapons only (the targeting list keeps destroyed entries, Sol + Fable v0.14.2 audits), guided
+@@ -507,7 +535,7 @@ namespace InterplanetaryAI
+             try
+             {
+                 me = s_handlerPlayer != null ? s_handlerPlayer.GetValue(__instance) as PlayerData : null;
+-                if (me == null || !me.AIPlayer) return true; // the human's handler: untouched
++                if (me == null || !Plugin.IsSmart(me)) return true; // the human's (or an original AI's) handler: untouched
+                 if (!Plugin.BlindArtillery.Value || !IsGuided(weapon)) { __state = SafeEnergy(me); return true; }
+             }
+             catch (Exception e)
+@@ -597,6 +625,7 @@ namespace InterplanetaryAI
+         private static void GoalTargetWeaponsPrefix(AIWeaponTargetingGoal __instance, out bool __state)
+         {
+             __state = !__instance.AreWeaponsTargeted;
++            if (__state && !SmartGoal(__instance)) __state = false; // v0.17.1: the postfix skips an original AI too
+             if (!__state || !Plugin.Active) return;
+             try
+             {
+@@ -806,6 +835,7 @@ namespace InterplanetaryAI
+         private static bool SecondPhasePrefix(AIWeaponTargeting __instance, WeaponGameplayData weapon, CelestialBody targetPlanet)
+         {
+             if (!Plugin.Active || !Plugin.SmartStrikes.Value) return true;
++            if (!SmartModule(__instance)) return true; // v0.17.1: an original AI picks its own second-phase target
+             // v0.16 (Sol v0.16 re-check #1): fail closed. Native selection accepts Shadow cities, so no path below returns to it.
+             bool queued = false;
+             AICore failCore = null;
+diff --git a/AI/Plugin.cs b/AI/Plugin.cs
+index ad83be4..2b0dd23 100644
+--- a/AI/Plugin.cs
++++ b/AI/Plugin.cs
+@@ -24,7 +24,7 @@ namespace InterplanetaryAI
+     {
+         public const string GUID = "pavol.interplanetary.ai";
+         public const string NAME = "Interplanetary EE: Smarter AI";
+-        public const string VERSION = "0.17.0";
++        public const string VERSION = "0.17.1";
+ 
+         internal static ManualLogSource Log;
+ 
+@@ -40,6 +40,7 @@ namespace InterplanetaryAI
+         internal static ConfigEntry<bool> RefreshFiringList;
+         internal static ConfigEntry<bool> AccuracyOverride;
+         internal static ConfigEntry<string> AccuracyByLevel;
++        internal static ConfigEntry<string> SmartLevels;             // v0.17.1
+         internal static ConfigEntry<bool> FireMisses;
+         internal static ConfigEntry<bool> SmartStrikes;
+         internal static ConfigEntry<float> WeaponBuildingShare;
+@@ -378,6 +379,8 @@ namespace InterplanetaryAI
+ 
+             AccuracyOverride = Config.Bind("Accuracy", "Override", true,
+                 "Native AIs plan deliberate misses each turn (accuracy 0.4 / 0.75 / 0.9 / 1.0 by difficulty). Override that plan.");
++            SmartLevels = Config.Bind("General", "SmartLevels", "3",
++                "v0.17.1: lobby AI levels (0 Easy, 1 Medium, 2 Hard, 3 Impossible; comma-separated) that run the Smarter AI. Every other AI runs the game's original AI untouched (native aim: 0.4 / 0.75 / 0.9 / 1.0). \"0,1,2,3\" = every AI is the Smarter AI (v0.17.0 behaviour).");
+             AccuracyByLevel = Config.Bind("Accuracy", "AccuracyByLevel", "0.4,0.7,0.7,0.7",
+                 "Planned hit share per difficulty level, lowest first, comma-separated. Default = human parity: the human's planet-contact rate over 6 recorded matches (Oct 2026) was 58% overall and 67% in the last two; 0.7 planned allows for shots lost to defenses. Easy keeps the native 0.4.");
+             FireMisses = Config.Bind("Accuracy", "FireMisses", true,
+@@ -841,6 +844,7 @@ namespace InterplanetaryAI
+             {
+                 Accuracy = parsed;
+             }
++            SmartLevelSet = ParseLevels(SmartLevels.Value);
+         }
+ 
+         private static float[] ParseAccuracy(string text)
+@@ -868,6 +872,28 @@ namespace InterplanetaryAI
+             get { return Enabled.Value && !GameManager.OnlineGame && !GameSessionManager.OnlineGame; }
+         }
+ 
++        // v0.17.1 (Pavol, 7 Nov: "our version on the impossible", the original AI on the other levels): the Smarter AI runs
++        // only for AI players whose lobby level is in SmartLevels; every other AI runs the game's own code, aim included.
++        // One lobby with the Smarter AI on Impossible and the original on Hard / Medium / Easy compares them directly.
++        internal static HashSet<int> SmartLevelSet = new HashSet<int> { 3 };
++
++        internal static bool IsSmart(PlayerData player)
++        {
++            return Active && player != null && player.AIPlayer && SmartLevelSet.Contains(player.AILevel);
++        }
++
++        internal static HashSet<int> ParseLevels(string text)
++        {
++            HashSet<int> set = new HashSet<int>();
++            if (string.IsNullOrEmpty(text)) return set;
++            foreach (string part in text.Split(','))
++            {
++                int level;
++                if (int.TryParse(part.Trim(), out level)) set.Add(level);
++            }
++            return set;
++        }
++
+         internal static void ResetMatchMemory()
+         {
+             Grudges.Clear();
+diff --git a/AI/TurnGuard.cs b/AI/TurnGuard.cs
+index 2fb8f97..ffa8e9f 100644
+--- a/AI/TurnGuard.cs
++++ b/AI/TurnGuard.cs
+@@ -68,6 +68,13 @@ namespace InterplanetaryAI
+         {
+             if (__exception == null) return null;
+             if (!Plugin.Active) return __exception; // Terra v0.17 H1: online or disabled, the game's behaviour is untouched
++            AICore owner = CoreOf(__instance);
++            if (owner == null || !Plugin.IsSmart(owner.PlayerData))
++            {
++                // v0.17.1: an original AI keeps the game's behaviour (logged, not swallowed).
++                Report(__instance != null ? __instance.GetType().Name : "module", owner != null ? owner.PlayerData.UserNickName : "?", __exception);
++                return __exception;
++            }
+             Report(__instance != null ? __instance.GetType().Name : "module", NameOf(__instance), __exception);
+             // Terra v0.17 H2: the failed module keeps whatever it set before the throw. Accepted: propagating stops every
+             // later module (match 20: no construction at all for ten turns), which is worse than one half-begun module.
+@@ -82,6 +89,19 @@ namespace InterplanetaryAI
+             return __exception;
+         }
+ 
++        private static AICore CoreOf(object module)
++        {
++            try
++            {
++                FieldInfo field = AccessTools.Field(typeof(AIModule), "m_core");
++                return field != null && module != null ? field.GetValue(module) as AICore : null;
++            }
++            catch (Exception)
++            {
++                return null;
++            }
++        }
++
+         private static string NameOf(object module)
+         {
+             try
+diff --git a/AI/tools/live_monitor.py b/AI/tools/live_monitor.py
+index 2ca7165..5aa6091 100644
+--- a/AI/tools/live_monitor.py
++++ b/AI/tools/live_monitor.py
+@@ -132,6 +132,11 @@ def main():
+                       f" | {per}", flush=True)
+             elif kind == "abort":
+                 print(f"T{r['t']} {r['ai']}: STRIKE ABORTED - {r.get('hitsOnCommit')} of {r.get('shots')} weapons on target (needed {r.get('needed')})", flush=True)
++            elif kind == "original":
++                b = r.get("buildings") or {}
++                top = ",".join(f"{k}{v}" for k, v in sorted(b.items(), key=lambda kv: -kv[1])[:5])
++                print(f"T{r['t']} {r['ai']} [ORIGINAL lvl {r.get('lvl')}]: E/t {r.get('energyPerTurn')} M/t {r.get('materialPerTurn')} "
++                      f"sci {r.get('sciencePerTurn')} bld {sum(b.values())} [{top}] pop {r.get('population')} unspent E{r.get('energy')}", flush=True)
+             elif kind == "turn-start-error":
+                 print(f"T{r['t']} {r['ai']}: TURN-START ERROR in {r.get('module')} (swallowed): {r.get('error')}", flush=True)
+             elif kind == "turn-start-missed":
+@@ -139,7 +144,8 @@ def main():
+             elif kind == "superweapon":
+                 print(f"T{r['t']} {r['ai']}: SUPERWEAPON queued {short(r['building'])}", flush=True)
+             elif kind == "init":
+-                print(f"AI init: {r.get('ai')} level {r.get('lvl', r.get('level', '?'))}", flush=True)
++                kind_label = "" if r.get("smart") is None else (" SMARTER AI" if r.get("smart") else " original AI")
++                print(f"AI init: {r.get('ai')} level {r.get('lvl', r.get('level', '?'))}{kind_label}", flush=True)
+         for line in recordings.lines():
+             try:
+                 r = json.loads(line)

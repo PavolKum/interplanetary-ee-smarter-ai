@@ -1,0 +1,10 @@
+READ-ONLY review. Do not edit, create or delete any file. Stay inside this repository: any path outside it is auto-rejected and ends your run. Finish with the complete written report; include a line containing the word "verdict".
+
+Focused review of AI v0.17.1. Diff: docs/reviews/terra-ai-v0.17.1.diff (git diff 3294356 -- AI). decompiled/ is the game source.
+
+Change: a per-AI level gate. Plugin.IsSmart(player) = Active && AIPlayer && player.AILevel in SmartLevels (config "General/SmartLevels", default "3" = Impossible). Pavol wants lobbies with the Smarter AI on Impossible and the game's ORIGINAL AI on Hard/Medium/Easy, as a head-to-head comparison. Every hook that changes an AI's behaviour must run only for smart AIs; an original AI must run exactly the native code (native accuracy, native targeting, native construction and placement, native research, no turn guard swallow). Observation-only hooks (Grudges.Record in DealDamagePrefix, LedgerPatches.AfterIntercept, the new EconomyPatches.ObserveOriginal record) may run for everyone.
+
+Questions:
+1. List every Harmony hook registered in AI/Plugin.cs (and TurnGuard, LaserPatches) and confirm for each whether an original AI can still be affected. Pay attention to: GoalTargetWeaponsPrefix/Postfix (__state now false for original AIs), SecondPhasePrefix, TargetingBeginTurnPostfix (processor budget now smart-only), CompleteFirstPhasePrefix/Postfix and the hold hook, FinderUpdatePrefix, SearchStepPrefix, TryConstruct*, TechQueueBeginTurnPrefix, CoreBeginTurnPrefix (DirectorPatches) and CoreBeginTurnPostfix, CoreEndTurnPostfix, accuracy (GoalBeginTurnPostfix), SetAimWindow, the turn guard.
+2. Shared static state: can an original AI's presence corrupt the smart AI's memory or decisions (e.g. code that iterates all AI players assuming each has an AiEconomyState/DirectorState; PlayerManager.GetAiPlayerAmount in the processor budget; Strategy treating original AIs as targets is intended)?
+3. Any crash path or missed gate. Rank findings with file:line and a fix. End with SHIP, SHIP AFTER FIXES (list), or DO NOT SHIP. Under 800 words.

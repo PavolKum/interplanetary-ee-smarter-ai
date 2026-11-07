@@ -132,14 +132,20 @@ def main():
                       f" | {per}", flush=True)
             elif kind == "abort":
                 print(f"T{r['t']} {r['ai']}: STRIKE ABORTED - {r.get('hitsOnCommit')} of {r.get('shots')} weapons on target (needed {r.get('needed')})", flush=True)
+            elif kind == "original":
+                b = r.get("buildings") or {}
+                top = ",".join(f"{k}{v}" for k, v in sorted(b.items(), key=lambda kv: -kv[1])[:5])
+                print(f"T{r['t']} {r['ai']} [ORIGINAL lvl {r.get('lvl')}]: E/t {r.get('energyPerTurn')} M/t {r.get('materialPerTurn')} "
+                      f"sci {r.get('sciencePerTurn')} bld {sum(b.values())} [{top}] pop {r.get('population')} unspent E{r.get('energy')}", flush=True)
             elif kind == "turn-start-error":
-                print(f"T{r['t']} {r['ai']}: TURN-START ERROR in {r.get('module')} (swallowed): {r.get('error')}", flush=True)
+                print(f"T{r['t']} {r['ai']}: TURN-START ERROR in {r.get('module')} ({'swallowed' if r.get('swallowed', True) else 'passed on'}): {r.get('error')}", flush=True)
             elif kind == "turn-start-missed":
                 print(f"T{r['t']} {r['ai']}: TURN START MISSED (last started T{r.get('lastStartedTurn')}; E {r.get('energy')} M {r.get('material')})", flush=True)
             elif kind == "superweapon":
                 print(f"T{r['t']} {r['ai']}: SUPERWEAPON queued {short(r['building'])}", flush=True)
             elif kind == "init":
-                print(f"AI init: {r.get('ai')} level {r.get('lvl', r.get('level', '?'))}", flush=True)
+                kind_label = "" if r.get("smart") is None else (" SMARTER AI" if r.get("smart") else " original AI")
+                print(f"AI init: {r.get('ai')} level {r.get('lvl', r.get('level', '?'))}{kind_label}", flush=True)
         for line in recordings.lines():
             try:
                 r = json.loads(line)

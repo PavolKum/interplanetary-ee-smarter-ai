@@ -43,10 +43,10 @@ namespace InterplanetaryAI
                 PlayerData me = __instance.PlayerData;
                 if (!me.AIPlayer) return;
                 // v0.12: the long aiming window by default; with the strategy on, hold turns go back to the game's 20 s.
-                if (Plugin.Active) StrategyPatches.SetAimWindow(__instance, Plugin.AimingWindowSeconds.Value);
+                if (Plugin.IsSmart(me)) StrategyPatches.SetAimWindow(__instance, Plugin.AimingWindowSeconds.Value);
                 Plugin.WriteDecision(new Json()
                     .Str("e", "init").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName).Int("id", me.PlayerID).Int("lvl", me.AILevel)
-                    .Bool("active", Plugin.Active).Num("acc", AccuracyPlan.ForLevel(Plugin.Accuracy, me.AILevel))
+                    .Bool("active", Plugin.Active).Bool("smart", Plugin.IsSmart(me)).Num("acc", AccuracyPlan.ForLevel(Plugin.Accuracy, me.AILevel)) // v0.17.1: smart false = the original AI (acc unused)
                     .Bool("shadows", GameSessionManager.CurrentGameSettings != null && GameSessionManager.CurrentGameSettings.SeenBuildingsShadows) // Sol v0.15.2 #7
                     .Num("nativeAcc", __instance.Difficulty != null ? __instance.Difficulty.Accuracy : -1f).ToString());
             }
@@ -64,6 +64,33 @@ namespace InterplanetaryAI
         // AiProcessorResources replaces the 1200; the per-weapon clamp stays. 0 = the game's budget.
         private static readonly FieldInfo s_trajectoryCalculator = AccessTools.Field(typeof(AIWeaponTargeting), "m_trajectoryCalculator");
 
+        // v0.17.1: does this targeting module / goal belong to a Smarter AI (Plugin.IsSmart)?
+        private static bool SmartModule(AIWeaponTargeting targeting)
+        {
+            try
+            {
+                AICore core = targeting != null ? (AICore)s_moduleCore.GetValue(targeting) : null;
+                return core != null && Plugin.IsSmart(core.PlayerData);
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        private static bool SmartGoal(AIWeaponTargetingGoal goal)
+        {
+            try
+            {
+                AICore core = goal != null ? (AICore)s_goalCore.GetValue(goal) : null;
+                return core != null && Plugin.IsSmart(core.PlayerData);
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
         private static void ApplyProcessorBudget(AIWeaponTargeting targeting)
         {
             int total = Plugin.AiProcessorResources.Value;
@@ -79,7 +106,7 @@ namespace InterplanetaryAI
                 if (calc != null) calc.ReallocateDesignatedStepAmount(perWeapon);
                 // Sol v0.14 #6: log the denominator and the allowance actually given (once per AI turn, when weapons exist).
                 AICore core = (AICore)s_moduleCore.GetValue(targeting);
-                if (weapons > 0 && core != null && core.PlayerData.AIPlayer)
+                if (weapons > 0 && core != null && Plugin.IsSmart(core.PlayerData))
                 {
                     Plugin.WriteDecision(new Json().Str("e", "aim-budget").Int("t", GameManager.CurrentTurn).Str("ai", core.PlayerData.UserNickName)
                         .Int("total", total).Int("aiWeapons", weapons).Int("steps", perWeapon).Int("nativeSteps", AimBudget.StepsPerWeapon(1200, weapons))
@@ -94,12 +121,13 @@ namespace InterplanetaryAI
 
         private static void TargetingBeginTurnPostfix(AIWeaponTargeting __instance)
         {
-            if (Plugin.Active) ApplyProcessorBudget(__instance);
+            if (!SmartModule(__instance)) return; // v0.17.1: an original AI's targeting stays native
+            ApplyProcessorBudget(__instance);
             if (!Plugin.Active || !Plugin.SmartTargeting.Value) return;
             try
             {
                 AICore core = (AICore)s_moduleCore.GetValue(__instance);
-                if (core == null || !core.PlayerData.AIPlayer) return;
+                if (core == null || !Plugin.IsSmart(core.PlayerData)) return;
                 // Backstop for the Initialize reset: the init-time turn value is not proven fresh, but the first targeting
                 // of a new match or an earlier save always shows the turn going backwards. Runs here, before this turn's
                 // economy and strategy state are built (EconomyPatches.CoreBeginTurnPostfix), never after.
@@ -128,7 +156,7 @@ namespace InterplanetaryAI
             {
                 AICore core = (AICore)s_moduleCore.GetValue(__instance);
                 List<AITargetableWeapon> weapons = (List<AITargetableWeapon>)s_targetableWeapons.GetValue(__instance);
-                if (core == null || !core.PlayerData.AIPlayer || weapons == null || weapons.Count == 0) return;
+                if (core == null || !Plugin.IsSmart(core.PlayerData) || weapons == null || weapons.Count == 0) return;
                 List<CelestialBody> planets = core.EnemyPlanets;
                 if (planets == null || planets.Count == 0) return;
 
@@ -291,7 +319,7 @@ namespace InterplanetaryAI
                 if (total == 0) return;
                 AICore core = (AICore)s_goalCore.GetValue(__instance);
                 PlayerData me = core.PlayerData;
-                if (!me.AIPlayer) return;
+                if (!Plugin.IsSmart(me)) return; // v0.17.1: an original AI keeps its native aim
 
                 float levelAccuracy = AccuracyPlan.ForLevel(Plugin.Accuracy, me.AILevel);
                 // v0.15: live weapons only (the targeting list keeps destroyed entries, Sol + Fable v0.14.2 audits), guided
@@ -507,7 +535,7 @@ namespace InterplanetaryAI
             try
             {
                 me = s_handlerPlayer != null ? s_handlerPlayer.GetValue(__instance) as PlayerData : null;
-                if (me == null || !me.AIPlayer) return true; // the human's handler: untouched
+                if (me == null || !Plugin.IsSmart(me)) return true; // the human's (or an original AI's) handler: untouched
                 if (!Plugin.BlindArtillery.Value || !IsGuided(weapon)) { __state = SafeEnergy(me); return true; }
             }
             catch (Exception e)
@@ -597,6 +625,7 @@ namespace InterplanetaryAI
         private static void GoalTargetWeaponsPrefix(AIWeaponTargetingGoal __instance, out bool __state)
         {
             __state = !__instance.AreWeaponsTargeted;
+            if (__state && !SmartGoal(__instance)) __state = false; // v0.17.1: the postfix skips an original AI too
             if (!__state || !Plugin.Active) return;
             try
             {
@@ -806,6 +835,7 @@ namespace InterplanetaryAI
         private static bool SecondPhasePrefix(AIWeaponTargeting __instance, WeaponGameplayData weapon, CelestialBody targetPlanet)
         {
             if (!Plugin.Active || !Plugin.SmartStrikes.Value) return true;
+            if (!SmartModule(__instance)) return true; // v0.17.1: an original AI picks its own second-phase target
             // v0.16 (Sol v0.16 re-check #1): fail closed. Native selection accepts Shadow cities, so no path below returns to it.
             bool queued = false;
             AICore failCore = null;
