@@ -1,0 +1,462 @@
+diff --git a/AI/Brain/Offense.cs b/AI/Brain/Offense.cs
+index 16a53a3..9053767 100644
+--- a/AI/Brain/Offense.cs
++++ b/AI/Brain/Offense.cs
+@@ -96,4 +96,31 @@ namespace InterplanetaryAI.Brain
+             return Math.Max(MinSteps, Math.Min(MaxSteps, steps));
+         }
+     }
++
++    // v0.18 (match 21, docs/playtests/2026-11-07-v0.17.1-match21.md): on several firing turns only 4-13 of ~30 weapons found
++    // a trajectory onto the human. The search runs until the AI's window (AimingWindowSeconds) has passed and the human
++    // has ended the turn; a quick human turn (40-60 s late in the match) cut it short. The window is pushed out a little at a
++    // time while the search is still finding trajectories, up to a hard cap; weapons that cannot reach (wrong side of the
++    // planet) stop finding anything, so the stall test ends the wait instead of holding the human for nothing.
++    public static class AimWindow
++    {
++        // The AI's timeout after this frame: unchanged, or pushed `step` seconds past the timer.
++        // timer: seconds since the AI's turn began; timeout: the current window; lastProgress: timer when the count of
++        // weapons with a trajectory last rose; found / live: weapons with a trajectory / weapons searching.
++        public static float Extend(float timer, float timeout, float lastProgress, int found, int live, float targetShare,
++            float stallSeconds, float maxWindow, float step)
++        {
++            if (live <= 0 || maxWindow <= timeout) return timeout;
++            if (timer < timeout - Math.Max(0f, step)) return timeout;            // not near the end yet
++            if (timer >= maxWindow) return timeout;                                // hard cap
++            if (found >= (int)Math.Ceiling(Clamp01(targetShare) * live)) return timeout; // enough aimed
++            if (timer - lastProgress >= Math.Max(0f, stallSeconds)) return timeout; // nothing new for a while: geometry
++            return Math.Min(maxWindow, timer + Math.Max(0.5f, step));
++        }
++
++        private static float Clamp01(float v)
++        {
++            return Math.Max(0f, Math.Min(1f, v));
++        }
++    }
+ }
+diff --git a/AI/Brain/Strategy.cs b/AI/Brain/Strategy.cs
+index 5daa05a..bd33ffa 100644
+--- a/AI/Brain/Strategy.cs
++++ b/AI/Brain/Strategy.cs
+@@ -97,6 +97,11 @@ namespace InterplanetaryAI.Brain
+         // (v0.10.1: the softer human over the higher-scored rival). 0 = off.
+         public float HumanFirstShare = 0.9f;
+         public float HumanFirstMinPassing = 4f;
++        // v0.18 (match 21): or by reach. The score's finishing and grudge terms lifted dying AIs above the human (T38 Shoe 1,450
++        // vs the human 740) while 27-28 of 32 shots would have reached him; finishing an AI gains nothing. The human is also
++        // the commit when his expected shots through are at least this share of the best target's (and HumanFirstMinPassing).
++        // 0 = off (v0.16.2: score only).
++        public float HumanFirstReachShare = 0.4f;
+         // v0.16.2 (match 19): holding fire gives the firing energy to construction; when last turn already ended with at
+         // least this turn's firing cost unspent, holding buys nothing. T21-T25 all three AIs held below saturation with
+         // 0.8-41k energy unspent each turn, and fired blind on max-hold at T26. Fire instead ("free-fire"), when at least
+@@ -291,12 +296,14 @@ namespace InterplanetaryAI.Brain
+         }
+ 
+         // v0.16.2: the leading human is the commit when enough of the salvo reaches through his defenses (HumanFirstShare).
+-        public static bool HumanFirstHolds(SalvoTarget human, float maxScore, StrategySettings s)
++        public static bool HumanFirstHolds(SalvoTarget human, float maxScore, StrategySettings s, float maxPassing = -1f)
+         {
+             // A human our weapons found almost no trajectory onto (v0.12 low yield) is left to the value rule, which discounts him.
+-            return human != null && s.HumanFirstShare > 0f && maxScore > 0f && human.Score >= s.HumanFirstShare * maxScore
+-                && human.Passing >= Math.Max(0.01f, s.HumanFirstMinPassing)
+-                && !(s.LowYieldTurns > 0 && human.LowYieldTurns >= s.LowYieldTurns);
++            if (human == null || human.Passing < Math.Max(0.01f, s.HumanFirstMinPassing)) return false;
++            if (s.LowYieldTurns > 0 && human.LowYieldTurns >= s.LowYieldTurns) return false;
++            bool byScore = s.HumanFirstShare > 0f && maxScore > 0f && human.Score >= s.HumanFirstShare * maxScore;
++            bool byReach = s.HumanFirstReachShare > 0f && maxPassing > 0f && human.Passing >= s.HumanFirstReachShare * maxPassing; // v0.18
++            return byScore || byReach;
+         }
+ 
+         public static bool Attrition(int weapons, int lastWeapons, bool underAttack, StrategySettings s)
+@@ -316,13 +323,14 @@ namespace InterplanetaryAI.Brain
+             IDictionary<int, int> lastPhaseImpactsBy = null, float freeEnergy = -1f, float firingCost = 0f)
+         {
+             StrategyDecision d = new StrategyDecision { War = war, Shots = weapons };
+-            float maxScore = 0f;
++            float maxScore = 0f, maxPassing = 0f;
+             SalvoTarget human = null;
+             foreach (SalvoTarget t in targets)
+             {
+                 EstimateSalvo(salvo, t, accuracy, counters, s, accuracyById);
+                 d.Targets.Add(t);
+                 maxScore = Math.Max(maxScore, t.Score);
++                maxPassing = Math.Max(maxPassing, t.Passing); // v0.18
+                 if (t.IsHuman && human == null) human = t;
+             }
+             SalvoTarget best = null, previous = null;
+@@ -336,7 +344,7 @@ namespace InterplanetaryAI.Brain
+             // Stay on last turn's target unless another is clearly better: a new target costs a turn of aiming.
+             if (previous != null && best != previous && best.Value < s.CommitStickiness * previous.Value) best = previous;
+             // v0.16.2: the leading human is the commit whenever enough of the salvo reaches him (HumanFirstShare).
+-            if (HumanFirstHolds(human, maxScore, s))
++            if (HumanFirstHolds(human, maxScore, s, maxPassing))
+             {
+                 d.HumanFirst = true;
+                 best = human;
+diff --git a/AI/EconomyPatches.cs b/AI/EconomyPatches.cs
+index c251290..4674073 100644
+--- a/AI/EconomyPatches.cs
++++ b/AI/EconomyPatches.cs
+@@ -665,6 +665,7 @@ namespace InterplanetaryAI
+                 AiEconomyState state;
+                 if (!States.TryGetValue(__instance.PlayerData.PlayerID, out state)) return;
+                 if (Plugin.DirectorEnabled.Value) DirectorPatches.EndTurn(__instance);
++                AimWatch.Log(__instance); // v0.18
+                 Plugin.WriteDecision(new Json().Str("e", "build").Int("t", GameManager.CurrentTurn).Str("ai", __instance.PlayerData.UserNickName)
+                     .Bool("growth", state.Growth)
+                     .Raw("picks", IntArray(state.Picks)).Raw("queued", IntArray(state.PickSuccesses))
+diff --git a/AI/Plugin.cs b/AI/Plugin.cs
+index c2315ab..efba27b 100644
+--- a/AI/Plugin.cs
++++ b/AI/Plugin.cs
+@@ -24,7 +24,7 @@ namespace InterplanetaryAI
+     {
+         public const string GUID = "pavol.interplanetary.ai";
+         public const string NAME = "Interplanetary EE: Smarter AI";
+-        public const string VERSION = "0.17.2";
++        public const string VERSION = "0.18.0";
+ 
+         internal static ManualLogSource Log;
+ 
+@@ -103,6 +103,11 @@ namespace InterplanetaryAI
+         internal static ConfigEntry<float> AbortBelowShare;
+         internal static ConfigEntry<int> AbortBelowWeapons;
+         internal static ConfigEntry<float> AimingWindowSeconds;
++        internal static ConfigEntry<bool> AimExtend;                 // v0.18
++        internal static ConfigEntry<float> HumanFirstReachShare;     // v0.18
++        internal static ConfigEntry<float> AimingWindowMax;          // v0.18
++        internal static ConfigEntry<float> AimTargetShare;           // v0.18
++        internal static ConfigEntry<float> AimStallSeconds;          // v0.18
+         internal static ConfigEntry<float> AttritionLossShare;
+         internal static ConfigEntry<float> ReturnFirePassShare;
+         internal static ConfigEntry<float> ReturnFireMinPassing;
+@@ -511,6 +516,11 @@ namespace InterplanetaryAI
+             AbortBelowWeapons = Config.Bind("Strategy", "AbortBelowWeapons", 3, "v0.12: call a strike off when fewer than this many weapons found a trajectory onto the committed target.");
+             AimingWindowSeconds = Config.Bind("Strategy", "AimingWindowSeconds", 40f,
+                 "v0.12: on a strike turn the AI keeps searching for trajectories until this many seconds after its turn began, or the human ends the turn if later (the game: 20). Hold turns keep 20. Longer = more weapons aimed, more waiting between turns. 20-120.");
++            AimExtend = Config.Bind("Strategy", "AimExtend", true,
++                "v0.18: on a firing turn keep searching for trajectories past AimingWindowSeconds while fewer than AimTargetShare of the weapons have one and the search found a new one within AimStallSeconds, up to AimingWindowMax. Match 21: 4-13 of ~30 weapons aimed on several firing turns.");
++            AimingWindowMax = Config.Bind("Strategy", "AimingWindowMax", 90f, "v0.18: hard cap (seconds since the AI's turn began) for the extended aim window. The wait only shows when the human ends the turn before it.");
++            AimTargetShare = Config.Bind("Strategy", "AimTargetShare", 0.8f, "v0.18: stop extending once this share of the weapons has a trajectory.");
++            AimStallSeconds = Config.Bind("Strategy", "AimStallSeconds", 15f, "v0.18: stop extending when no new trajectory was found for this many seconds (the rest cannot reach: geometry).");
+             AttritionLossShare = Config.Bind("Strategy", "AttritionLossShare", 0.15f,
+                 "v0.14: fire whatever aims when our live weapons dropped since last turn by at least this share (and at least 2), pulse or not. v0.13.1 Guts held at 26 -> 17 -> 11 -> 10 weapons while the human destroyed them unfired. 0 = off.");
+             ReturnFirePassShare = Config.Bind("Strategy", "ReturnFirePassShare", 0.6f,
+@@ -699,6 +709,7 @@ namespace InterplanetaryAI
+             HumanFirstShare = Config.Bind("Strategy", "HumanFirstShare", 0.9f,
+                 "v0.16.2: the human is the commit target when his score is at least this share of the best enemy score and HumanFirstMinPassing shots are expected through his defenses. Match 19: Asona saw two human cities and still struck the dying AIs (passing x a leader bonus capped at 1.5). A human who does not lead is still chosen by value. 0 = off.");
+             HumanFirstMinPassing = Config.Bind("Strategy", "HumanFirstMinPassing", 4f, "v0.16.2: fewest expected shots through the human's defenses for the human-first commit.");
++            HumanFirstReachShare = Config.Bind("Strategy", "HumanFirstReachShare", 0.4f, "v0.18: the human is also the commit when his expected shots through are at least this share of the best target's (match 21: volleys went to dying AIs while 27-28 of 32 would have reached him). 0 = score only.");
+             FreeFire = Config.Bind("Strategy", "FreeFire", true,
+                 "v0.16.2: fire instead of holding when last turn's construction already left at least this turn's firing cost unspent and this turn's energy still covers last turn's use (holding would only add to unspent energy). Match 19 held T21-T25 with 0.8-41k energy unspent a turn.");
+             FreeFireMinPassing = Config.Bind("Strategy", "FreeFireMinPassing", 4f, "v0.16.2: fewest expected shots through the commit's defenses for free fire.");
+@@ -772,7 +783,8 @@ namespace InterplanetaryAI
+             if (EnableLasers.Value && !everyLevelSmart) Log.LogWarning("Lasers stay off: SmartLevels does not cover every level, and the laser patches would change the original AIs.");
+             int laserPatches = EnableLasers.Value && everyLevelSmart ? LaserPatches.Install(new Harmony(GUID + ".lasers")) : 0;
+             int guards = TurnGuard.Install(m_harmony); // v0.17
+-            Log.LogInfo(NAME + " " + VERSION + " loaded; " + patched + " of 16 hooks patched; turn guard " + guards + " of 9. Director " + (DirectorEnabled.Value ? "on" : "off")
++            int aimWatch = AimWatch.Install(m_harmony); // v0.18
++            Log.LogInfo(NAME + " " + VERSION + " loaded; " + patched + " of 16 hooks patched; turn guard " + guards + " of 9; aim watch " + aimWatch + " of 1. Director " + (DirectorEnabled.Value ? "on" : "off")
+                 + ", war from turn " + WarFromTurn.Value + ". Accuracy by level: " + AccuracyByLevel.Value
+                 + "; research plan " + ResearchPlanIds.Count + " techs; superweapons " + Superweapons.Value
+                 + "; lasers " + (EnableLasers.Value ? laserPatches + " of 5 patches" : "off"));
+@@ -831,6 +843,7 @@ namespace InterplanetaryAI
+             StrategyCfg.PrecisionKillShare = Math.Max(0f, PrecisionKillShare.Value);
+             StrategyCfg.HumanFirstShare = Math.Max(0f, HumanFirstShare.Value);
+             StrategyCfg.HumanFirstMinPassing = Math.Max(0f, HumanFirstMinPassing.Value);
++            StrategyCfg.HumanFirstReachShare = Math.Max(0f, Math.Min(1f, HumanFirstReachShare.Value));
+             StrategyCfg.FreeFire = FreeFire.Value;
+             StrategyCfg.FreeFireMinPassing = Math.Max(0f, FreeFireMinPassing.Value);
+ 
+@@ -910,6 +923,7 @@ namespace InterplanetaryAI
+             EconomyPatches.Reset();
+             StrategyPatches.Reset();
+             AiPatches.ResetCombatMemory(); // v0.15.1 (Sol v0.15 #7)
++            AimWatch.Reset(); // v0.18
+         }
+ 
+         internal static void WriteDecision(string json)
+diff --git a/AI/Tests/Program.cs b/AI/Tests/Program.cs
+index bf4ab42..065dfd6 100644
+--- a/AI/Tests/Program.cs
++++ b/AI/Tests/Program.cs
+@@ -61,6 +61,7 @@ namespace InterplanetaryAI.Tests
+             V0161Rules();
+             V0162Rules();
+             V017Rules();
++            V018Rules();
+ 
+             Console.WriteLine(s_checks + " checks, " + s_failures + " failed");
+             return s_failures == 0 ? 0 : 1;
+@@ -1537,6 +1538,36 @@ namespace InterplanetaryAI.Tests
+ 
+         // ---- v0.16.2 (matches 18-19, docs/playtests/2026-11-04-v0.16.1-match19.md) ----------------------
+ 
++        private static void V018Rules()
++        {
++            // Human first by reach (match 21 T38: Shoe scored 1,450 and 43 through; the human 740 and 27 through).
++            StrategySettings hs = new StrategySettings();
++            Func<float, float, SalvoTarget> h = (score, passing) => new SalvoTarget { PlayerId = 0, IsHuman = true, Score = score, Passing = passing };
++            Check(Strategy.HumanFirstHolds(h(740f, 27f), 1450f, hs, 43f), "T38: 27 of the best 43 through (63%): the human");
++            Check(!Strategy.HumanFirstHolds(h(740f, 27f), 1450f, new StrategySettings { HumanFirstReachShare = 0f }, 43f), "reach share 0: score only, Shoe");
++            Check(!Strategy.HumanFirstHolds(h(740f, 10f), 1450f, hs, 43f), "10 of 43 (23%) is below 40%: the value rule");
++            Check(Strategy.HumanFirstHolds(h(740f, 17.2f), 1450f, hs, 43f), "exactly 40% counts");
++            Check(!Strategy.HumanFirstHolds(h(740f, 3f), 1450f, hs, 5f), "3 through is below the 4-shot floor even at 60% of the best");
++            Check(!Strategy.HumanFirstHolds(h(740f, 27f), 1450f, hs, -1f), "no best passing given: score only");
++            SalvoTarget lowYield = h(740f, 27f);
++            lowYield.LowYieldTurns = 9;
++            Check(!Strategy.HumanFirstHolds(lowYield, 1450f, new StrategySettings { LowYieldTurns = 2 }, 43f), "a low-yield human is left to the value rule");
++            Check(Strategy.HumanFirstHolds(h(1400f, 5f), 1450f, hs, 43f), "score path still works (1,400 >= 0.9 x 1,450)");
++
++            // Aim window: T52 of match 21, 4 of 28 aimed at 40 s while trajectories were still being found.
++            float t = AimWindow.Extend(39.5f, 40f, 37f, 4, 28, 0.8f, 15f, 90f, 2f);
++            Check(Math.Abs(t - 41.5f) < 1e-4f, "4 of 28 aimed and progress 2.5 s ago: push the window 2 s; got " + t);
++            Check(AimWindow.Extend(30f, 40f, 29f, 4, 28, 0.8f, 15f, 90f, 2f) == 40f, "not near the end yet: unchanged");
++            Check(AimWindow.Extend(39.5f, 40f, 20f, 4, 28, 0.8f, 15f, 90f, 2f) == 40f, "nothing new for 19.5 s (geometry): stop waiting");
++            Check(AimWindow.Extend(39.5f, 40f, 39f, 23, 28, 0.8f, 15f, 90f, 2f) == 40f, "23 of 28 >= 80%: enough");
++            Check(AimWindow.Extend(39.5f, 40f, 39f, 22, 28, 0.8f, 15f, 90f, 2f) > 40f, "22 of 28 < ceil(22.4): keep going");
++            Check(AimWindow.Extend(90f, 90f, 89f, 4, 28, 0.8f, 15f, 90f, 2f) == 90f, "hard cap 90 s");
++            Check(AimWindow.Extend(91f, 89f, 90.5f, 4, 28, 0.8f, 15f, 90f, 2f) == 89f, "timer past the cap: no more extension");
++            Check(Math.Abs(AimWindow.Extend(89f, 89.5f, 88f, 4, 28, 0.8f, 15f, 90f, 2f) - 90f) < 1e-4f, "never past the cap");
++            Check(AimWindow.Extend(39.5f, 40f, 39f, 0, 0, 0.8f, 15f, 90f, 2f) == 40f, "no weapons: unchanged");
++            Check(AimWindow.Extend(39.5f, 40f, 39f, 4, 28, 0.8f, 15f, 40f, 2f) == 40f, "cap not above the window (off): unchanged");
++        }
++
+         private static void V017Rules()
+         {
+             // Shelter: count the defenses over a spot (strictly inside the radius, as PlayerDefenseHandler.getDefenses).
+@@ -1596,7 +1627,7 @@ namespace InterplanetaryAI.Tests
+             Func<SalvoTarget> turing = () => new SalvoTarget { PlayerId = 2, Name = "Turing", Score = 0.44f, DefensesSeen = true, Shots = Railguns(18) };
+             StrategyDecision d = Strategy.Decide(29, true, Railguns(30), 1f, new List<SalvoTarget> { human(), turing() }, counters, 26, 0, 30, s, 0);
+             Check(d.CommitTargetId == 0 && d.HumanFirst, "the leading human is the commit, not the dying AI; got " + d.CommitTargetId);
+-            d = Strategy.Decide(29, true, Railguns(30), 1f, new List<SalvoTarget> { human(), turing() }, counters, 26, 0, 30, new StrategySettings { HumanFirstShare = 0f }, 0);
++            d = Strategy.Decide(29, true, Railguns(30), 1f, new List<SalvoTarget> { human(), turing() }, counters, 26, 0, 30, new StrategySettings { HumanFirstShare = 0f, HumanFirstReachShare = 0f }, 0);
+             Check(d.CommitTargetId == 2 && !d.HumanFirst, "HumanFirstShare 0: the v0.16.1 value rule picks Turing (the check can fail); got " + d.CommitTargetId);
+             SalvoTarget far = human();
+             far.Shots = Railguns(3);
+@@ -1605,8 +1636,10 @@ namespace InterplanetaryAI.Tests
+             SalvoTarget trailing = human();
+             trailing.Score = 0.5f;
+             SalvoTarget rival = new SalvoTarget { PlayerId = 2, Score = 1f, DefensesSeen = true, Shots = Railguns(19) };
++            d = Strategy.Decide(26, true, Railguns(40), 1f, new List<SalvoTarget> { trailing, rival }, counters, -1000, 0, 40, new StrategySettings { HumanFirstReachShare = 0f }, -1);
++            Check(d.CommitTargetId == 2 && !d.HumanFirst, "score only (v0.16.2): a human who does not lead is chosen by value; got " + d.CommitTargetId);
+             d = Strategy.Decide(26, true, Railguns(40), 1f, new List<SalvoTarget> { trailing, rival }, counters, -1000, 0, 40, s, -1);
+-            Check(d.CommitTargetId == 2 && !d.HumanFirst, "a human who does not lead is chosen by value only; got " + d.CommitTargetId);
++            Check(d.CommitTargetId == 0 && d.HumanFirst, "v0.18 reach: the trailing human with comparable reach is the commit; got " + d.CommitTargetId);
+             SalvoTarget close = human();
+             close.Score = 0.95f;
+             d = Strategy.Decide(26, true, Railguns(40), 1f, new List<SalvoTarget> { close, new SalvoTarget { PlayerId = 2, Score = 1f, DefensesSeen = true, Shots = Railguns(25) } },
+diff --git a/AI/tools/live_monitor.py b/AI/tools/live_monitor.py
+index 4012b14..29e256c 100644
+--- a/AI/tools/live_monitor.py
++++ b/AI/tools/live_monitor.py
+@@ -137,6 +137,10 @@ def main():
+                 top = ",".join(f"{k}{v}" for k, v in sorted(b.items(), key=lambda kv: -kv[1])[:5])
+                 print(f"T{r['t']} {r['ai']} [ORIGINAL lvl {r.get('lvl')}]: E/t {r.get('energyPerTurn')} M/t {r.get('materialPerTurn')} "
+                       f"sci {r.get('sciencePerTurn')} bld {sum(b.values())} [{top}] pop {r.get('population')} unspent E{r.get('energy')}", flush=True)
++            elif kind == "aim-search":
++                if r.get("live"):
++                    print(f"T{r['t']} {r['ai']}: AIM {r.get('found')}/{r.get('live')} in {r.get('seconds', 0):.0f}s (@20s {r.get('foundAt20')}, @40s {r.get('foundAt40')}; +{r.get('addedSeconds', 0):.0f}s, stop {r.get('stop') or '-'}; {r.get('fps', 0):.0f} fps)"
++                          f" unfound face {r.get('unfoundFacingDeg', -1):.0f} deg ({r.get('unfoundFacingAway')} >90) vs found {r.get('foundFacingDeg', -1):.0f}{' FIRE' if r.get('fire') else ''}", flush=True)
+             elif kind == "turn-start-error":
+                 print(f"T{r['t']} {r['ai']}: TURN-START ERROR in {r.get('module')} ({'swallowed' if r.get('swallowed', True) else 'passed on'}): {r.get('error')}", flush=True)
+             elif kind == "turn-start-missed":
+diff --git a/AI/AimWatch.cs b/AI/AimWatch.cs
+new file mode 100644
+index 0000000..c55dc88
+--- /dev/null
++++ b/AI/AimWatch.cs
+@@ -0,0 +1,192 @@
++using System;
++using System.Collections.Generic;
++using System.Reflection;
++using HarmonyLib;
++using Interplanetary.AI;
++using Interplanetary.AI.Trajectories;
++using Interplanetary.GameEngine;
++using Interplanetary.PlayerDataManagement;
++using Interplanetary.Prefabs;
++using Interplanetary.Weapons;
++using InterplanetaryAI.Brain;
++using UnityEngine;
++
++namespace InterplanetaryAI
++{
++    // v0.18 aim time (match 21): watches a Smarter AI's trajectory search every frame (postfix on AICore.Update) and, on a
++    // firing turn, pushes the AI's timeout out while the search is still finding trajectories (Brain AimWindow.Extend).
++    // At the end of the turn it logs an "aim-search" record: weapons searching / with a trajectory at 20 s, 40 s and at the
++    // end, search seconds and frames (frame rate), seconds added, why it stopped, and for the weapons left without a
++    // trajectory how far they face away from their target (angle between the weapon's outward normal and the direction
++    // to the target planet): the evidence for v0.18 weapon placement.
++    internal static class AimWatch
++    {
++        private static readonly FieldInfo s_timer = AccessTools.Field(typeof(AICore), "m_timeOutTimer");
++        private static readonly FieldInfo s_timeOut = AccessTools.Field(typeof(AICore), "m_timeOut");
++        private static readonly FieldInfo s_targeting = AccessTools.Field(typeof(AICore), "m_weaponTargeting");
++        private static readonly FieldInfo s_targetables = AccessTools.Field(typeof(AIWeaponTargeting), "m_targetableWeapons");
++
++        private sealed class Watch
++        {
++            public int Turn = -1;
++            public int LastFound = -1;
++            public float LastProgress;
++            public int Frames;
++            public int Live;
++            public int Found;
++            public int FoundAt20 = -1, FoundAt40 = -1;
++            public float LastTimer;
++            public float AddedSeconds;
++            public float BaseTimeout = -1f;
++            public string Stop = "";
++            public bool Fire;
++            public bool Logged;
++        }
++
++        private static readonly Dictionary<int, Watch> s_watch = new Dictionary<int, Watch>();
++
++        internal static void Reset()
++        {
++            s_watch.Clear();
++        }
++
++        internal static int Install(Harmony harmony)
++        {
++            try
++            {
++                MethodInfo target = AccessTools.DeclaredMethod(typeof(AICore), "Update");
++                if (target == null || s_timer == null || s_timeOut == null || s_targeting == null || s_targetables == null)
++                {
++                    Plugin.Log.LogWarning("Aim watch: a game member is missing; the aim window stays fixed.");
++                    return 0;
++                }
++                harmony.Patch(target, postfix: new HarmonyMethod(typeof(AimWatch), "CoreUpdatePostfix"));
++                return 1;
++            }
++            catch (Exception e)
++            {
++                Plugin.Log.LogError("Aim watch: failed to patch AICore.Update: " + e);
++                return 0;
++            }
++        }
++
++        private static void CoreUpdatePostfix(AICore __instance)
++        {
++            try
++            {
++                if (__instance == null || !Plugin.IsSmart(__instance.PlayerData)) return;
++                if (__instance.Status != AIStatus.TurnOngoing || __instance.IsReady) return;
++                int id = __instance.PlayerData.PlayerID;
++                int turn = GameManager.CurrentTurn;
++                Watch w;
++                if (!s_watch.TryGetValue(id, out w) || w.Turn != turn)
++                {
++                    w = new Watch { Turn = turn };
++                    s_watch[id] = w;
++                }
++                float timer = (float)s_timer.GetValue(__instance);
++                float timeout = (float)s_timeOut.GetValue(__instance);
++                if (w.BaseTimeout < 0f) w.BaseTimeout = timeout;
++                w.Frames++;
++                w.LastTimer = timer;
++                w.Fire = !StrategyPatches.HoldFire(id);
++
++                int live = 0, found = 0;
++                AIWeaponTargeting targeting = s_targeting.GetValue(__instance) as AIWeaponTargeting;
++                List<AITargetableWeapon> weapons = targeting != null ? s_targetables.GetValue(targeting) as List<AITargetableWeapon> : null;
++                if (weapons != null)
++                {
++                    foreach (AITargetableWeapon tw in weapons)
++                    {
++                        if (tw == null || tw.Weapon == null || tw.Weapon.IsLaser || tw.TrajectoryWeapon == null) continue;
++                        if (tw.Weapon.Building == null || tw.Weapon.Building.CurrentState != BaseBuilding.BuildingState.Normal) continue;
++                        live++;
++                        if (tw.TrajectoryWeapon.HasFoundPrimaryTargetTrajectory) found++;
++                    }
++                }
++                w.Live = live;
++                if (found > w.LastFound)
++                {
++                    w.LastFound = found;
++                    w.LastProgress = timer;
++                }
++                w.Found = found;
++                if (w.FoundAt20 < 0 && timer >= 20f) w.FoundAt20 = found;
++                if (w.FoundAt40 < 0 && timer >= 40f) w.FoundAt40 = found;
++
++                if (!w.Fire || !Plugin.AimExtend.Value) return;
++                float next = AimWindow.Extend(timer, timeout, w.LastProgress, found, live, Plugin.AimTargetShare.Value,
++                    Plugin.AimStallSeconds.Value, Plugin.AimingWindowMax.Value, 2f);
++                if (next > timeout)
++                {
++                    w.AddedSeconds += next - timeout;
++                    s_timeOut.SetValue(__instance, next);
++                }
++                else if (timer >= timeout - 2f)
++                {
++                    int needed = (int)Math.Ceiling(Math.Max(0f, Math.Min(1f, Plugin.AimTargetShare.Value)) * live);
++                    w.Stop = found >= needed ? "enough" : timer >= Plugin.AimingWindowMax.Value ? "cap" : timer - w.LastProgress >= Plugin.AimStallSeconds.Value ? "stalled" : "window";
++                }
++            }
++            catch (Exception e)
++            {
++                ReportOnce("aim-watch", e);
++            }
++        }
++
++        // Called from the end of a Smarter AI's turn (EconomyPatches.CoreEndTurnPostfix).
++        internal static void Log(AICore core)
++        {
++            try
++            {
++                Watch w;
++                if (core == null || !s_watch.TryGetValue(core.PlayerData.PlayerID, out w) || w.Turn != GameManager.CurrentTurn || w.Logged) return;
++                w.Logged = true;
++                int unfound = 0, facingAway = 0;
++                float unfoundAngle = 0f, foundAngle = 0f;
++                int foundN = 0;
++                AIWeaponTargeting targeting = s_targeting.GetValue(core) as AIWeaponTargeting;
++                List<AITargetableWeapon> weapons = targeting != null ? s_targetables.GetValue(targeting) as List<AITargetableWeapon> : null;
++                Vector3 own = core.Planet.transform.position;
++                if (weapons != null)
++                {
++                    foreach (AITargetableWeapon tw in weapons)
++                    {
++                        if (tw == null || tw.Weapon == null || tw.Weapon.IsLaser || tw.TrajectoryWeapon == null) continue;
++                        if (tw.Weapon.Building == null || tw.Weapon.Building.CurrentState != BaseBuilding.BuildingState.Normal) continue;
++                        CelestialBody target = tw.TrajectoryWeapon.TargetEnemy;
++                        if (target == null) continue;
++                        Vector2 pos = tw.Weapon.WeaponShootingPosition;
++                        Vector2 normal = new Vector2(pos.x - own.x, pos.y - own.z);
++                        Vector2 toTarget = new Vector2(target.transform.position.x - own.x, target.transform.position.z - own.z);
++                        float angle = Vector2.Angle(normal, toTarget);
++                        if (tw.TrajectoryWeapon.HasFoundPrimaryTargetTrajectory) { foundN++; foundAngle += angle; }
++                        else
++                        {
++                            unfound++;
++                            unfoundAngle += angle;
++                            if (angle > 90f) facingAway++;
++                        }
++                    }
++                }
++                Plugin.WriteDecision(new Json().Str("e", "aim-search").Int("t", w.Turn).Str("ai", core.PlayerData.UserNickName)
++                    .Bool("fire", w.Fire).Int("live", w.Live).Int("found", w.Found).Int("foundAt20", w.FoundAt20).Int("foundAt40", w.FoundAt40)
++                    .Num("seconds", w.LastTimer).Int("frames", w.Frames).Num("fps", w.LastTimer > 0f ? w.Frames / w.LastTimer : 0f)
++                    .Num("baseWindow", w.BaseTimeout).Num("addedSeconds", w.AddedSeconds).Num("lastProgress", w.LastProgress).Str("stop", w.Stop)
++                    .Num("foundFacingDeg", foundN > 0 ? foundAngle / foundN : -1f).Num("unfoundFacingDeg", unfound > 0 ? unfoundAngle / unfound : -1f)
++                    .Int("unfoundFacingAway", facingAway).ToString());
++            }
++            catch (Exception e)
++            {
++                ReportOnce("aim-search-log", e);
++            }
++        }
++
++        private static readonly HashSet<string> s_reported = new HashSet<string>();
++
++        private static void ReportOnce(string what, Exception e)
++        {
++            if (s_reported.Add(what)) Plugin.Log.LogError("Aim watch '" + what + "' failed (reported once): " + e);
++        }
++    }
++}

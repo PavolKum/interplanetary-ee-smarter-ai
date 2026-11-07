@@ -96,4 +96,31 @@ namespace InterplanetaryAI.Brain
             return Math.Max(MinSteps, Math.Min(MaxSteps, steps));
         }
     }
+
+    // v0.18 (match 21, docs/playtests/2026-11-07-v0.17.1-match21.md): on several firing turns only 4-13 of ~30 weapons found
+    // a trajectory onto the human. The search runs until the AI's window (AimingWindowSeconds) has passed and the human
+    // has ended the turn; a quick human turn (40-60 s late in the match) cut it short. The window is pushed out a little at a
+    // time while the search is still finding trajectories, up to a hard cap; weapons that cannot reach (wrong side of the
+    // planet) stop finding anything, so the stall test ends the wait instead of holding the human for nothing.
+    public static class AimWindow
+    {
+        // The AI's timeout after this frame: unchanged, or pushed `step` seconds past the timer.
+        // timer: seconds since the AI's turn began; timeout: the current window; lastProgress: timer when the count of
+        // weapons with a trajectory last rose; found / live: weapons with a trajectory / weapons searching.
+        public static float Extend(float timer, float timeout, float lastProgress, int found, int live, float targetShare,
+            float stallSeconds, float maxWindow, float step)
+        {
+            if (live <= 0 || maxWindow <= timeout) return timeout;
+            if (timer < timeout - Math.Max(0f, step)) return timeout;            // not near the end yet
+            if (timer >= maxWindow) return timeout;                                // hard cap
+            if (found >= (int)Math.Ceiling(Clamp01(targetShare) * live)) return timeout; // enough aimed
+            if (timer - lastProgress >= Math.Max(0f, stallSeconds)) return timeout; // stall budget spent (often geometry; not proof)
+            return Math.Min(maxWindow, timer + Math.Max(0.5f, step));
+        }
+
+        private static float Clamp01(float v)
+        {
+            return Math.Max(0f, Math.Min(1f, v));
+        }
+    }
 }

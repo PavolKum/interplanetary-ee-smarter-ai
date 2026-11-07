@@ -61,6 +61,7 @@ namespace InterplanetaryAI.Tests
             V0161Rules();
             V0162Rules();
             V017Rules();
+            V018Rules();
 
             Console.WriteLine(s_checks + " checks, " + s_failures + " failed");
             return s_failures == 0 ? 0 : 1;
@@ -1537,6 +1538,38 @@ namespace InterplanetaryAI.Tests
 
         // ---- v0.16.2 (matches 18-19, docs/playtests/2026-11-04-v0.16.1-match19.md) ----------------------
 
+        private static void V018Rules()
+        {
+            // Human first by reach (match 21 T38: Shoe scored 1,450 and 43 through; the human 740 and 27 through).
+            StrategySettings hs = new StrategySettings();
+            Func<float, float, SalvoTarget> h = (score, passing) => new SalvoTarget { PlayerId = 0, IsHuman = true, Score = score, Passing = passing };
+            Check(Strategy.HumanFirstHolds(h(740f, 27f), 1450f, hs, 43f), "T38: 27 of the best 43 through (63%): the human");
+            Check(!Strategy.HumanFirstHolds(h(740f, 27f), 1450f, new StrategySettings { HumanFirstReachShare = 0f }, 43f), "reach share 0: score only, Shoe");
+            Check(!Strategy.HumanFirstHolds(h(740f, 10f), 1450f, hs, 43f), "10 of 43 (23%) is below 40%: the value rule");
+            Check(Strategy.HumanFirstHolds(h(740f, 17.2f), 1450f, hs, 43f), "exactly 40% counts");
+            Check(!Strategy.HumanFirstHolds(h(740f, 3f), 1450f, hs, 5f), "3 through is below the 4-shot floor even at 60% of the best");
+            Check(!Strategy.HumanFirstHolds(h(740f, 27f), 1450f, hs, -1f), "no best passing given: score only");
+            SalvoTarget lowYield = h(740f, 27f);
+            lowYield.LowYieldTurns = 9;
+            Check(!Strategy.HumanFirstHolds(lowYield, 1450f, new StrategySettings { LowYieldTurns = 2 }, 43f), "a low-yield human is left to the value rule");
+            Check(Strategy.HumanFirstHolds(h(1400f, 5f), 1450f, hs, 43f), "score path still works (1,400 >= 0.9 x 1,450)");
+            Check(!Strategy.HumanFirstHolds(h(300f, 27f), 1450f, hs, 43f), "Terra #1: a minor human (0.21 of the best score) does not override a dominant rival");
+            Check(Strategy.HumanFirstHolds(h(508f, 27f), 1450f, hs, 43f), "0.35 of the best score with the reach: the human");
+
+            // Aim window: T52 of match 21, 4 of 28 aimed at 40 s while trajectories were still being found.
+            float t = AimWindow.Extend(39.5f, 40f, 37f, 4, 28, 0.8f, 15f, 90f, 2f);
+            Check(Math.Abs(t - 41.5f) < 1e-4f, "4 of 28 aimed and progress 2.5 s ago: push the window 2 s; got " + t);
+            Check(AimWindow.Extend(30f, 40f, 29f, 4, 28, 0.8f, 15f, 90f, 2f) == 40f, "not near the end yet: unchanged");
+            Check(AimWindow.Extend(39.5f, 40f, 20f, 4, 28, 0.8f, 15f, 90f, 2f) == 40f, "nothing new for 19.5 s (geometry): stop waiting");
+            Check(AimWindow.Extend(39.5f, 40f, 39f, 23, 28, 0.8f, 15f, 90f, 2f) == 40f, "23 of 28 >= 80%: enough");
+            Check(AimWindow.Extend(39.5f, 40f, 39f, 22, 28, 0.8f, 15f, 90f, 2f) > 40f, "22 of 28 < ceil(22.4): keep going");
+            Check(AimWindow.Extend(90f, 90f, 89f, 4, 28, 0.8f, 15f, 90f, 2f) == 90f, "hard cap 90 s");
+            Check(AimWindow.Extend(91f, 89f, 90.5f, 4, 28, 0.8f, 15f, 90f, 2f) == 89f, "timer past the cap: no more extension");
+            Check(Math.Abs(AimWindow.Extend(89f, 89.5f, 88f, 4, 28, 0.8f, 15f, 90f, 2f) - 90f) < 1e-4f, "never past the cap");
+            Check(AimWindow.Extend(39.5f, 40f, 39f, 0, 0, 0.8f, 15f, 90f, 2f) == 40f, "no weapons: unchanged");
+            Check(AimWindow.Extend(39.5f, 40f, 39f, 4, 28, 0.8f, 15f, 40f, 2f) == 40f, "cap not above the window (off): unchanged");
+        }
+
         private static void V017Rules()
         {
             // Shelter: count the defenses over a spot (strictly inside the radius, as PlayerDefenseHandler.getDefenses).
@@ -1596,7 +1629,7 @@ namespace InterplanetaryAI.Tests
             Func<SalvoTarget> turing = () => new SalvoTarget { PlayerId = 2, Name = "Turing", Score = 0.44f, DefensesSeen = true, Shots = Railguns(18) };
             StrategyDecision d = Strategy.Decide(29, true, Railguns(30), 1f, new List<SalvoTarget> { human(), turing() }, counters, 26, 0, 30, s, 0);
             Check(d.CommitTargetId == 0 && d.HumanFirst, "the leading human is the commit, not the dying AI; got " + d.CommitTargetId);
-            d = Strategy.Decide(29, true, Railguns(30), 1f, new List<SalvoTarget> { human(), turing() }, counters, 26, 0, 30, new StrategySettings { HumanFirstShare = 0f }, 0);
+            d = Strategy.Decide(29, true, Railguns(30), 1f, new List<SalvoTarget> { human(), turing() }, counters, 26, 0, 30, new StrategySettings { HumanFirstShare = 0f, HumanFirstReachShare = 0f }, 0);
             Check(d.CommitTargetId == 2 && !d.HumanFirst, "HumanFirstShare 0: the v0.16.1 value rule picks Turing (the check can fail); got " + d.CommitTargetId);
             SalvoTarget far = human();
             far.Shots = Railguns(3);
@@ -1605,8 +1638,10 @@ namespace InterplanetaryAI.Tests
             SalvoTarget trailing = human();
             trailing.Score = 0.5f;
             SalvoTarget rival = new SalvoTarget { PlayerId = 2, Score = 1f, DefensesSeen = true, Shots = Railguns(19) };
+            d = Strategy.Decide(26, true, Railguns(40), 1f, new List<SalvoTarget> { trailing, rival }, counters, -1000, 0, 40, new StrategySettings { HumanFirstReachShare = 0f }, -1);
+            Check(d.CommitTargetId == 2 && !d.HumanFirst, "score only (v0.16.2): a human who does not lead is chosen by value; got " + d.CommitTargetId);
             d = Strategy.Decide(26, true, Railguns(40), 1f, new List<SalvoTarget> { trailing, rival }, counters, -1000, 0, 40, s, -1);
-            Check(d.CommitTargetId == 2 && !d.HumanFirst, "a human who does not lead is chosen by value only; got " + d.CommitTargetId);
+            Check(d.CommitTargetId == 0 && d.HumanFirst, "v0.18 reach: the trailing human with comparable reach is the commit; got " + d.CommitTargetId);
             SalvoTarget close = human();
             close.Score = 0.95f;
             d = Strategy.Decide(26, true, Railguns(40), 1f, new List<SalvoTarget> { close, new SalvoTarget { PlayerId = 2, Score = 1f, DefensesSeen = true, Shots = Railguns(25) } },

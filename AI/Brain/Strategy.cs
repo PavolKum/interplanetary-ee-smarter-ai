@@ -97,6 +97,14 @@ namespace InterplanetaryAI.Brain
         // (v0.10.1: the softer human over the higher-scored rival). 0 = off.
         public float HumanFirstShare = 0.9f;
         public float HumanFirstMinPassing = 4f;
+        // v0.18 (match 21): or by reach. The score's finishing and grudge terms lifted dying AIs above the human (T38 Shoe 1,450
+        // vs the human 740) while 27-28 of 32 shots would have reached him; finishing an AI gains nothing. The human is also
+        // the commit when his expected shots through are at least this share of the best target's (and HumanFirstMinPassing).
+        // 0 = off (v0.16.2: score only).
+        public float HumanFirstReachShare = 0.4f;
+        // Terra v0.18 #1: the reach path also needs the human's score to be at least this share of the best score, so a
+        // far more dangerous rival is not ignored for a reachable but minor human (T38: 740 / 1,450 = 0.51 passes).
+        public float HumanFirstReachMinScore = 0.35f;
         // v0.16.2 (match 19): holding fire gives the firing energy to construction; when last turn already ended with at
         // least this turn's firing cost unspent, holding buys nothing. T21-T25 all three AIs held below saturation with
         // 0.8-41k energy unspent each turn, and fired blind on max-hold at T26. Fire instead ("free-fire"), when at least
@@ -291,12 +299,15 @@ namespace InterplanetaryAI.Brain
         }
 
         // v0.16.2: the leading human is the commit when enough of the salvo reaches through his defenses (HumanFirstShare).
-        public static bool HumanFirstHolds(SalvoTarget human, float maxScore, StrategySettings s)
+        public static bool HumanFirstHolds(SalvoTarget human, float maxScore, StrategySettings s, float maxPassing = -1f)
         {
             // A human our weapons found almost no trajectory onto (v0.12 low yield) is left to the value rule, which discounts him.
-            return human != null && s.HumanFirstShare > 0f && maxScore > 0f && human.Score >= s.HumanFirstShare * maxScore
-                && human.Passing >= Math.Max(0.01f, s.HumanFirstMinPassing)
-                && !(s.LowYieldTurns > 0 && human.LowYieldTurns >= s.LowYieldTurns);
+            if (human == null || human.Passing < Math.Max(0.01f, s.HumanFirstMinPassing)) return false;
+            if (s.LowYieldTurns > 0 && human.LowYieldTurns >= s.LowYieldTurns) return false;
+            bool byScore = s.HumanFirstShare > 0f && maxScore > 0f && human.Score >= s.HumanFirstShare * maxScore;
+            bool byReach = s.HumanFirstReachShare > 0f && maxPassing > 0f && human.Passing >= s.HumanFirstReachShare * maxPassing // v0.18
+                && maxScore > 0f && human.Score >= Math.Max(0f, s.HumanFirstReachMinScore) * maxScore;
+            return byScore || byReach;
         }
 
         public static bool Attrition(int weapons, int lastWeapons, bool underAttack, StrategySettings s)
@@ -316,13 +327,14 @@ namespace InterplanetaryAI.Brain
             IDictionary<int, int> lastPhaseImpactsBy = null, float freeEnergy = -1f, float firingCost = 0f)
         {
             StrategyDecision d = new StrategyDecision { War = war, Shots = weapons };
-            float maxScore = 0f;
+            float maxScore = 0f, maxPassing = 0f;
             SalvoTarget human = null;
             foreach (SalvoTarget t in targets)
             {
                 EstimateSalvo(salvo, t, accuracy, counters, s, accuracyById);
                 d.Targets.Add(t);
                 maxScore = Math.Max(maxScore, t.Score);
+                maxPassing = Math.Max(maxPassing, t.Passing); // v0.18
                 if (t.IsHuman && human == null) human = t;
             }
             SalvoTarget best = null, previous = null;
@@ -336,7 +348,7 @@ namespace InterplanetaryAI.Brain
             // Stay on last turn's target unless another is clearly better: a new target costs a turn of aiming.
             if (previous != null && best != previous && best.Value < s.CommitStickiness * previous.Value) best = previous;
             // v0.16.2: the leading human is the commit whenever enough of the salvo reaches him (HumanFirstShare).
-            if (HumanFirstHolds(human, maxScore, s))
+            if (HumanFirstHolds(human, maxScore, s, maxPassing))
             {
                 d.HumanFirst = true;
                 best = human;

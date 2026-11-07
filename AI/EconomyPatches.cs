@@ -663,6 +663,7 @@ namespace InterplanetaryAI
             try
             {
                 AiEconomyState state;
+                AimWatch.Log(__instance); // v0.18 (Terra #4: independent of the economy state)
                 if (!States.TryGetValue(__instance.PlayerData.PlayerID, out state)) return;
                 if (Plugin.DirectorEnabled.Value) DirectorPatches.EndTurn(__instance);
                 Plugin.WriteDecision(new Json().Str("e", "build").Int("t", GameManager.CurrentTurn).Str("ai", __instance.PlayerData.UserNickName)

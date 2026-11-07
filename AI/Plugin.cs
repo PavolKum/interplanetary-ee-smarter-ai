@@ -24,7 +24,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.17.2";
+        public const string VERSION = "0.18.0";
 
         internal static ManualLogSource Log;
 
@@ -103,6 +103,12 @@ namespace InterplanetaryAI
         internal static ConfigEntry<float> AbortBelowShare;
         internal static ConfigEntry<int> AbortBelowWeapons;
         internal static ConfigEntry<float> AimingWindowSeconds;
+        internal static ConfigEntry<bool> AimExtend;                 // v0.18
+        internal static ConfigEntry<float> HumanFirstReachShare;     // v0.18
+        internal static ConfigEntry<float> HumanFirstReachMinScore;  // v0.18 (Terra #1)
+        internal static ConfigEntry<float> AimingWindowMax;          // v0.18
+        internal static ConfigEntry<float> AimTargetShare;           // v0.18
+        internal static ConfigEntry<float> AimStallSeconds;          // v0.18
         internal static ConfigEntry<float> AttritionLossShare;
         internal static ConfigEntry<float> ReturnFirePassShare;
         internal static ConfigEntry<float> ReturnFireMinPassing;
@@ -511,6 +517,11 @@ namespace InterplanetaryAI
             AbortBelowWeapons = Config.Bind("Strategy", "AbortBelowWeapons", 3, "v0.12: call a strike off when fewer than this many weapons found a trajectory onto the committed target.");
             AimingWindowSeconds = Config.Bind("Strategy", "AimingWindowSeconds", 40f,
                 "v0.12: on a strike turn the AI keeps searching for trajectories until this many seconds after its turn began, or the human ends the turn if later (the game: 20). Hold turns keep 20. Longer = more weapons aimed, more waiting between turns. 20-120.");
+            AimExtend = Config.Bind("Strategy", "AimExtend", true,
+                "v0.18: on a firing turn keep searching for trajectories past AimingWindowSeconds while fewer than AimTargetShare of the weapons have one and the search found a new one within AimStallSeconds, up to AimingWindowMax. Match 21: 4-13 of ~30 weapons aimed on several firing turns.");
+            AimingWindowMax = Config.Bind("Strategy", "AimingWindowMax", 90f, "v0.18: hard cap (seconds since the AI's turn began) for the extended aim window. The wait only shows when the human ends the turn before it.");
+            AimTargetShare = Config.Bind("Strategy", "AimTargetShare", 0.8f, "v0.18: stop extending once this share of the weapons has a trajectory.");
+            AimStallSeconds = Config.Bind("Strategy", "AimStallSeconds", 15f, "v0.18: stall budget - stop extending when no new trajectory was found for this many seconds. A heuristic (random search or a low frame rate can also stall), not proof that the rest cannot reach.");
             AttritionLossShare = Config.Bind("Strategy", "AttritionLossShare", 0.15f,
                 "v0.14: fire whatever aims when our live weapons dropped since last turn by at least this share (and at least 2), pulse or not. v0.13.1 Guts held at 26 -> 17 -> 11 -> 10 weapons while the human destroyed them unfired. 0 = off.");
             ReturnFirePassShare = Config.Bind("Strategy", "ReturnFirePassShare", 0.6f,
@@ -699,6 +710,8 @@ namespace InterplanetaryAI
             HumanFirstShare = Config.Bind("Strategy", "HumanFirstShare", 0.9f,
                 "v0.16.2: the human is the commit target when his score is at least this share of the best enemy score and HumanFirstMinPassing shots are expected through his defenses. Match 19: Asona saw two human cities and still struck the dying AIs (passing x a leader bonus capped at 1.5). A human who does not lead is still chosen by value. 0 = off.");
             HumanFirstMinPassing = Config.Bind("Strategy", "HumanFirstMinPassing", 4f, "v0.16.2: fewest expected shots through the human's defenses for the human-first commit.");
+            HumanFirstReachShare = Config.Bind("Strategy", "HumanFirstReachShare", 0.4f, "v0.18: the human is also the commit when his expected shots through are at least this share of the best target's (match 21: volleys went to dying AIs while 27-28 of 32 would have reached him). 0 = score only.");
+            HumanFirstReachMinScore = Config.Bind("Strategy", "HumanFirstReachMinScore", 0.35f, "v0.18 (Terra #1): the reach path also needs the human's score >= this share of the best target's score, so a far more dangerous rival is not ignored.");
             FreeFire = Config.Bind("Strategy", "FreeFire", true,
                 "v0.16.2: fire instead of holding when last turn's construction already left at least this turn's firing cost unspent and this turn's energy still covers last turn's use (holding would only add to unspent energy). Match 19 held T21-T25 with 0.8-41k energy unspent a turn.");
             FreeFireMinPassing = Config.Bind("Strategy", "FreeFireMinPassing", 4f, "v0.16.2: fewest expected shots through the commit's defenses for free fire.");
@@ -772,7 +785,8 @@ namespace InterplanetaryAI
             if (EnableLasers.Value && !everyLevelSmart) Log.LogWarning("Lasers stay off: SmartLevels does not cover every level, and the laser patches would change the original AIs.");
             int laserPatches = EnableLasers.Value && everyLevelSmart ? LaserPatches.Install(new Harmony(GUID + ".lasers")) : 0;
             int guards = TurnGuard.Install(m_harmony); // v0.17
-            Log.LogInfo(NAME + " " + VERSION + " loaded; " + patched + " of 16 hooks patched; turn guard " + guards + " of 9. Director " + (DirectorEnabled.Value ? "on" : "off")
+            int aimWatch = AimWatch.Install(m_harmony); // v0.18
+            Log.LogInfo(NAME + " " + VERSION + " loaded; " + patched + " of 16 hooks patched; turn guard " + guards + " of 9; aim watch " + aimWatch + " of 1. Director " + (DirectorEnabled.Value ? "on" : "off")
                 + ", war from turn " + WarFromTurn.Value + ". Accuracy by level: " + AccuracyByLevel.Value
                 + "; research plan " + ResearchPlanIds.Count + " techs; superweapons " + Superweapons.Value
                 + "; lasers " + (EnableLasers.Value ? laserPatches + " of 5 patches" : "off"));
@@ -831,6 +845,8 @@ namespace InterplanetaryAI
             StrategyCfg.PrecisionKillShare = Math.Max(0f, PrecisionKillShare.Value);
             StrategyCfg.HumanFirstShare = Math.Max(0f, HumanFirstShare.Value);
             StrategyCfg.HumanFirstMinPassing = Math.Max(0f, HumanFirstMinPassing.Value);
+            StrategyCfg.HumanFirstReachShare = Math.Max(0f, Math.Min(1f, HumanFirstReachShare.Value));
+            StrategyCfg.HumanFirstReachMinScore = Math.Max(0f, Math.Min(1f, HumanFirstReachMinScore.Value));
             StrategyCfg.FreeFire = FreeFire.Value;
             StrategyCfg.FreeFireMinPassing = Math.Max(0f, FreeFireMinPassing.Value);
 
@@ -910,6 +926,7 @@ namespace InterplanetaryAI
             EconomyPatches.Reset();
             StrategyPatches.Reset();
             AiPatches.ResetCombatMemory(); // v0.15.1 (Sol v0.15 #7)
+            AimWatch.Reset(); // v0.18
         }
 
         internal static void WriteDecision(string json)
