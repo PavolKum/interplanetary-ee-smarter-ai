@@ -1823,7 +1823,13 @@ namespace InterplanetaryAI
             if (!IsPermanent(p))
             {
                 if (p.id.Value == SstarProject) return true; // SSTAR shares the priority (Jamming into SSTAR)
-                if (p.id.Value == RareMaterialProject && d.RareMaterialActive >= Math.Max(0, Plugin.RareMaterialMax.Value)) return false;
+                if (p.id.Value == RareMaterialProject)
+                {
+                    // v0.17: build-up only, ending by the war (Pavol's timing), then SSTAR; still leaves the Jamming room.
+                    int duration = p.duration != null && p.duration.IsValueSet ? p.duration.Value : 6;
+                    if (!SlotPolicy.RareMaterialAllowed(d.RareMaterialActive, Plugin.RareMaterialMax.Value, d.Turn, duration, d.WarTurn,
+                        Plugin.RareMaterialEndLead.Value, d.War)) return false;
+                }
                 return leavesJamming;
             }
             // v0.16.1: a permanent science project skips the opening cap (match 17: half the human's science).
@@ -2543,12 +2549,32 @@ namespace InterplanetaryAI
                 DefenseCoverage.CityCoverRing(model.Radius, ownRadius, 2f * model.Loss[ci], 0.1f, out inner, out outer);
                 if (outer <= inner) continue; // this defense cannot protect this city from anywhere
                 Vector3 up = (cityPos - planetCentre).normalized;
-                Vector3 t1 = Vector3.Cross(up, Mathf.Abs(up.y) < 0.9f ? Vector3.up : Vector3.right).normalized;
-                Vector3 t2 = Vector3.Cross(up, t1);
-                float angle = (float)(Plugin.Rng.NextDouble() * Math.PI * 2.0);
-                float distance = inner + (float)Plugin.Rng.NextDouble() * (outer - inner);
-                Vector3 world = cityPos + (t1 * Mathf.Cos(angle) + t2 * Mathf.Sin(angle)) * distance + up * 2f;
-                Ray ray = new Ray(world, -up);
+                Vector3 world;
+                Ray ray;
+                BaseBuilding nearAnchor = Plugin.AnchorRingShare.Value > 0f && Plugin.Rng.NextDouble() < Plugin.AnchorRingShare.Value
+                    ? RingAnchor(bases, cityPos, outer, ownRadius, ownReach) : null;
+                if (nearAnchor != null)
+                {
+                    // v0.17: around a power anchor that can reach the ring (match 20: about half the ring spots had no anchor
+                    // in line range, and 5 of 9 city-cover searches gave up). ClosesCityDeficit below still decides.
+                    float aInner = ownRadius + nearAnchor.Radius;
+                    float aOuter = Math.Max(aInner, (ownRadius + nearAnchor.Radius + Math.Max(ownReach, nearAnchor.Power.PowerConnectorRange)) * 0.9f);
+                    float aDistance = aInner + (float)Plugin.Rng.NextDouble() * (aOuter - aInner);
+                    float aAngle = (float)(Plugin.Rng.NextDouble() * Math.PI * 2.0);
+                    world = nearAnchor.transform.TransformPoint(new Vector3((float)Math.Cos(aAngle), 0f, (float)Math.Sin(aAngle)) * aDistance);
+                    Vector3 down = (planetCentre - world).normalized;
+                    world += -down * 2f;
+                    ray = new Ray(world, down);
+                }
+                else
+                {
+                    Vector3 t1 = Vector3.Cross(up, Mathf.Abs(up.y) < 0.9f ? Vector3.up : Vector3.right).normalized;
+                    Vector3 t2 = Vector3.Cross(up, t1);
+                    float angle = (float)(Plugin.Rng.NextDouble() * Math.PI * 2.0);
+                    float distance = inner + (float)Plugin.Rng.NextDouble() * (outer - inner);
+                    world = cityPos + (t1 * Mathf.Cos(angle) + t2 * Mathf.Sin(angle)) * distance + up * 2f;
+                    ray = new Ray(world, -up);
+                }
                 st.Tries++;
                 s_candidatesThisFrame++;
                 if (!core.Construction.IsBuildingPlacementValid(data, core.Planet, ray)) { st.Invalid++; continue; }
@@ -2585,6 +2611,19 @@ namespace InterplanetaryAI
             s_setSearchComplete.Invoke(search, new object[] { true });
             LogCoverSearch(core, st, "placed");
             return true;
+        }
+
+        // v0.17: a random power anchor whose line range reaches the city's cover ring (within outer + its line limit of the
+        // city), or null.
+        private static BaseBuilding RingAnchor(List<BaseBuilding> bases, Vector3 cityPos, float outer, float ownRadius, float ownReach)
+        {
+            List<BaseBuilding> near = new List<BaseBuilding>();
+            foreach (BaseBuilding b in bases)
+            {
+                float lineLimit = ownRadius + b.Radius + Math.Max(ownReach, b.Power.PowerConnectorRange);
+                if (Vector3.Distance(b.transform.position, cityPos) <= outer + lineLimit) near.Add(b);
+            }
+            return near.Count > 0 ? near[Plugin.Rng.Next(near.Count)] : null;
         }
 
         private static void LogCoverSearch(AICore core, CoverageState st, string outcome)
@@ -2639,6 +2678,231 @@ namespace InterplanetaryAI
             }
         }
 
+        // ---- v0.17 shelter placement (match 20: Pavol's layout) ------------------------------------------------------
+        // Every non-defense building goes inside existing defense cover when a covered, legal, connected spot exists (Brain/
+        // Coverage.cs Shelter); with no defenses yet, as close to a city as possible. The anchors are the game's own (the
+        // buildings this one would connect to), so power connection works as natively. Water buildings sampled around any
+        // own building end up on the shoreline next to the land base instead of on random open water (v0.6 plants) or at
+        // the end of an offshore chain. After ShelterCoveredSteps steps without cover, the best uncovered spot is taken;
+        // after twice that with no legal spot at all, the old placement runs.
+        private static readonly MethodInfo s_findNeedPower = AccessTools.Method(typeof(AIBuildingPlacementSearch), "findBuildingsThatNeedPower");
+        private static readonly MethodInfo s_findWithPower = AccessTools.Method(typeof(AIBuildingPlacementSearch), "findBuildingsWithAvailablePower");
+        private static readonly Dictionary<AIBuildingPlacementSearch, int> s_shelterSteps = new Dictionary<AIBuildingPlacementSearch, int>();
+
+        private sealed class ShelterModel
+        {
+            public readonly List<Point> Defenses = new List<Point>();
+            public readonly List<float> Radii = new List<float>();
+            public readonly List<Point> Cities = new List<Point>();
+            public readonly List<float> CityRadii = new List<float>();
+            public float RefRadius;
+        }
+
+        // Terra v0.17 M3: one snapshot per AI per frame (several searches step in the same frame), and a candidate budget of
+        // its own so shelter searches never use up the defense searches' budget.
+        private const int ShelterCandidatesPerFrame = 60;
+        private static int s_shelterFrame = -1;
+        private static int s_shelterThisFrame;
+        private static readonly Dictionary<int, ShelterModel> s_shelterModels = new Dictionary<int, ShelterModel>();
+
+        private static ShelterModel ShelterModelFor(AICore core)
+        {
+            if (Time.frameCount != s_shelterFrame)
+            {
+                s_shelterFrame = Time.frameCount;
+                s_shelterThisFrame = 0;
+                s_shelterModels.Clear();
+            }
+            ShelterModel m;
+            if (!s_shelterModels.TryGetValue(core.PlayerData.PlayerID, out m))
+            {
+                m = BuildShelterModel(core);
+                s_shelterModels[core.PlayerData.PlayerID] = m;
+            }
+            return m;
+        }
+
+        private static ShelterModel BuildShelterModel(AICore core)
+        {
+            ShelterModel m = new ShelterModel();
+            BuildingsData buildings = GameDataFileManager.GetDataFile<BuildingsData>();
+            foreach (BaseBuilding b in core.PlayerData.BuildingHandler.Buildings)
+            {
+                if (b == null || b.CurrentState == BaseBuilding.BuildingState.Ruins || b.CurrentState == BaseBuilding.BuildingState.Destroyed) continue;
+                Vector3 p = b.transform.position;
+                if (b.IsCity) { m.Cities.Add(new Point(p.x, p.y, p.z)); m.CityRadii.Add(b.Radius); continue; }
+                if (b.BuildingData == null || !b.BuildingData.defense_functionality.IsValueSet) continue;
+                float r = b.Stats != null && b.Stats.Defenses != null ? b.Stats.Defenses.Radius : 0f;
+                if (r <= 0f) r = DefenseRadius(b.BuildingData);
+                if (r <= 0f) continue;
+                m.Defenses.Add(new Point(p.x, p.y, p.z));
+                m.Radii.Add(r);
+            }
+            foreach (AIConstructBuildingAction action in core.Actions.ConstructedBuildings)
+            {
+                if (action == null || action.BuildingPlacementResult == null || action.BuildingPlacementResult.Result == null) continue;
+                BuildingData queued = buildings != null && buildings.HasBuilding(action.BuildingID) ? buildings.GetBuilding(action.BuildingID) : null;
+                if (queued == null || !queued.defense_functionality.IsValueSet) continue;
+                float r = DefenseRadius(queued);
+                if (r <= 0f) continue;
+                Vector3 p = action.BuildingPlacementResult.Result.BuildingWorldPosition;
+                m.Defenses.Add(new Point(p.x, p.y, p.z));
+                m.Radii.Add(r);
+            }
+            foreach (float r in m.Radii) m.RefRadius = Math.Max(m.RefRadius, r);
+            if (m.RefRadius <= 0f && buildings != null && buildings.HasBuilding("bui_KineticDefense"))
+                m.RefRadius = DefenseRadius(buildings.GetBuilding("bui_KineticDefense"));
+            return m;
+        }
+
+        private static bool ShelterStep(AIBuildingPlacementSearch search, BuildingData data, AICore core)
+        {
+            try
+            {
+                return ShelterStepUnsafe(search, data, core);
+            }
+            catch (Exception e)
+            {
+                ReportOnce("shelter-placement", e);
+                return false; // the old placement takes this step
+            }
+        }
+
+        private static bool ShelterStepUnsafe(AIBuildingPlacementSearch search, BuildingData data, AICore core)
+        {
+            if (s_shelterSteps.Count > 300) s_shelterSteps.Clear(); // finished searches are never removed otherwise
+            int steps;
+            s_shelterSteps.TryGetValue(search, out steps);
+            int coveredSteps = Math.Max(0, Plugin.ShelterCoveredSteps.Value);
+            if (steps > 2 * coveredSteps + 2) return false; // nothing legal for many steps: the old placement from here on
+
+            ShelterModel model = ShelterModelFor(core); // also resets the shelter budget on a new frame
+            if (s_shelterThisFrame >= ShelterCandidatesPerFrame) return true; // wait for the next frame (not a step)
+
+            bool water = IsWaterOnly(data);
+            bool needsGrid = search.m_needsPowerGrid;
+            List<BaseBuilding> all = core.PlayerData.BuildingHandler.Buildings;
+            List<BaseBuilding> anchors = new List<BaseBuilding>();
+            if (all.Count > 0) (needsGrid ? s_findWithPower : s_findNeedPower).Invoke(search, new object[] { all, anchors });
+            // A plant connects to a building that needs power (native). A water plant keeps the v0.6 rule (no power line, so
+            // it takes no anchor slot the director counted as free) and so does a land plant with nothing to power.
+            bool connect = needsGrid || (!water && anchors.Count > 0);
+            if (!connect)
+            {
+                anchors.Clear();
+                foreach (BaseBuilding b in all)
+                {
+                    if (b != null && b.CurrentState == BaseBuilding.BuildingState.Normal) anchors.Add(b);
+                }
+            }
+            if (anchors.Count == 0) return false; // native: a random spot
+
+            s_shelterSteps[search] = ++steps;
+            s_searchSteps.SetValue(search, (int)s_searchSteps.GetValue(search) + 1); // the abandon valve counts every step
+
+            float scale = data.building_scale.IsValueSet ? data.building_scale.Value : 1f;
+            float ownRadius = (data.building_radius.IsValueSet ? data.building_radius.Value : 1f) * scale;
+            float ownReach = data.power_connector_range.IsValueSet ? data.power_connector_range.Value : 1000f;
+            float looseReach = model.RefRadius > 0f ? model.RefRadius : 10f;
+            int coverCap = Math.Max(1, Plugin.ShelterCoverCap.Value);
+            float keepOut = Math.Max(0f, Plugin.ShelterCityKeepOut.Value) * looseReach;
+            Vector3 planetCentre = core.Planet.transform.position;
+
+            // Two thirds of the candidates around anchors that are themselves under cover (the base interior), the rest
+            // around any anchor.
+            List<BaseBuilding> covered = new List<BaseBuilding>();
+            foreach (BaseBuilding b in anchors)
+            {
+                Vector3 p = b.transform.position;
+                if (Shelter.CoverCount(new Point(p.x, p.y, p.z), model.Defenses, model.Radii) > 0) covered.Add(b);
+            }
+
+            float bestScore = -1f;
+            int bestCover = 0;
+            BuildingPlacementResult bestResult = null;
+            BaseBuilding bestAnchor = null;
+            for (int n = 0; n < CoverageCandidatesPerStep; n++)
+            {
+                List<BaseBuilding> pool = covered.Count > 0 && n % 3 != 2 ? covered : anchors;
+                BaseBuilding anchor = pool[Plugin.Rng.Next(pool.Count)];
+                float inner = ownRadius + anchor.Radius;
+                float lineLimit = ownRadius + anchor.Radius + Math.Max(ownReach, anchor.Power.PowerConnectorRange);
+                float outer = connect ? lineLimit * 0.9f : anchor.Radius + ownRadius + looseReach;
+                if (outer < inner) outer = inner;
+                float distance = inner + (float)Plugin.Rng.NextDouble() * (outer - inner);
+                float angle = (float)(Plugin.Rng.NextDouble() * Math.PI * 2.0);
+                Vector3 world = anchor.transform.TransformPoint(new Vector3((float)Math.Cos(angle), 0f, (float)Math.Sin(angle)) * distance);
+                Vector3 down = (planetCentre - world).normalized;
+                world += -down * 2f;
+                Ray ray = new Ray(world, down);
+                s_shelterThisFrame++;
+                if (!core.Construction.IsBuildingPlacementValid(data, core.Planet, ray)) continue;
+                BuildingPlacementResult placed = core.PlayerData.BuildingHandler.TryPlaceBuilding(data, ray, core.Planet, null);
+                if (placed == null || !placed.IsSuccessful) continue;
+                Vector3 at = placed.BuildingWorldPosition;
+                if (connect && Vector3.Distance(at, anchor.transform.position) > lineLimit) continue; // the line would be refused
+                Point atPoint = new Point(at.x, at.y, at.z);
+                float cityEdge = Shelter.NearestEdge(atPoint, model.Cities, model.CityRadii);
+                if (steps <= coveredSteps && Shelter.InKeepOut(cityEdge, keepOut)) continue; // the city's own defense ground
+                int cover = Shelter.CoverCount(atPoint, model.Defenses, model.Radii);
+                float score = Shelter.Score(cover, coverCap, cityEdge, 2f * looseReach);
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestCover = cover;
+                    bestResult = placed;
+                    bestAnchor = anchor;
+                }
+            }
+            if (bestResult == null) return true; // nothing legal this step: try again next step
+            if (!Shelter.Accept(bestCover, steps, coveredSteps, model.Defenses.Count)) return true;
+
+            AIBuildingPlacementResult result = (AIBuildingPlacementResult)s_searchResult.GetValue(search);
+            result.Result = bestResult;
+            if (connect)
+            {
+                result.PowerGridConnection = bestAnchor.Power;
+                if (!needsGrid && core.PowerGrid.IsBuildingRequiringPower(bestAnchor)) core.PowerGrid.TryRegisterBuildingPowered(bestAnchor); // as native
+            }
+            s_setSearchComplete.Invoke(search, new object[] { true });
+            s_shelterSteps.Remove(search);
+            CountShelter(core.PlayerData.PlayerID, bestCover > 0);
+            return true;
+        }
+
+        // Per-turn tally for the director log: placements that landed under cover vs. not.
+        private static readonly Dictionary<int, int[]> s_shelterTally = new Dictionary<int, int[]>();
+
+        private static void CountShelter(int playerId, bool covered)
+        {
+            int[] t;
+            if (!s_shelterTally.TryGetValue(playerId, out t))
+            {
+                t = new int[2];
+                s_shelterTally[playerId] = t;
+            }
+            t[covered ? 0 : 1]++;
+        }
+
+        // Share of the AI's non-defense, non-city buildings under at least one own defense (the number the human's layout
+        // maximises), and the same for cities.
+        private static void CoveredShares(AICore core, out float buildings, out float cities)
+        {
+            ShelterModel model = BuildShelterModel(core);
+            int n = 0, inside = 0, nc = 0, insideC = 0;
+            foreach (BaseBuilding b in core.PlayerData.BuildingHandler.Buildings)
+            {
+                if (b == null || b.CurrentState == BaseBuilding.BuildingState.Ruins || b.CurrentState == BaseBuilding.BuildingState.Destroyed) continue;
+                if (!b.IsCity && b.BuildingData != null && b.BuildingData.defense_functionality.IsValueSet) continue;
+                Vector3 p = b.transform.position;
+                bool under = Shelter.CoverCount(new Point(p.x, p.y, p.z), model.Defenses, model.Radii) > 0;
+                if (b.IsCity) { nc++; if (under) insideC++; }
+                else { n++; if (under) inside++; }
+            }
+            buildings = n > 0 ? (float)inside / n : 1f;
+            cities = nc > 0 ? (float)insideC / nc : 1f;
+        }
+
         private static bool SearchStepPrefix(AIBuildingPlacementSearch __instance)
         {
             if (!Plugin.Active || !Plugin.DirectorEnabled.Value) return true;
@@ -2650,6 +2914,11 @@ namespace InterplanetaryAI
                     AICore defenseCore = (AICore)s_searchCore.GetValue(__instance);
                     if (defenseCore != null && defenseCore.PlayerData.AIPlayer && CoverageStep(__instance, data, defenseCore)) return false;
                     return true;
+                }
+                if (data != null && Plugin.ShelterPlacement.Value && !data.defense_functionality.IsValueSet)
+                {
+                    AICore shelterCore = (AICore)s_searchCore.GetValue(__instance);
+                    if (shelterCore != null && shelterCore.PlayerData.AIPlayer && ShelterStep(__instance, data, shelterCore)) return false;
                 }
                 if (data == null || !IsWaterOnly(data)) return true;
                 AICore core = (AICore)s_searchCore.GetValue(__instance);
@@ -2780,6 +3049,14 @@ namespace InterplanetaryAI
         {
             DirectorState d;
             if (!s_states.TryGetValue(core.PlayerData.PlayerID, out d) || !d.Started) return;
+            if (d.Turn != GameManager.CurrentTurn)
+            {
+                // v0.17 (match 20, Junker T15-T24): this turn's start never reached the director (AICore.BeginTurn threw);
+                // say so instead of re-logging a stale turn as if it were this one.
+                Plugin.WriteDecision(new Json().Str("e", "turn-start-missed").Int("t", GameManager.CurrentTurn).Str("ai", core.PlayerData.UserNickName)
+                    .Int("lastStartedTurn", d.Turn).Int("energy", core.Resources.Energy).Int("material", core.Resources.Material).ToString());
+                return;
+            }
             d.EndEnergyLeft = core.Resources.Energy;
             d.EndMaterialLeft = core.Resources.Material; // v0.16.2
             d.Ended = true;
@@ -2789,7 +3066,15 @@ namespace InterplanetaryAI
                 if (building == null || building.IsCity || building.CurrentState != BaseBuilding.BuildingState.Normal) continue;
                 upgradesInstalled += 2 - building.Upgrades.FreeSlots;
             }
+            float coveredBuildings = -1f, coveredCities = -1f;
+            try { CoveredShares(core, out coveredBuildings, out coveredCities); }
+            catch (Exception e) { ReportOnce("covered-shares", e); }
+            int[] shelter;
+            if (!s_shelterTally.TryGetValue(core.PlayerData.PlayerID, out shelter)) shelter = new int[2];
+            s_shelterTally.Remove(core.PlayerData.PlayerID);
             Plugin.WriteDecision(new Json().Str("e", "director").Int("t", d.Turn).Str("ai", core.PlayerData.UserNickName)
+                .Num("coveredBuildings", coveredBuildings).Num("coveredCities", coveredCities) // v0.17
+                .Int("shelteredPlaced", shelter[0]).Int("unshelteredPlaced", shelter[1])
                 .Bool("war", d.War).Int("slotsAtStart", d.SlotsAtStart).Int("slotsLeft", d.SlotsLeft).Int("unpowered", d.Unpowered)
                 .Int("energyStart", d.TurnStartEnergy).Int("materialStart", d.TurnStartMaterial)
                 .Int("energyLeft", core.Resources.Energy).Int("materialLeft", core.Resources.Material)

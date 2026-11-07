@@ -112,6 +112,8 @@ def main():
                       f"{' keepM ' + str(r.get('materialReserve')) if r.get('materialReserve') else ''}"
                       f"{' SOLD ' + str(r.get('soldMines')) + ' mines +' + str(r.get('soldMaterial')) + 'M' if r.get('soldMines') else ''}"
                       f" aimedW {r.get('aimedWeapons', '?')}"
+                      f"{' COV ' + format(r.get('coveredBuildings'), '.0%') + ' cities ' + format(r.get('coveredCities'), '.0%') if isinstance(r.get('coveredBuildings'), (int, float)) and r.get('coveredBuildings') >= 0 else ''}"
+                      f"{' shelter ' + str(r.get('shelteredPlaced')) + '/' + str((r.get('shelteredPlaced') or 0) + (r.get('unshelteredPlaced') or 0)) if (r.get('shelteredPlaced') or 0) + (r.get('unshelteredPlaced') or 0) > 0 else ''}"
                       f"{' REP ' + str(r.get('repaired')) + ' (-' + str(r.get('repairEnergy')) + 'E -' + str(r.get('repairMaterial')) + 'M)' if r.get('repaired') else ''}"
                       f" | {describe_queued(r.get('queued') or {})} | unspent E{r['energyLeft']}"
                       + (f" | placement gave up {fails}" if fails else ""), flush=True)
@@ -130,6 +132,10 @@ def main():
                       f" | {per}", flush=True)
             elif kind == "abort":
                 print(f"T{r['t']} {r['ai']}: STRIKE ABORTED - {r.get('hitsOnCommit')} of {r.get('shots')} weapons on target (needed {r.get('needed')})", flush=True)
+            elif kind == "turn-start-error":
+                print(f"T{r['t']} {r['ai']}: TURN-START ERROR in {r.get('module')} (swallowed): {r.get('error')}", flush=True)
+            elif kind == "turn-start-missed":
+                print(f"T{r['t']} {r['ai']}: TURN START MISSED (last started T{r.get('lastStartedTurn')}; E {r.get('energy')} M {r.get('material')})", flush=True)
             elif kind == "superweapon":
                 print(f"T{r['t']} {r['ai']}: SUPERWEAPON queued {short(r['building'])}", flush=True)
             elif kind == "init":

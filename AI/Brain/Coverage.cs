@@ -315,4 +315,74 @@ namespace InterplanetaryAI.Brain
             return total > 0f ? inside / total : 1f;
         }
     }
+
+    // v0.17 (match 20, docs/playtests/2026-11-07-v0.16.2-match20.md): the human's layout as placement rules. Pavol: "I cover
+    // everything with defenses... there is like no gap anywhere", "all the mines and all the water buildings are hugging
+    // the shoreline, so they are under defenses too". Every non-defense building is placed inside existing defense cover
+    // when a covered spot exists, and otherwise as close to a city as possible, where the city ring of defenses will reach.
+    public static class Shelter
+    {
+        // Own working or queued defenses whose radius reaches `at` (building centres, strictly inside, as the game counts).
+        public static int CoverCount(Point at, IList<Point> defenses, IList<float> radii)
+        {
+            int n = 0;
+            for (int i = 0; i < defenses.Count; i++)
+            {
+                if (at.DistanceSquared(defenses[i]) < radii[i] * radii[i]) n++;
+            }
+            return n;
+        }
+
+        // Distance to the nearest point, or -1 with no points.
+        public static float NearestDistance(Point at, IList<Point> points)
+        {
+            float best = -1f;
+            for (int i = 0; i < points.Count; i++)
+            {
+                float d = (float)Math.Sqrt(at.DistanceSquared(points[i]));
+                if (best < 0f || d < best) best = d;
+            }
+            return best;
+        }
+
+        // Distance from `at` to the nearest point's edge (centre distance minus that point's radius, floored at 0), or -1.
+        public static float NearestEdge(Point at, IList<Point> points, IList<float> radii)
+        {
+            float best = -1f;
+            for (int i = 0; i < points.Count; i++)
+            {
+                float d = Math.Max(0f, (float)Math.Sqrt(at.DistanceSquared(points[i])) - radii[i]);
+                if (best < 0f || d < best) best = d;
+            }
+            return best;
+        }
+
+        // Terra v0.17 H3 (Pavol: defenses first, then fill): the ground right around a city is kept for its defenses. A
+        // non-defense spot whose distance to a city's edge is below keepOut is skipped while covered or close spots are
+        // still being looked for (ShelterStep takes it only in its fallback steps).
+        public static bool InKeepOut(float nearestCityEdge, float keepOut)
+        {
+            return keepOut > 0f && nearestCityEdge >= 0f && nearestCityEdge < keepOut;
+        }
+
+        // Cover first (capped, so one more defense overhead never outweighs a closer spot), then closeness to a city as a
+        // tie-break worth less than one defense. scale: the distance at which closeness reaches 0 (e.g. a defense radius).
+        public static float Score(int coverCount, int coverCap, float nearestCity, float scale)
+        {
+            float cover = Math.Min(Math.Max(0, coverCount), Math.Max(1, coverCap));
+            float closeness = 0f;
+            if (nearestCity >= 0f && scale > 0f) closeness = Math.Max(0f, 1f - nearestCity / scale);
+            return cover + 0.9f * closeness;
+        }
+
+        // Accept the step's best spot? A covered spot always; an uncovered one only when no defense exists yet (nothing to
+        // shelter under: closeness decides) or after `coveredSteps` steps without a covered spot (the base has no room
+        // left under cover; the old placement would have put it anywhere anyway).
+        public static bool Accept(int bestCover, int step, int coveredSteps, int defenses)
+        {
+            if (bestCover > 0) return true;
+            if (defenses <= 0) return true;
+            return step >= Math.Max(0, coveredSteps);
+        }
+    }
 }

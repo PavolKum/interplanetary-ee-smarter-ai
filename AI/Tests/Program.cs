@@ -60,6 +60,7 @@ namespace InterplanetaryAI.Tests
             V016Rules();
             V0161Rules();
             V0162Rules();
+            V017Rules();
 
             Console.WriteLine(s_checks + " checks, " + s_failures + " failed");
             return s_failures == 0 ? 0 : 1;
@@ -1535,6 +1536,54 @@ namespace InterplanetaryAI.Tests
         }
 
         // ---- v0.16.2 (matches 18-19, docs/playtests/2026-11-04-v0.16.1-match19.md) ----------------------
+
+        private static void V017Rules()
+        {
+            // Shelter: count the defenses over a spot (strictly inside the radius, as PlayerDefenseHandler.getDefenses).
+            List<Point> defs = new List<Point> { new Point(0, 0, 0), new Point(10, 0, 0) };
+            List<float> radii = new List<float> { 6f, 6f };
+            Check(Shelter.CoverCount(new Point(5, 0, 0), defs, radii) == 2, "a spot between two defenses is under both");
+            Check(Shelter.CoverCount(new Point(-5, 0, 0), defs, radii) == 1, "a spot under one defense counts 1");
+            Check(Shelter.CoverCount(new Point(-6, 0, 0), defs, radii) == 0, "exactly on the radius is outside (strict)");
+            Check(Shelter.CoverCount(new Point(30, 0, 0), defs, radii) == 0, "a far spot is uncovered");
+            Check(Math.Abs(Shelter.NearestDistance(new Point(3, 4, 0), defs) - 5f) < 1e-4f, "nearest distance 5");
+            Check(Shelter.NearestDistance(new Point(3, 4, 0), new List<Point>()) < 0f, "no points: -1");
+            Check(Math.Abs(Shelter.NearestDistance(new Point(9, 0, 0), defs) - 1f) < 1e-4f, "the nearest point is not the first in the list");
+
+            // Keep-out around cities (Terra v0.17 H3): the edge distance subtracts the city radius.
+            List<float> cityRadii = new List<float> { 2f, 4f };
+            Check(Math.Abs(Shelter.NearestEdge(new Point(16, 0, 0), defs, cityRadii) - 2f) < 1e-4f, "edge distance 6 - 4 = 2 (second city)");
+            Check(Shelter.NearestEdge(new Point(1, 0, 0), defs, cityRadii) == 0f, "inside a city's radius: 0");
+            Check(Shelter.NearestEdge(new Point(1, 0, 0), new List<Point>(), new List<float>()) < 0f, "no cities: -1");
+            Check(Shelter.InKeepOut(2f, 3f), "2 from the city edge is inside a keep-out of 3");
+            Check(!Shelter.InKeepOut(3f, 3f), "exactly at the keep-out is outside");
+            Check(!Shelter.InKeepOut(2f, 0f), "keep-out 0: off");
+            Check(!Shelter.InKeepOut(-1f, 3f), "no city: never in keep-out");
+
+            // Score: any cover beats the closest uncovered spot; cover is capped; closeness breaks ties.
+            Check(Shelter.Score(1, 2, 40f, 10f) > Shelter.Score(0, 2, 0f, 10f), "a covered far spot beats an uncovered spot next to a city");
+            Check(Math.Abs(Shelter.Score(5, 2, 40f, 10f) - Shelter.Score(2, 2, 40f, 10f)) < 1e-4f, "cover is capped at 2");
+            Check(Shelter.Score(2, 2, 40f, 10f) > Shelter.Score(1, 2, 0f, 10f), "a second defense still beats closeness");
+            Check(Shelter.Score(1, 2, 2f, 10f) > Shelter.Score(1, 2, 8f, 10f), "same cover: closer to a city wins");
+            Check(Shelter.Score(0, 2, 2f, 10f) > Shelter.Score(0, 2, 8f, 10f), "no cover yet: closer to a city wins");
+            Check(Shelter.Score(0, 2, -1f, 10f) == 0f, "no city: closeness 0");
+
+            // Accept: covered always; uncovered when nothing exists to shelter under, or after the covered steps.
+            Check(Shelter.Accept(1, 0, 6, 5), "a covered spot is accepted on the first step");
+            Check(!Shelter.Accept(0, 2, 6, 5), "an uncovered spot waits while defenses exist (step 2 of 6)");
+            Check(Shelter.Accept(0, 6, 6, 5), "after 6 steps without cover the best uncovered spot is taken");
+            Check(Shelter.Accept(0, 0, 6, 0), "no defenses at all: closeness decides at once");
+
+            // Rare Material: build-up only, ends by the war, up to max at once.
+            Check(SlotPolicy.RareMaterialAllowed(0, 2, 14, 6, 20, 0, false), "T14 + 6 = T20: ends as the war starts");
+            Check(!SlotPolicy.RareMaterialAllowed(0, 2, 15, 6, 20, 0, false), "T15 + 6 runs into the war");
+            Check(SlotPolicy.RareMaterialAllowed(1, 2, 12, 6, 20, 0, false), "a second copy (Pavol stacked two)");
+            Check(!SlotPolicy.RareMaterialAllowed(2, 2, 12, 6, 20, 0, false), "not a third");
+            Check(!SlotPolicy.RareMaterialAllowed(0, 2, 10, 6, 20, 0, true), "never once the war has started (damage trigger)");
+            Check(!SlotPolicy.RareMaterialAllowed(0, 2, 12, 6, 20, 3, false), "endLead 3: T12 + 6 = T18 > T17");
+            Check(SlotPolicy.RareMaterialAllowed(0, 2, 11, 6, 20, 3, false), "endLead 3: T11 + 6 = T17 is fine");
+            Check(!SlotPolicy.RareMaterialAllowed(0, 0, 5, 6, 20, 0, false), "max 0: off");
+        }
 
         private static void V0162Rules()
         {

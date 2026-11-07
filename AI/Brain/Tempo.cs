@@ -40,6 +40,17 @@ namespace InterplanetaryAI.Brain
         {
             return max > 0 && activeOrQueued < max && planScienceLeft >= minPlanScience;
         }
+
+        // v0.17 (match 20): Rare Material Synthesis (material x1.3, energy x0.95, planet cost x1.3, 6 turns) in the build-up
+        // only. Pavol stacked two from T16 to T21, ending as his war began, then flipped to SSTAR: "it's all about timing...
+        // you'll need the energy, then you need to flip to lossless energy transfer." A copy may start only if it ends by
+        // warTurn - endLead and the war has not started; up to `max` at once (match 17's five copies took the Jamming slots,
+        // so the Jamming room rule still applies on top).
+        public static bool RareMaterialAllowed(int activeOrQueued, int max, int turn, int duration, int warTurn, int endLead, bool warStarted)
+        {
+            if (warStarted || max <= 0 || activeOrQueued >= max) return false;
+            return turn + Math.Max(1, duration) <= warTurn - Math.Max(0, endLead);
+        }
     }
 
     // Item 4: war from WarFromTurn only with the means to fight (Orbital Assembly and the income to fire), else at the

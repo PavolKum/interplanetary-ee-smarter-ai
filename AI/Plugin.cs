@@ -24,7 +24,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.16.2";
+        public const string VERSION = "0.17.0";
 
         internal static ManualLogSource Log;
 
@@ -315,7 +315,13 @@ namespace InterplanetaryAI
         internal static ConfigEntry<string> DefenseUpgradeIds;
         internal static ConfigEntry<int> DefenseUpgradesPerTurn;
         internal static ConfigEntry<float> ForwardDefenseMargin;
-        internal static ConfigEntry<int> RareMaterialMax;            // v0.16.1
+        internal static ConfigEntry<int> RareMaterialMax;            // v0.16.1; v0.17 key RareMaterialBuildUpMax
+        internal static ConfigEntry<int> RareMaterialEndLead;        // v0.17
+        internal static ConfigEntry<bool> ShelterPlacement;          // v0.17
+        internal static ConfigEntry<int> ShelterCoveredSteps;        // v0.17
+        internal static ConfigEntry<int> ShelterCoverCap;            // v0.17
+        internal static ConfigEntry<float> AnchorRingShare;          // v0.17
+        internal static ConfigEntry<float> ShelterCityKeepOut;       // v0.17 (Terra H3)
         internal static ConfigEntry<bool> OpeningCapExemptScience;   // v0.16.1
         internal static ConfigEntry<float> IntelStopMinBudgetUse;    // v0.16.1
         internal static ConfigEntry<bool> PlanetDrainGuard;          // v0.16.1
@@ -663,8 +669,21 @@ namespace InterplanetaryAI
             ForwardDefenseMargin = Config.Bind("Director", "ForwardDefenseMargin", 1.25f,
                 "v0.16 item 6: once enemy fire has landed, the defense reserve asks for the largest volley seen so far x the share of impacts a defense could meet x the live roll cost x this margin (bounded by DefenseHardCapShare). The T26 estimator asked 1,250 E one phase before an 83-impact volley. 0 = off.");
             // ---- v0.16.1 (match 17, docs/playtests/2026-11-01-v0.16.md) ----
-            RareMaterialMax = Config.Bind("Director", "RareMaterialMax", 1,
-                "v0.16.1: most simultaneous Rare Material Synthesis projects (material x1.3, energy x0.95, planet cost x1.3 each). Match 17 bought 5 at T13, which took the Jamming slots, and 3 more at T24 while the planet drained ~50k a turn.");
+            // v0.17: new key (the old RareMaterialMax = 1 in existing config files would otherwise keep the v0.16.1 cap).
+            RareMaterialMax = Config.Bind("Director", "RareMaterialBuildUpMax", 2,
+                "v0.17: most simultaneous Rare Material Synthesis projects (material x1.3, energy x0.95, planet cost x1.3 each, 6 turns) during the build-up; none may start that would run past the war turn minus RareMaterialEndLead, and none once the war has started (then SSTAR). Pavol stacked two T16-T21 in match 20 (x1.69 material). Match 17 bought 5 at T13 (took the Jamming slots; the Jamming room rule still applies).");
+            RareMaterialEndLead = Config.Bind("Director", "RareMaterialEndLead", 0,
+                "v0.17: a Rare Material copy must end this many turns before the war turn (0 = it may run until the war starts).");
+            ShelterPlacement = Config.Bind("Director", "ShelterPlacement", true,
+                "v0.17: place every non-defense building inside existing defense cover when a covered spot exists (else close to a city); water buildings around the land base (shoreline) instead of random open water. Pavol's layout in match 20.");
+            ShelterCoveredSteps = Config.Bind("Director", "ShelterCoveredSteps", 6,
+                "v0.17: placement steps (12 candidates each) that wait for a covered spot before the best uncovered one is taken.");
+            ShelterCoverCap = Config.Bind("Director", "ShelterCoverCap", 2,
+                "v0.17: defenses over a spot that still add to its score (beyond this, closeness to a city decides).");
+            ShelterCityKeepOut = Config.Bind("Director", "ShelterCityKeepOut", 0.5f,
+                "v0.17 (Terra H3): ground within this share of a defense radius from a city's edge is kept for that city's defenses; non-defense buildings go there only after ShelterCoveredSteps steps found nothing else. 0 = off.");
+            AnchorRingShare = Config.Bind("Director", "AnchorRingShare", 0.5f,
+                "v0.17: share of city-cover candidates drawn around a power anchor that reaches the city's ring (match 20: half the ring spots had no anchor in line range). 0 = v0.16 ring only.");
             OpeningCapExemptScience = Config.Bind("Director", "OpeningCapExemptScience", true,
                 "v0.16.1: permanent science projects (Science Institute) are exempt from OpeningPermanentCap, still leaving room for wanted Jamming. Match 17 had half the human's science.");
             IntelStopMinBudgetUse = Config.Bind("Director", "IntelStopMinBudgetUse", 0.5f,
@@ -743,7 +762,8 @@ namespace InterplanetaryAI
             patched += TryPatch(typeof(AIBuildingPlacementFinder), "Update", "FinderUpdatePrefix", null, typeof(DirectorPatches));
             patched += TryPatch(typeof(PlayerDefenseHandler), "IsHitIntercepted", "BeforeIntercept", "AfterIntercept", typeof(LedgerPatches));
             int laserPatches = EnableLasers.Value ? LaserPatches.Install(new Harmony(GUID + ".lasers")) : 0;
-            Log.LogInfo(NAME + " " + VERSION + " loaded; " + patched + " of 16 hooks patched. Director " + (DirectorEnabled.Value ? "on" : "off")
+            int guards = TurnGuard.Install(m_harmony); // v0.17
+            Log.LogInfo(NAME + " " + VERSION + " loaded; " + patched + " of 16 hooks patched; turn guard " + guards + " of 9. Director " + (DirectorEnabled.Value ? "on" : "off")
                 + ", war from turn " + WarFromTurn.Value + ". Accuracy by level: " + AccuracyByLevel.Value
                 + "; research plan " + ResearchPlanIds.Count + " techs; superweapons " + Superweapons.Value
                 + "; lasers " + (EnableLasers.Value ? laserPatches + " of 5 patches" : "off"));
