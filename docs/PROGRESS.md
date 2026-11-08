@@ -13,7 +13,7 @@ Sources of truth: per-match notes in `docs/playtests/`, reviews and dispositions
 
 ## Scoreboard
 
-The human won the first 24 matches; the Smarter AI won match 25 (v0.19.0, three Smarter AIs).
+The human won the first 24 matches; the Smarter AI won match 25 (v0.19.0, three Smarter AIs, human on a nukes-only experiment); the human won the match 26 rematch.
 
 | # | Version | Opponents | Lost at | Peak AI energy/turn vs human (turn) | What the version tried | Why it still lost |
 |---|---|---|---|---|---|---|
@@ -41,6 +41,7 @@ The human won the first 24 matches; the Smarter AI won match 25 (v0.19.0, three 
 | 22 | 0.18.0 | Beastie + Arc (smart, Impossible) + 1 original AI (level 1) | T35 | 34.6k vs 27.3k (T24/T32) | (same build; first lobby with two Smarter AIs) | First AI to out-produce the human at the peak, and both Eiais chose him (HUMAN-FIRST from T20/T21): 16 volleys, 258 hits, a city and ~700M population lost at T22 and T30-T34; but buildings kept rising (95 to 254) and his fire ended both by T35; placement gave up 59 times |
 | 23 | 0.18.0 | Eddie + Doc (smart, Impossible) + 1 original AI (level 1) | T34 | 28.9k vs 68.5k (T26/T27) | (same build, second two-Eiai sample) | Fastest loss of the three: human at 68k energy/turn by T27, never lost a building; Eddie went to war at T14 and its target wandered (Tarkoy, Doc, human, Doc); 12 volleys at the human (122 hits) did nothing; fire held a turn after income jumps because free energy ignores this turn's growth (Doc T23: 17k left); placement gave up 78 times (aim times over 90 s turned out to be the human's own turn length) |
 | 24 | 0.19.0 | Zenon + Donnels + Sarai (smart, Impossible) + 1 original AI (level 1) | **AI WON (T38)**, human on an experimental nukes-only offense | 52.0k vs 20.5k (T34/T29) | Late free fire (an energy hold fires from what is actually left after construction, defense reserve and repairs); aim watch logs when the human ended his turn | First Smarter AI win: three Eiais went to war together at T20 (52 railguns), held HUMAN-FIRST T21-T37 and landed 774 planned hits; projectile/population upgrades raised expected shots through from ~7 to 30-45 per AI; the human's defense energy could not cover ~90 shots a turn and a T32 over-commit on his own volley cost 1.5B population in two turns (2,589 at T20 to 266 at T37, buildings intact). Late free fire fired 6 times, all paid; real AI wait after the human ended his turn 0-25 s (mean 10 s) |
+| 25 | 0.19.0 | Ash + Hawking (smart, Impossible) + 1 original AI (level 1) | T43 | 52.1k vs 46.5k (T35/T40) | (same build; rematch of match 25 with the human's standard play, two Smarter AIs instead of three) | Hawking hit hard early (late free fire T21, 20 railguns, 50k energy/turn, population 3,009 to 1,966 at T23-T24) but 36-39k energy idle at the weapon cap; Ash split fire across Armiger and Hawking until T26 and aimed poorly (unaimed guns 103-157 degrees away); placement gave up 230 times (Ash 207, a full planet); the human recovered to 5,000 and ground both down. Late free fire 3 times, all paid; AI wait after the human 0 s on 18 of 23 turns |
 
 ## The arc so far
 
