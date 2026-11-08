@@ -12,7 +12,8 @@ import json
 import sys
 from collections import defaultdict
 
-DO_NO_HARM = {"wait_mean": 10.0, "wait_max": 45.0, "human_first": 0.85, "shortfall": 0.05, "covered": 0.85}
+DO_NO_HARM = {"wait_mean": 10.0, "wait_max": 45.0, "human_first": 0.85, "shortfall": 0.05, "covered": 0.85,
+              "collapse": 0.20}
 STRIKE_EVERY = 2               # StrategySettings.StrikeEvery
 MAX_HOLD_BASELINE = 3 / 186.0  # max-hold share of war strategy records, matches 22-26 (v0.18-v0.19)
 
@@ -172,20 +173,51 @@ def evaluate(rows, human="jogi", only=None):
              "fire turns %d: mean %.1f s (<= %.0f), max %.1f s (<= %.0f)" % (len(waits), mean, DO_NO_HARM["wait_mean"], mx, DO_NO_HARM["wait_max"]))
     else:
         gate(res, "DNH aim wait after human", "UNTESTED", "no fire turn with a recorded human end")
+    # Amendment 1 (Pavol, 2026-11-08, after match 27; applies from match 28): the share counts volleys whose commit IS the
+    # human, not the humanFirst flag (attrition volleys at the human carry no flag), and return fire at a non-human
+    # attacker is reported on its own line instead of counting against the share.
     fire_strat = [r for r in rows if r.get("e") == "strategy" and r.get("ai") in ais and r.get("fire")]
-    if fire_strat:
-        hf = sum(1 for r in fire_strat if r.get("humanFirst")) / len(fire_strat)
+    returns = [r for r in fire_strat if r.get("reason") == "return-fire" and r.get("commit") != human]
+    counted = [r for r in fire_strat if r not in returns]
+    if counted:
+        hf = sum(1 for r in counted if r.get("commit") == human) / len(counted)
         gate(res, "DNH HUMAN-FIRST share of fire turns", "PASS" if hf >= DO_NO_HARM["human_first"] else "FAIL",
-             "%.0f%% of %d fire decisions (>= %.0f%%)" % (100 * hf, len(fire_strat), 100 * DO_NO_HARM["human_first"]))
+             "%.0f%% of %d fire decisions commit to %s (>= %.0f%%; return fire at others excluded)"
+             % (100 * hf, len(counted), human, 100 * DO_NO_HARM["human_first"]))
     else:
         gate(res, "DNH HUMAN-FIRST share of fire turns", "UNTESTED", "no fire decisions")
-    war_dirs = [r for r in dirs if r.get("war")]
+    if fire_strat:
+        flag = sum(1 for r in fire_strat if r.get("humanFirst")) / len(fire_strat)
+        gate(res, "INFO return fire at a non-human", "INFO",
+             "%d of %d fire decisions (%s); pre-amendment flag share %.0f%%"
+             % (len(returns), len(fire_strat), ", ".join("%s T%d at %s" % (r["ai"], r["t"], r.get("commit")) for r in returns) or "none", 100 * flag))
+    # Amendment 1, second part: a war turn in which the AI has lost more than COLLAPSE of its peak building count so far
+    # is a collapse turn; its shortfall is reported, not gated.
+    peak, collapse = {}, set()
+    for r in sorted((r for r in rows if r.get("e") == "economy" and r.get("ai") in ais and isinstance(r.get("buildings"), dict)),
+                    key=lambda r: r["t"]):
+        n = sum(r["buildings"].values())
+        peak[r["ai"]] = max(peak.get(r["ai"], 0), n)
+        if n < (1 - DO_NO_HARM["collapse"]) * peak[r["ai"]]:
+            collapse.add((r["ai"], r["t"]))
+    all_war = [r for r in dirs if r.get("war")]
+    war_dirs = [r for r in all_war if (r.get("ai"), r.get("t")) not in collapse]
+    if all_war:
+        raw = [r for r in all_war if r.get("reserveShortfall", 0) > 0]
+        gate(res, "INFO reserve shortfall incl. collapse", "INFO",
+             "%d of %d war records (%.1f%%); %d collapse records excluded from the gate: %s"
+             % (len(raw), len(all_war), 100 * len(raw) / len(all_war), len(all_war) - len(war_dirs),
+                ", ".join("%s T%d" % (r["ai"], r["t"]) for r in raw if (r["ai"], r["t"]) in collapse) or "none"))
     if war_dirs:
         sf = sum(1 for r in war_dirs if r.get("reserveShortfall", 0) > 0) / len(war_dirs)
-        cov = [r["coveredBuildings"] for r in war_dirs if isinstance(r.get("coveredBuildings"), (int, float)) and r["coveredBuildings"] >= 0]
-        cmean = sum(cov) / len(cov) if cov else -1
         gate(res, "DNH reserve shortfall", "PASS" if sf <= DO_NO_HARM["shortfall"] else "FAIL",
-             "%.1f%% of %d war director records (<= %.0f%%)" % (100 * sf, len(war_dirs), 100 * DO_NO_HARM["shortfall"]))
+             "%.1f%% of %d non-collapse war records (<= %.0f%%)" % (100 * sf, len(war_dirs), 100 * DO_NO_HARM["shortfall"]))
+    elif all_war:
+        gate(res, "DNH reserve shortfall", "UNTESTED", "every war record is a collapse turn")
+    if all_war:
+        # Covered buildings is not amended: it still reads every war record.
+        cov = [r["coveredBuildings"] for r in all_war if isinstance(r.get("coveredBuildings"), (int, float)) and r["coveredBuildings"] >= 0]
+        cmean = sum(cov) / len(cov) if cov else -1
         gate(res, "DNH covered buildings", "UNTESTED" if not cov else ("PASS" if cmean >= DO_NO_HARM["covered"] else "FAIL"),
              "mean %.3f over %d war records (>= %.2f)" % (cmean, len(cov), DO_NO_HARM["covered"]))
     else:
@@ -219,7 +251,7 @@ def selftest():
     base = [{"e": "init", "ai": "X", "t": 1, "smart": True, "build": "0.20.0+abc", "config": {}},
             {"e": "director", "ai": "X", "t": 12, "war": True, "retaliationLatched": True, "retaliationLatchTurn": 12, "warTurn": 20, "unpoweredWeapons": 0, "searchesOpenAtEnd": 0,
              "reserveShortfall": 0, "coveredBuildings": 0.9, "energyLeft": 0, "materialLeft": 0, "aimedWeapons": 10},
-            {"e": "strategy", "ai": "X", "t": 12, "war": True, "fire": True, "humanFirst": True, "reason": "free-fire"},
+            {"e": "strategy", "ai": "X", "t": 12, "war": True, "fire": True, "humanFirst": True, "reason": "free-fire", "commit": "jogi"},
             {"e": "aim-search", "ai": "X", "t": 12, "live": 3, "fire": True, "aimWaitAfterHuman": 1.0, "commitLiveByFacing": [1, 1, 1, 0]}]
     def status(rows, name):
         return dict((n, s) for n, s, _ in evaluate(rows, only=None))[name]
@@ -257,6 +289,20 @@ def selftest():
     hold = base + [{"e": "strategy", "ai": "X", "t": 20 + i, "war": True, "reason": "max-hold"} for i in range(5)]
     checks.append(("max-hold flood FAILs S1", status(hold, "S1 max-hold not above baseline") == "FAIL"))
     checks.append(("a restart splits the log into 2 segments", len(segments(base + base)) == 2))
+    hf = "DNH HUMAN-FIRST share of fire turns"
+    checks.append(("clean log passes HUMAN-FIRST", status(base, hf) == "PASS"))
+    other = base + [dict(base[2], t=13 + i, commit="Bot", humanFirst=False, reason="attrition") for i in range(2)]
+    checks.append(("attrition at a non-human FAILs HUMAN-FIRST", status(other, hf) == "FAIL"))
+    ret = base + [dict(base[2], t=13 + i, commit="Bot", humanFirst=False, reason="return-fire") for i in range(2)]
+    checks.append(("return fire at a non-human does not FAIL HUMAN-FIRST", status(ret, hf) == "PASS"))
+    unflagged = base + [dict(base[2], t=13 + i, humanFirst=False, reason="attrition") for i in range(2)]
+    checks.append(("unflagged volleys at the human pass HUMAN-FIRST", status(unflagged, hf) == "PASS"))
+    sf = "DNH reserve shortfall"
+    eco = lambda t, n: {"e": "economy", "ai": "X", "t": t, "buildings": {"city": n}}
+    short = [base[0], dict(base[1], reserveShortfall=50), base[2], base[3], eco(11, 100), eco(12, 95)]
+    checks.append(("shortfall on a non-collapse turn FAILs DNH", status(short, sf) == "FAIL"))
+    crash = [base[0], dict(base[1], reserveShortfall=50), dict(base[1], t=11), base[2], base[3], eco(11, 100), eco(12, 70)]
+    checks.append(("shortfall on a collapse turn is excluded", status(crash, sf) == "PASS"))
     failed = [n for n, ok in checks if not ok]
     for n, ok in checks:
         print(("ok    " if ok else "FAIL  ") + n)
