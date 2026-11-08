@@ -19,7 +19,7 @@ MAX_HOLD_BASELINE = 3 / 186.0  # max-hold share of war strategy records, matches
 LAND_GIVEUP_BASELINE = 114 / 159.0  # v0.21 I9: land placements given up per director record, matches 27-28 (v0.20)
 WATER_ONLY = {"bui_OffshoreMine", "bui_FloatingPlant"}
 LAND_PLANTS = {"bui_SolarPlant", "bui_NuclearPlant"}
-STRANDED_LIMIT = 0.5 * 7 / 30.0  # v0.22 I9b: half of m29's land plants given up with only water anchors per AI-turn
+STRANDED_LIMIT = 1  # v0.22 I9b (Gemini v0.22 #5): land plants given up with only water anchors, per match (m29: 7)
 
 
 def segments(rows):
@@ -136,19 +136,19 @@ def evaluate(rows, human="jogi", only=None):
     else:
         gate(res, "I9 land placements given up per AI-turn", "UNTESTED", "before v0.21")
 
-    # v0.22: land plants given up with only water anchors (plants queued for unpowered offshore mines) per AI-turn.
-    # m29 (v0.21): 7 over 30 AI-turns = 0.23; predeclared 2026-11-08 before the first v0.22 match: PASS at <= half of that.
+    # v0.22: land plants given up (or cut open at the end of the turn) with only water anchors, per match. m29 (v0.21): 7.
+    # Predeclared 2026-11-08 before the first v0.22 match: PASS at <= 1. An absolute count, so quiet turns cannot dilute it.
     v22 = [r for r in dirs if "unpoweredWater" in r]
     if v22:
         opportunity = [r for r in v22 if r.get("unpoweredWater", 0) > 0 and r.get("unpoweredLand", 0) == 0]
-        stranded = [r for r in rows if r.get("e") == "place-search" and r.get("ai") in ais and r.get("outcome") == "gave-up"
+        stranded = [r for r in rows if r.get("e") == "place-search" and r.get("ai") in ais and r.get("outcome") in ("gave-up", "open")
                     and r.get("building") in LAND_PLANTS and r.get("filtered", 0) > 0 and r.get("noSameMedium", 0) >= 0.9 * r["filtered"]]
-        rate = len(stranded) / len(v22)
-        if not opportunity and not stranded:
-            gate(res, "I9b land plants stranded at sea per AI-turn", "UNTESTED", "no AI-turn had only water buildings unpowered")
+        wet = [r for r in v22 if r.get("unpoweredWater", 0) > 0]
+        if not wet and not stranded:
+            gate(res, "I9b land plants stranded at sea", "UNTESTED", "no AI-turn had a water building unpowered")
         else:
-            gate(res, "I9b land plants stranded at sea per AI-turn", "PASS" if rate <= STRANDED_LIMIT else "FAIL",
-                 "%.2f (%d over %d AI-turns; limit %.2f; %d AI-turns with only water unpowered)" % (rate, len(stranded), len(v22), STRANDED_LIMIT, len(opportunity)))
+            gate(res, "I9b land plants stranded at sea", "PASS" if len(stranded) <= STRANDED_LIMIT else "FAIL",
+                 "%d (limit %d); %d AI-turns with water buildings unpowered, %d with only water" % (len(stranded), STRANDED_LIMIT, len(wet), len(opportunity)))
         links = [r for r in rows if r.get("e") == "place-search" and r.get("ai") in ais and r.get("waterLinkSteps", 0) > 0]
         outcome = defaultdict(int)
         for r in links:
@@ -157,7 +157,7 @@ def evaluate(rows, human="jogi", only=None):
              "%d queued water-first; %d searches tried next to an unpowered water building %s"
              % (sum(r.get("waterFirstPlants", 0) for r in v22), len(links), dict(outcome)))
     else:
-        gate(res, "I9b land plants stranded at sea per AI-turn", "UNTESTED", "before v0.22")
+        gate(res, "I9b land plants stranded at sea", "UNTESTED", "before v0.22")
 
     # I2 retaliation latch: no war -> peace after a latch, per AI; opportunity = an AI that latched
     latched_ais, flips, drops = 0, [], []
@@ -385,10 +385,12 @@ def selftest():
     i9 = "I9 land placements given up per AI-turn"
     many = [base[0], dict(base[1], placeSearchesStarted=0, placementFailures={"bui_SolarPlant": 3}), base[2], base[3]]
     checks.append(("3 solar given up in 1 AI-turn FAILs I9", status(many, i9) == "FAIL"))
-    i9b = "I9b land plants stranded at sea per AI-turn"
+    i9b = "I9b land plants stranded at sea"
     strand = lambda i: {"e": "place-search", "ai": "X", "t": 12, "searchId": i, "outcome": "gave-up", "building": "bui_SolarPlant", "filtered": 100, "noSameMedium": 100}
     wet = dict(base[1], placeSearchesStarted=1, unpoweredWater=3, unpoweredLand=0)
-    checks.append(("a stranded solar plant in 1 AI-turn FAILs I9b", status([base[0], wet, base[2], base[3], strand(1)], i9b) == "FAIL"))
+    checks.append(("1 stranded solar plant PASSes I9b (limit 1)", status([base[0], wet, base[2], base[3], strand(1)], i9b) == "PASS"))
+    checks.append(("2 stranded plants FAIL I9b", status([base[0], wet, base[2], base[3], strand(1), strand(2)], i9b) == "FAIL"))
+    checks.append(("a plant cut open at the end of the turn counts", status([base[0], wet, base[2], base[3], strand(1), dict(strand(2), outcome="open")], i9b) == "FAIL"))
     checks.append(("water unpowered and nothing stranded PASSes I9b", status([base[0], wet, base[2], base[3]], i9b) == "PASS"))
     checks.append(("no water-only unpowered turn is UNTESTED", status([base[0], dict(wet, unpoweredWater=0), base[2], base[3]], i9b) == "UNTESTED"))
     checks.append(("a crowded plant (not only water anchors) does not count for I9b",

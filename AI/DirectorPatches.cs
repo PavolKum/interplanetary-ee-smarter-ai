@@ -780,8 +780,9 @@ namespace InterplanetaryAI
                 // v0.22: a water plant first when every unpowered building that can take a line stands on water.
                 int unpoweredLand, unpoweredWater;
                 CountUnpowered(core, out unpoweredLand, out unpoweredWater, null);
-                bool waterFirst = Plugin.WaterPlantForWater.Value && AnchorMedium.WaterPlantFirst(unpoweredLand, unpoweredWater);
-                BuildingData plant = waterFirst ? (PickWaterPlant(core, d) ?? PickLandPlant(core, d)) : (PickLandPlant(core, d) ?? PickWaterPlant(core, d));
+                bool forUnpowered = d.Unpowered > 0 && d.PlantsForUnpowered < Math.Min(d.Unpowered, Plugin.UnpoweredPlantsPerTurn.Value);
+                bool waterFirst = forUnpowered && Plugin.WaterPlantForWater.Value && AnchorMedium.WaterPlantFirst(unpoweredLand, unpoweredWater);
+                BuildingData plant = waterFirst ? PickWaterPlant(core, d) : (PickLandPlant(core, d) ?? PickWaterPlant(core, d));
                 if (plant != null && QueueBuilding(construction, core, d, plant, "power"))
                 {
                     d.PlantsForUnpowered++;
@@ -2849,6 +2850,9 @@ namespace InterplanetaryAI
             List<BaseBuilding> all = core.PlayerData.BuildingHandler.Buildings;
             List<BaseBuilding> anchors = new List<BaseBuilding>();
             if (all.Count > 0) (needsGrid ? s_findWithPower : s_findNeedPower).Invoke(search, new object[] { all, anchors });
+            // v0.22: a land plant whose only anchors (the unpowered buildings) stand at sea is placed among the land
+            // buildings, unconnected to them (the director queues a water plant for those). m29: 7 plants given up.
+            if (!water && !needsGrid && LandPlantStranded(core, data, anchors, StatOf(search))) anchors.Clear();
             // A plant connects to a building that needs power (native). A water plant keeps the v0.6 rule (no power line, so
             // it takes no anchor slot the director counted as free) and so does a land plant with nothing to power.
             bool connect = needsGrid || (!water && anchors.Count > 0);
@@ -3112,7 +3116,42 @@ namespace InterplanetaryAI
             if (stat != null) stat.WaterLinkSteps++;
             s_searchSteps.SetValue(search, (int)s_searchSteps.GetValue(search) + 1);
             s_placeNextTo.Invoke(search, new object[] { unpowered });
+            ClearIfOpen(search);
             return true;
+        }
+
+        // Gemini v0.22 #1: a next-to step that did not place leaves its anchor as the result's power connection.
+        private static void ClearIfOpen(AIBuildingPlacementSearch search)
+        {
+            if (search.IsComplete) return;
+            AIBuildingPlacementResult result = (AIBuildingPlacementResult)s_searchResult.GetValue(search);
+            if (result != null) result.PowerGridConnection = null;
+        }
+
+        // v0.22: a land-only plant whose anchors are all at sea (the game's anchors for a plant are the unpowered buildings
+        // with a free slot, so offshore mines cut off by the enemy).
+        private static bool LandPlantStranded(AICore core, BuildingData data, List<BaseBuilding> anchors, PlaceSearch stat)
+        {
+            if (!Plugin.WaterPlantForWater.Value || anchors.Count == 0 || !IsLandOnly(data)) return false;
+            foreach (BaseBuilding b in anchors)
+            {
+                if (!AnchorOnWater(core, b)) return false;
+            }
+            if (stat != null) stat.Rerouted++;
+            return true;
+        }
+
+        // v0.22: land buildings that use power and have a free slot (the game's second choice of anchors for a plant).
+        private static List<BaseBuilding> LandConsumers(AICore core)
+        {
+            List<BaseBuilding> list = new List<BaseBuilding>();
+            foreach (BaseBuilding b in core.PlayerData.BuildingHandler.Buildings)
+            {
+                if (b == null || b.CurrentState == BaseBuilding.BuildingState.Ruins || b.CurrentState == BaseBuilding.BuildingState.Destroyed) continue;
+                if (b.Power.IsPotentiallyDistributingPower || !core.PowerGrid.HasBuildingAvailableSlots(b) || AnchorOnWater(core, b)) continue;
+                list.Add(b);
+            }
+            return list;
         }
 
         // The game's own step (a ring spot around a random anchor) with land anchors preferred. False when the preference
@@ -3125,10 +3164,20 @@ namespace InterplanetaryAI
             List<BaseBuilding> anchors = new List<BaseBuilding>();
             (search.m_needsPowerGrid ? s_findWithPower : s_findNeedPower).Invoke(search, new object[] { all, anchors });
             if (anchors.Count == 0) return false; // the game: a random spot
-            List<BaseBuilding> kept = SameMedium(core, data, anchors, StatOf(search));
-            if (kept.Count == anchors.Count) return false;
+            List<BaseBuilding> kept;
+            if (!search.m_needsPowerGrid && LandPlantStranded(core, data, anchors, StatOf(search)))
+            {
+                kept = LandConsumers(core); // v0.22: the game's own second choice for a plant, on land
+                if (kept.Count == 0) return false;
+            }
+            else
+            {
+                kept = SameMedium(core, data, anchors, StatOf(search));
+                if (kept.Count == anchors.Count) return false;
+            }
             s_searchSteps.SetValue(search, (int)s_searchSteps.GetValue(search) + 1); // the game's step counts itself
             s_placeNextTo.Invoke(search, new object[] { kept });
+            ClearIfOpen(search);
             return true;
         }
 
@@ -3143,6 +3192,7 @@ namespace InterplanetaryAI
             public int NoSameMedium; // steps where every anchor was on water (nothing to prefer)
             public bool Widened;     // MediumWidenAfter steps passed: every anchor again
             public int WaterLinkSteps; // v0.22: steps a water plant tried next to an unpowered water building
+            public int Rerouted;       // v0.22: steps a land plant's sea-only anchors were swapped for land buildings
         }
 
         private static int s_placeSearchIds;
@@ -3204,7 +3254,7 @@ namespace InterplanetaryAI
             {
                 Plugin.WriteDecision(new Json().Str("e", "place-search").Int("t", p.Turn).Str("ai", p.Ai).Int("searchId", p.Id).Str("building", p.Building)
                     .Str("outcome", outcome).Int("steps", (int)s_searchSteps.GetValue(search)).Int("filtered", p.Filtered)
-                    .Int("skippedAnchors", p.Skipped).Int("noSameMedium", p.NoSameMedium).Bool("widened", p.Widened).Int("waterLinkSteps", p.WaterLinkSteps).ToString());
+                    .Int("skippedAnchors", p.Skipped).Int("noSameMedium", p.NoSameMedium).Bool("widened", p.Widened).Int("waterLinkSteps", p.WaterLinkSteps).Int("rerouted", p.Rerouted).ToString());
             }
             catch (Exception e)
             {

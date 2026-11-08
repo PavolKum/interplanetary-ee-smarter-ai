@@ -1,0 +1,16 @@
+You are reviewing a change to a BepInEx/HarmonyX mod ("Smarter AI") for the game Interplanetary Enhanced Edition. Read-only: do not edit files, do not run builds. Shell commands are unavailable to you; use file reading only. Read the diff in docs/reviews/v0.22.diff (v0.21.0 at commit af1155d -> v0.22.0) and the surrounding code it touches in AI/DirectorPatches.cs, AI/Brain/Coverage.cs, AI/Plugin.cs and AI/tools/verify_gates.py.
+
+Background. v0.21 made land-only buildings prefer land anchors in the game's placement search (decompiled/Interplanetary.AI.Construction/AIBuildingPlacementSearch.cs, local reading only). Match 29's per-search log then showed 7 of 17 land give-ups were solar/nuclear plants queued by the director's step 2 ("power for unpowered buildings") for offshore mines the human had cut off: a plant's anchors are the unpowered buildings with a free slot (the game's findBuildingsThatNeedPower), and all of those were at sea.
+
+v0.22:
+1. Director step 2 (DirectorPatches.Step): when every unpowered building that can take a line stands on water (CountUnpowered, classified by DirectorPatches.AnchorOnWater, the game's PlayerBuildingHandler.IsOnWater plus the water-only type), queue a water plant (PickWaterPlant, the floating plant) before a land plant. Brain: AnchorMedium.WaterPlantFirst.
+2. Placement (SearchStepPrefix -> WaterLinkStep): a water-only plant's search places next to a random unpowered water building via the game's tryPlaceBuildingNextToExistingBuilding (which, for a plant, registers the anchor as powered), for up to 60 steps, then falls through to the v0.17 shelter/shoreline placement and the game's water placement as before. Config Director.WaterPlantForWater (default true).
+3. Logging and gate: director unpoweredLand/unpoweredWater/waterFirstPlants; place-search waterLinkSteps; verify_gates.py I9b (land plants stranded at sea per AI-turn <= 0.12).
+
+Questions, in priority order:
+A. Does WaterLinkStep actually power the offshore mine? Check what tryPlaceBuildingNextToExistingBuilding does for a plant (m_needsPowerGrid false) with an anchor that requires power, the ring radius it uses, and whether a floating plant is accepted there. Could it connect to an anchor that has no free slot, or double-register?
+B. Interactions: the v0.6.1 PlantsForUnpowered decrement in Abandon (land plants only), WaterCooldownUntil and PickWaterPlant, the v0.17 ShelterStep for water buildings (which now runs only after WaterLinkStep declines), the existing water branch (random spot for a water plant). Can v0.22 queue water plants every turn without end, or starve the growth plan of slots?
+C. CountUnpowered runs on every director Step that needs a plant and at turn start: any performance or correctness concern (Ruins/Destroyed states, IsOnWater cost, exceptions)?
+D. Gate I9b: can it pass when it should fail, or fail on a correct v0.22 log?
+
+Output: a markdown report. Start with a line "verdict: ship" or "verdict: ship with fixes" or "verdict: do not ship". Then numbered findings, each with severity (blocker / major / minor), file:line, the failure scenario, and a suggested fix. Do not quote more than 3 consecutive lines from decompiled/ (copyrighted); describe it instead.
