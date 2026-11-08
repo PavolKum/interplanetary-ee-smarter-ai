@@ -1,0 +1,15 @@
+You are reviewing a change to a BepInEx/HarmonyX mod ("Smarter AI") for the game Interplanetary Enhanced Edition. Read-only: do not edit files, do not run builds. Read the diff in docs/reviews/v0.21.diff (shell commands are unavailable to you; use file reading only) and the surrounding code it touches.
+
+Version 0.21.0. Two changes, both from the council decision record docs/reviews/2026-11-08-council-v020/decision-record.md (items I1a and I9):
+
+1. Placement fix (I9). The game's placement search (decompiled/Interplanetary.AI.Construction/AIBuildingPlacementSearch.cs, local reading only) picks a random anchor building and tries a spot on a ring around it. Match 28's Smarter AIs gave up 118 placements, 73 of them land non-defense buildings (solar 28, nuclear 26, railgun 10, telescope 9), while their anchor pools held 15-43 offshore mines (water-only). New: AnchorMedium.Preferred in AI/Brain/Coverage.cs, used by DirectorPatches.SameMedium (inside ShelterStepUnsafe) and DirectorPatches.LandStep (a replacement for the game's step for land-only, non-defense buildings) to prefer anchors on land when any exist. When no land anchor exists the game's pool is kept. Water buildings are deliberately not filtered (v0.17 places them on the land base's shoreline). Config: Director.AnchorMediumMatch (default true).
+
+2. Instrumentation (I1a). One "place-search" decision record per Smarter-AI placement search: tracked from AIBuildingPlacementFinder.StartSearch (postfix), terminal on AIBuildingPlacementSearch.Success (postfix, "placed"), on the step-cap abandon in FinderUpdatePrefix ("gave-up"), and on AIBuildingPlacementFinder.StopAllSearches (prefix, "open"). The director record gains placeSearchesStarted. AI/tools/verify_gates.py gains the I1a terminal gate and an I9 gate (land give-ups per AI-turn <= 0.72, the matches 27-28 baseline).
+
+Questions, in priority order:
+A. Correctness: can any search be logged twice, never logged, or logged under the wrong turn/AI? Are there removal paths from m_ongoingSearches other than Success, the cap abandon and StopAllSearches? Does the Success postfix fire for searches our prefixes complete (CoverageStep, ShelterStep, the water branch, LandStep)?
+B. Behaviour: can LandStep or SameMedium make a placement that used to succeed fail, or change power-connection semantics (a plant registering power on its anchor, PlantsForUnpowered, the v0.6.1 water-plant fallback)? Is a land plant now preferring land anchors a problem when the unpowered buildings are offshore mines?
+C. Classification: is "water-only" (buildable_on_water && !buildable_on_land) the right test for an anchor being on water? Which buildings are buildable on both, and where can they stand?
+D. Anything in the gate script logic that could pass when it should fail.
+
+Output: a markdown report. Start with a line "verdict: ship" or "verdict: ship with fixes" or "verdict: do not ship". Then numbered findings, each with severity (blocker / major / minor), file:line, the failure scenario, and a suggested fix. Do not quote more than 3 consecutive lines from decompiled/ (copyrighted); describe it instead.

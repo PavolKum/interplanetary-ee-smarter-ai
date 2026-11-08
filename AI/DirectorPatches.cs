@@ -43,6 +43,7 @@ namespace InterplanetaryAI
             public int Unpowered;
             public int UnpoweredWeapons = -1;   // v0.20 (council I1a): weapons without power at end of turn
             public int SearchesOpenAtEnd = -1;  // v0.20 (council I1a): placement searches cut by the end turn
+            public int PlaceSearchesStarted;    // v0.21 (council I1a): each has one place-search terminal record
             public int PlantsForUnpowered;
             public int PreferredIntelAttempts;
             public int DefensesThisTurn;
@@ -265,6 +266,7 @@ namespace InterplanetaryAI
             s_states.Clear();
             s_coverage.Clear();
             s_memory.Clear();
+            s_placeSearches.Clear(); // v0.21
             LoadDefenseCounters();
         }
 
@@ -2850,6 +2852,7 @@ namespace InterplanetaryAI
                     if (b != null && b.CurrentState == BaseBuilding.BuildingState.Normal) anchors.Add(b);
                 }
             }
+            anchors = SameMedium(data, anchors, StatOf(search)); // v0.21 (council I9): land buildings around land anchors
             if (anchors.Count == 0) return false; // native: a random spot
 
             s_shelterSteps[search] = ++steps;
@@ -2975,6 +2978,13 @@ namespace InterplanetaryAI
                     AICore shelterCore = (AICore)s_searchCore.GetValue(__instance);
                     if (shelterCore != null && Plugin.IsSmart(shelterCore.PlayerData) && ShelterStep(__instance, data, shelterCore)) return false;
                 }
+                if (data != null && !data.defense_functionality.IsValueSet && IsLandOnly(data))
+                {
+                    // v0.21 (council I9): the game's own step for a land-only building, with land anchors preferred.
+                    AICore landCore = (AICore)s_searchCore.GetValue(__instance);
+                    if (landCore != null && Plugin.IsSmart(landCore.PlayerData) && LandStep(__instance, data, landCore)) return false;
+                    return true;
+                }
                 if (data == null || !IsWaterOnly(data)) return true;
                 AICore core = (AICore)s_searchCore.GetValue(__instance);
                 if (core == null || !Plugin.IsSmart(core.PlayerData)) return true;
@@ -3005,6 +3015,130 @@ namespace InterplanetaryAI
             }
         }
 
+        // ---- v0.21 (council I9): land anchors for land buildings; (I1a) one terminal record per placement search ----
+
+        private static bool IsLandOnly(BuildingData data)
+        {
+            bool water = data.buildable_on_water.IsValueSet && data.buildable_on_water.Value;
+            bool land = data.buildable_on_land.IsValueSet && data.buildable_on_land.Value;
+            return land && !water;
+        }
+
+        // The anchors on a land-only building's own medium when any exist (AnchorMedium.Preferred); every other building,
+        // and AnchorMediumMatch = false, keeps the list unchanged (v0.17 puts water buildings on the land base's shoreline).
+        private static List<BaseBuilding> SameMedium(BuildingData data, List<BaseBuilding> anchors, PlaceSearch stat)
+        {
+            if (!Plugin.AnchorMediumMatch.Value || anchors.Count == 0 || !IsLandOnly(data)) return anchors;
+            List<bool> waterOnly = new List<bool>(anchors.Count);
+            foreach (BaseBuilding b in anchors) waterOnly.Add(b != null && b.BuildingData != null && IsWaterOnly(b.BuildingData));
+            List<int> keep = AnchorMedium.Preferred(true, false, waterOnly);
+            if (stat != null)
+            {
+                stat.Filtered++;
+                stat.Skipped += anchors.Count - keep.Count;
+                if (!waterOnly.Contains(false)) stat.NoSameMedium++; // every anchor was water: the game's pool is kept
+            }
+            if (keep.Count == anchors.Count) return anchors;
+            List<BaseBuilding> kept = new List<BaseBuilding>(keep.Count);
+            foreach (int i in keep) kept.Add(anchors[i]);
+            return kept;
+        }
+
+        // The game's own step (a ring spot around a random anchor) with land anchors preferred. False when the preference
+        // changes nothing, so the game's step runs unchanged.
+        private static bool LandStep(AIBuildingPlacementSearch search, BuildingData data, AICore core)
+        {
+            if (!Plugin.AnchorMediumMatch.Value) return false;
+            List<BaseBuilding> all = core.PlayerData.BuildingHandler.Buildings;
+            if (all.Count == 0) return false;
+            List<BaseBuilding> anchors = new List<BaseBuilding>();
+            (search.m_needsPowerGrid ? s_findWithPower : s_findNeedPower).Invoke(search, new object[] { all, anchors });
+            if (anchors.Count == 0) return false; // the game: a random spot
+            List<BaseBuilding> kept = SameMedium(data, anchors, StatOf(search));
+            if (kept.Count == anchors.Count) return false;
+            s_searchSteps.SetValue(search, (int)s_searchSteps.GetValue(search) + 1); // the game's step counts itself
+            s_placeNextTo.Invoke(search, new object[] { kept });
+            return true;
+        }
+
+        internal sealed class PlaceSearch
+        {
+            public readonly int Id = ++s_placeSearchIds;
+            public string Building;
+            public string Ai;
+            public int Turn;
+            public int Filtered;     // steps the medium preference ran
+            public int Skipped;      // water anchors left out, summed over those steps
+            public int NoSameMedium; // steps where every anchor was on water (nothing to prefer)
+        }
+
+        private static int s_placeSearchIds;
+        private static readonly Dictionary<AIBuildingPlacementSearch, PlaceSearch> s_placeSearches = new Dictionary<AIBuildingPlacementSearch, PlaceSearch>();
+
+        private static PlaceSearch StatOf(AIBuildingPlacementSearch search)
+        {
+            PlaceSearch p;
+            return search != null && s_placeSearches.TryGetValue(search, out p) ? p : null;
+        }
+
+        // Postfix on AIBuildingPlacementFinder.StartSearch (both finders: the construction queue's and resource
+        // construction's): a Smarter AI's search is tracked until it is placed, given up, or stopped at the end of the turn.
+        private static void StartSearchPostfix(AIBuildingPlacementSearch __result)
+        {
+            if (!Plugin.Active || !Plugin.DirectorEnabled.Value || __result == null) return;
+            try
+            {
+                AICore core = (AICore)s_searchCore.GetValue(__result);
+                if (core == null || !Plugin.IsSmart(core.PlayerData)) return;
+                BuildingData data = (BuildingData)s_searchBuilding.GetValue(__result);
+                s_placeSearches[__result] = new PlaceSearch { Building = data != null ? data.id.Value : "?", Ai = core.PlayerData.UserNickName, Turn = GameManager.CurrentTurn };
+                StateOf(core.PlayerData).PlaceSearchesStarted++;
+            }
+            catch (Exception e)
+            {
+                ReportOnce("place-search-start", e);
+            }
+        }
+
+        // Postfix on AIBuildingPlacementSearch.Success (the finder calls it in the update that completes the search).
+        private static void SearchSuccessPostfix(AIBuildingPlacementSearch __instance)
+        {
+            LogPlaceSearch(__instance, "placed");
+        }
+
+        // Prefix on AIBuildingPlacementFinder.StopAllSearches (each finder's EndTurn): what is still open is cut here.
+        private static void StopAllSearchesPrefix(AIBuildingPlacementFinder __instance)
+        {
+            if (s_placeSearches.Count == 0) return;
+            try
+            {
+                List<AIBuildingPlacementSearch> searches = s_finderSearches.GetValue(__instance) as List<AIBuildingPlacementSearch>;
+                if (searches == null) return;
+                foreach (AIBuildingPlacementSearch search in searches) LogPlaceSearch(search, search.IsComplete ? "placed" : "open");
+            }
+            catch (Exception e)
+            {
+                ReportOnce("place-search-stop", e);
+            }
+        }
+
+        private static void LogPlaceSearch(AIBuildingPlacementSearch search, string outcome)
+        {
+            PlaceSearch p;
+            if (search == null || !s_placeSearches.TryGetValue(search, out p)) return;
+            s_placeSearches.Remove(search); // exactly one terminal record per search
+            try
+            {
+                Plugin.WriteDecision(new Json().Str("e", "place-search").Int("t", p.Turn).Str("ai", p.Ai).Int("searchId", p.Id).Str("building", p.Building)
+                    .Str("outcome", outcome).Int("steps", (int)s_searchSteps.GetValue(search)).Int("filtered", p.Filtered)
+                    .Int("skippedAnchors", p.Skipped).Int("noSameMedium", p.NoSameMedium).ToString());
+            }
+            catch (Exception e)
+            {
+                ReportOnce("place-search-log", e);
+            }
+        }
+
         // Prefix on AIBuildingPlacementFinder.Update: give up on a placement after a step cap instead of
         // searching until the turn ends, and give the construction queue its budget back.
         private static void FinderUpdatePrefix(AIBuildingPlacementFinder __instance)
@@ -3022,6 +3156,7 @@ namespace InterplanetaryAI
                     AICore core = (AICore)s_searchCore.GetValue(search);
                     if (core == null || !Plugin.IsSmart(core.PlayerData)) continue;
                     searches.RemoveAt(i);
+                    LogPlaceSearch(search, "gave-up"); // v0.21 (council I1a)
                     Abandon(core, __instance, (BuildingData)s_searchBuilding.GetValue(search));
                 }
             }
@@ -3141,6 +3276,7 @@ namespace InterplanetaryAI
                 .Bool("retaliationLatched", RetaliationOf(core.PlayerData).Latched).Int("retaliationLatchTurn", RetaliationOf(core.PlayerData).LatchTurn)
                 .Int("retaliationQuiet", RetaliationOf(core.PlayerData).QuietTurns) // v0.20 (council I2)
                 .Int("unpoweredWeapons", d.UnpoweredWeapons).Int("searchesOpenAtEnd", d.SearchesOpenAtEnd) // v0.20 (council I1a)
+                .Int("placeSearchesStarted", d.PlaceSearchesStarted) // v0.21 (council I1a)
                 .Int("energyStart", d.TurnStartEnergy).Int("materialStart", d.TurnStartMaterial)
                 .Int("energyLeft", core.Resources.Energy).Int("materialLeft", core.Resources.Material)
                 .Num("upkeep", d.Upkeep).Int("ownDefenses", d.OwnDefenses).Int("desiredDefenses", d.DesiredDefenses).Int("defenseTurnCap", d.DefenseTurnCap)

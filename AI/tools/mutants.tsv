@@ -11,3 +11,7 @@ material-guard-off	Brain/Strategy.cs	if (materialLeft < Math.Max(0, releasedMate
 lff-reason-guard	Brain/Strategy.cs	if (!energyHold && !(pulseHold && allowPulseWait)) return "reason:" + d.Reason;	;	pulse path off
 latch-carry-off	Brain/Director.cs	if (war && !s.Latched && turn >= latchFromTurn)	if (false)	Eddie m24
 schedule-touches	Brain/Director.cs	if (turn >= warFromTurn) return true;	if (turn >= warFromTurn) { RetaliationWar(retaliation, turn, recentDamage, damageTrigger, latchFromTurn, quietTurns); return true; }	after the scheduled war turn
+medium-land-off	Brain/Coverage.cs	if (buildingOnLand && !buildingOnWater && water) continue;  // land-only building, water anchor	;	land-only building: only the land anchor
+medium-water-off	Brain/Coverage.cs	if (buildingOnWater && !buildingOnLand && !water) continue; // water-only building, land anchor	;	water-only building: only the water anchors
+medium-no-fallback	Brain/Coverage.cs	return same.Count > 0 ? same : all;	return same;	no land anchor: every anchor is kept
+medium-both-filtered	Brain/Coverage.cs	if (buildingOnLand && !buildingOnWater && water) continue;  // land-only building, water anchor	if (buildingOnLand && water) continue;	a building for both media keeps every anchor

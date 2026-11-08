@@ -16,6 +16,8 @@ DO_NO_HARM = {"wait_mean": 10.0, "wait_max": 45.0, "human_first": 0.85, "shortfa
               "collapse": 0.20}
 STRIKE_EVERY = 2               # StrategySettings.StrikeEvery
 MAX_HOLD_BASELINE = 3 / 186.0  # max-hold share of war strategy records, matches 22-26 (v0.18-v0.19)
+LAND_GIVEUP_BASELINE = 114 / 159.0  # v0.21 I9: land placements given up per director record, matches 27-28 (v0.20)
+WATER_ONLY = {"bui_OffshoreMine", "bui_FloatingPlant"}
 
 
 def segments(rows):
@@ -88,8 +90,38 @@ def evaluate(rows, human="jogi", only=None):
     gate(res, "I1a director fields", "UNTESTED" if not dirs else ("PASS" if len(wired) == len(dirs) else "FAIL"),
          "%d/%d director records with unpoweredWeapons, searchesOpenAtEnd, retaliationLatched" % (len(wired), len(dirs)))
 
-    gate(res, "I1a every placement search terminal", "UNTESTED",
-         "generic placement searches have no start record yet (only searchesOpenAtEnd); planned for v0.21")
+    # v0.21: every started search (director placeSearchesStarted, per AI and turn) has exactly one place-search record.
+    counted = [r for r in dirs if "placeSearchesStarted" in r]
+    if counted:
+        places = [r for r in rows if r.get("e") == "place-search" and r.get("ai") in ais]
+        ids = [r.get("searchId") for r in places]
+        per = defaultdict(int)
+        for r in places:
+            per[(r["ai"], r["t"])] += 1
+        bad = ["%s T%d %d vs %d" % (r["ai"], r["t"], r["placeSearchesStarted"], per[(r["ai"], r["t"])])
+               for r in counted if r["placeSearchesStarted"] != per[(r["ai"], r["t"])]]
+        dup = len(ids) - len(set(ids))
+        gate(res, "I1a every placement search terminal", "PASS" if not bad and not dup else "FAIL",
+             "%d searches over %d director records; mismatched AI-turns %d %s; duplicate ids %d" % (len(places), len(counted), len(bad), bad[:3], dup))
+    else:
+        gate(res, "I1a every placement search terminal", "UNTESTED", "no director record carries placeSearchesStarted (before v0.21)")
+
+    # v0.21 (council I9): land placements given up per AI-turn must not rise above matches 27-28 (114 / 159 = 0.72; defenses
+    # and the water-only types are excluded). Predeclared 2026-11-08 before the first v0.21 match.
+    if counted:
+        given = sum(v for r in counted for k, v in (r.get("placementFailures") or {}).items() if k not in WATER_ONLY and "Defense" not in k)
+        rate = given / len(counted)
+        gate(res, "I9 land placements given up per AI-turn", "PASS" if rate <= LAND_GIVEUP_BASELINE else "FAIL",
+             "%.2f (%d over %d AI-turns; baseline %.2f)" % (rate, given, len(counted), LAND_GIVEUP_BASELINE))
+        land = [r for r in rows if r.get("e") == "place-search" and r.get("ai") in ais and r.get("filtered", 0) > 0]
+        outcome = defaultdict(int)
+        for r in land:
+            outcome[r["outcome"]] += 1
+        gate(res, "INFO land searches with the medium preference", "INFO",
+             "%d searches %s; water anchors skipped %d; steps with only water anchors %d"
+             % (len(land), dict(outcome), sum(r.get("skippedAnchors", 0) for r in land), sum(r.get("noSameMedium", 0) for r in land)))
+    else:
+        gate(res, "I9 land placements given up per AI-turn", "UNTESTED", "before v0.21")
 
     # I2 retaliation latch: no war -> peace after a latch, per AI; opportunity = an AI that latched
     latched_ais, flips, drops = 0, [], []
@@ -303,6 +335,18 @@ def selftest():
     checks.append(("shortfall on a non-collapse turn FAILs DNH", status(short, sf) == "FAIL"))
     crash = [base[0], dict(base[1], reserveShortfall=50), dict(base[1], t=11), base[2], base[3], eco(11, 100), eco(12, 70)]
     checks.append(("shortfall on a collapse turn is excluded", status(crash, sf) == "PASS"))
+    term = "I1a every placement search terminal"
+    ps = lambda i, out: {"e": "place-search", "ai": "X", "t": 12, "searchId": i, "outcome": out, "filtered": 1}
+    two = [base[0], dict(base[1], placeSearchesStarted=2), base[2], base[3], ps(1, "placed"), ps(2, "gave-up")]
+    checks.append(("2 started, 2 terminal: placement PASS", status(two, term) == "PASS"))
+    checks.append(("2 started, 1 terminal: placement FAILs", status(two[:-1], term) == "FAIL"))
+    checks.append(("a duplicate terminal FAILs", status(two[:-1] + [ps(1, "open")], term) == "FAIL"))
+    checks.append(("before v0.21 the placement gate is UNTESTED", status(base, term) == "UNTESTED"))
+    i9 = "I9 land placements given up per AI-turn"
+    many = [base[0], dict(base[1], placeSearchesStarted=0, placementFailures={"bui_SolarPlant": 3}), base[2], base[3]]
+    checks.append(("3 solar given up in 1 AI-turn FAILs I9", status(many, i9) == "FAIL"))
+    checks.append(("water and defense give-ups do not count for I9",
+                   status([base[0], dict(base[1], placeSearchesStarted=0, placementFailures={"bui_OffshoreMine": 3, "bui_IonDefense": 4}), base[2], base[3]], i9) == "PASS"))
     failed = [n for n, ok in checks if not ok]
     for n, ok in checks:
         print(("ok    " if ok else "FAIL  ") + n)

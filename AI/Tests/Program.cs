@@ -529,6 +529,16 @@ namespace InterplanetaryAI.Tests
             Check(!PlacementBackoff.Throttled(small, "off", 15), "2 failures do not start a backoff");
             Check(PlacementBackoff.Next(none, new Dictionary<string, int> { { "off", 6 } }, none, 14, 0).Count == 0, "turns 0 = off");
 
+            // v0.21 (council I9): anchors on the building's own medium. Match 28 shape: a land solar plant whose anchor pool
+            // is mostly offshore mines (water-only) and one land building.
+            var pool = new List<bool> { true, true, false, true };
+            Check(string.Join(",", AnchorMedium.Preferred(true, false, pool)) == "2", "land-only building: only the land anchor; got " + string.Join(",", AnchorMedium.Preferred(true, false, pool)));
+            Check(string.Join(",", AnchorMedium.Preferred(false, true, pool)) == "0,1,3", "water-only building: only the water anchors");
+            Check(string.Join(",", AnchorMedium.Preferred(true, true, pool)) == "0,1,2,3", "a building for both media keeps every anchor");
+            var allWater = new List<bool> { true, true };
+            Check(string.Join(",", AnchorMedium.Preferred(true, false, allWater)) == "0,1", "no land anchor: every anchor is kept (the game's behaviour, coastal spots)");
+            Check(AnchorMedium.Preferred(true, false, new List<bool>()).Count == 0, "no anchors: none");
+
             // Opening: with no free slot (a queued plant's connectors are unusable this turn), one plant, then the material waits.
             EconOption mineT1 = new EconOption { Id = "mine", Kind = OptionKind.Producer, Energy = 300, Material = 300, MaterialGain = 100f, NeedsSlot = true };
             EconOption solarT1 = new EconOption { Id = "solar", Kind = OptionKind.Plant, Energy = 250, Material = 400, EnergyGain = 100f };

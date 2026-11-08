@@ -385,4 +385,29 @@ namespace InterplanetaryAI.Brain
             return step >= Math.Max(0, coveredSteps);
         }
     }
+
+    // v0.21 (council I9): the placement search picks a random anchor (a building with a free power slot, or one that
+    // needs power when a plant is placed) and tries a spot on a ring around it. A land-only building on a ring around a
+    // water-only anchor lands in the sea and is refused; match 28's Smarter AIs had 15-43 offshore mines and 17-28
+    // floating plants in the anchor pool, and gave up 73 land non-defense placements (solar 28, nuclear 26, railgun 10,
+    // telescope 9; 118 with the defenses).
+    // Prefer anchors on the building's own medium; when none exists, keep every anchor (the game's behaviour), so a
+    // coastal anchor can still be tried and nothing that placed before can stop placing.
+    public static class AnchorMedium
+    {
+        public static List<int> Preferred(bool buildingOnLand, bool buildingOnWater, IList<bool> anchorWaterOnly)
+        {
+            List<int> all = new List<int>();
+            List<int> same = new List<int>();
+            for (int i = 0; i < anchorWaterOnly.Count; i++)
+            {
+                all.Add(i);
+                bool water = anchorWaterOnly[i];
+                if (buildingOnLand && !buildingOnWater && water) continue;  // land-only building, water anchor
+                if (buildingOnWater && !buildingOnLand && !water) continue; // water-only building, land anchor
+                same.Add(i);
+            }
+            return same.Count > 0 ? same : all;
+        }
+    }
 }

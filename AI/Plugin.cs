@@ -24,7 +24,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.20.0";
+        public const string VERSION = "0.21.0";
 
         internal static ManualLogSource Log;
 
@@ -340,6 +340,7 @@ namespace InterplanetaryAI
         internal static ConfigEntry<bool> FreeFire;                  // v0.16.2
         internal static ConfigEntry<float> FreeFireMinPassing;       // v0.16.2
         internal static ConfigEntry<bool> LateFirePulseWait;         // v0.20 (council S1)
+        internal static ConfigEntry<bool> AnchorMediumMatch;         // v0.21 (council I9)
         internal static ConfigEntry<float> MaterialBoundEnergyShare; // v0.16.2
         internal static ConfigEntry<float> MaterialBoundStockShare;  // v0.16.2
         internal static ConfigEntry<int> MaterialBoundMinEnergy;     // v0.16.2
@@ -775,6 +776,8 @@ namespace InterplanetaryAI
             FreeFireMinPassing = Config.Bind("Strategy", "FreeFireMinPassing", 4f, "v0.16.2: fewest expected shots through the commit's defenses for free fire.");
             LateFirePulseWait = Config.Bind("Strategy", "LateFirePulseWait", true,
                 "v0.20 (council S1): late free fire also on pulse-wait holds when the energy actually left covers the reservation; the volley is booked like the hold it replaced, so the pulse cadence is unchanged. m25: Donnels T33 held with 8,828 left vs 5,960.");
+            AnchorMediumMatch = Config.Bind("Director", "AnchorMediumMatch", true,
+                "v0.21 (council I9): a land-only building (solar and nuclear plants, railguns, telescopes) is placed around land anchors when any exist, instead of a random anchor that may be an offshore mine or floating plant (its ring lands in the sea). With no land anchor the game's pool is kept. m28: 73 land placements given up (118 with defenses) while the anchor pools held 15-43 offshore mines.");
             MaterialBoundEnergyShare = Config.Bind("Director", "MaterialBoundEnergyShare", 0.2f,
                 "v0.16.2: material binds when last turn left at least this share of its energy (and MaterialBoundMinEnergy) unspent while its material was spent down to MaterialBoundStockShare. Then extraction goes first and energy gains are worth nothing. 0 = off.");
             MaterialBoundStockShare = Config.Bind("Director", "MaterialBoundStockShare", 0.1f, "v0.16.2: most material left at turn end, as a share of the turn's material, that counts as spent down.");
@@ -838,6 +841,10 @@ namespace InterplanetaryAI
             patched += TryPatch(typeof(AIDefenseConstruction), "TryConstructDefense", "TryConstructDefensePrefix", null, typeof(EconomyPatches));
             patched += TryPatch(typeof(AIBuildingPlacementSearch), "step", "SearchStepPrefix", null, typeof(DirectorPatches));
             patched += TryPatch(typeof(AIBuildingPlacementFinder), "Update", "FinderUpdatePrefix", null, typeof(DirectorPatches));
+            // v0.21 (council I1a): one place-search record per Smarter-AI placement search (start, then placed / gave-up / open)
+            patched += TryPatch(typeof(AIBuildingPlacementFinder), "StartSearch", null, "StartSearchPostfix", typeof(DirectorPatches));
+            patched += TryPatch(typeof(AIBuildingPlacementSearch), "Success", null, "SearchSuccessPostfix", typeof(DirectorPatches));
+            patched += TryPatch(typeof(AIBuildingPlacementFinder), "StopAllSearches", "StopAllSearchesPrefix", null, typeof(DirectorPatches));
             patched += TryPatch(typeof(PlayerDefenseHandler), "IsHitIntercepted", "BeforeIntercept", "AfterIntercept", typeof(LedgerPatches));
             // Terra v0.17.1 #1: the laser patches have no owner check (transpiled bans), so they would change the original
             // AIs too; they install only when every level runs the Smarter AI.
@@ -846,7 +853,7 @@ namespace InterplanetaryAI
             int laserPatches = EnableLasers.Value && everyLevelSmart ? LaserPatches.Install(new Harmony(GUID + ".lasers")) : 0;
             int guards = TurnGuard.Install(m_harmony); // v0.17
             int aimWatch = AimWatch.Install(m_harmony); // v0.18
-            Log.LogInfo(NAME + " " + VERSION + " loaded; " + patched + " of 16 hooks patched; turn guard " + guards + " of 9; aim watch " + aimWatch + " of 1. Director " + (DirectorEnabled.Value ? "on" : "off")
+            Log.LogInfo(NAME + " " + VERSION + " loaded; " + patched + " of 19 hooks patched; turn guard " + guards + " of 9; aim watch " + aimWatch + " of 1. Director " + (DirectorEnabled.Value ? "on" : "off")
                 + ", war from turn " + WarFromTurn.Value + ". Accuracy by level: " + AccuracyByLevel.Value
                 + "; research plan " + ResearchPlanIds.Count + " techs; superweapons " + Superweapons.Value
                 + "; lasers " + (EnableLasers.Value ? laserPatches + " of 5 patches" : "off"));
