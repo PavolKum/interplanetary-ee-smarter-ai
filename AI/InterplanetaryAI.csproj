@@ -8,7 +8,7 @@
     <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
-    <Version>0.4.1</Version>
+    <Version>0.20.0</Version>
     <DebugType>portable</DebugType>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <!-- Same as QoL: without this MSBuild refuses to resolve Assembly-CSharp (MSB3258). -->
@@ -16,6 +16,8 @@
     <GameDir>C:\Program Files (x86)\Steam\steamapps\common\Interplanetary Enhanced Edition</GameDir>
     <ManagedDir>$(GameDir)\Interplanetary_Data\Managed</ManagedDir>
     <BepInExCore>$(GameDir)\BepInEx\core</BepInExCore>
+    <!-- v0.20: the StampBuild target sets InformationalVersion itself (short commit + dirty flag). -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -49,8 +51,38 @@
     </Reference>
   </ItemGroup>
 
-  <!-- Pass -p:SkipDeploy=true while the game is running. -->
-  <Target Name="DeployToGame" AfterTargets="Build" Condition="'$(SkipDeploy)' != 'true'">
+  <!-- v0.20 (council I1a): stamp the git commit and a dirty flag into InformationalVersion ("0.20.0+abc1234" or
+       "0.20.0+abc1234.dirty"); the plugin logs it in every init record so a data set names the tree that produced it. -->
+  <Target Name="StampBuild" BeforeTargets="GetAssemblyAttributes;GenerateAssemblyInfo">
+    <Exec Command="git rev-parse --short HEAD 2&gt;nul" ConsoleToMSBuild="true" StandardOutputImportance="low" IgnoreExitCode="true" WorkingDirectory="$(MSBuildProjectDirectory)">
+      <Output TaskParameter="ConsoleOutput" PropertyName="GitCommit" />
+    </Exec>
+    <Exec Command="git status --porcelain --untracked-files=all -- *.cs *.csproj Brain 2&gt;nul" ConsoleToMSBuild="true" StandardOutputImportance="low" IgnoreExitCode="true" WorkingDirectory="$(MSBuildProjectDirectory)">
+      <Output TaskParameter="ConsoleOutput" PropertyName="GitDirty" />
+    </Exec>
+    <PropertyGroup>
+      <GitCommit Condition="'$(GitCommit)' == ''">nogit</GitCommit>
+      <InformationalVersion>$(Version)+$(GitCommit)</InformationalVersion>
+      <InformationalVersion Condition="'$(GitDirty)' != ''">$(Version)+$(GitCommit).dirty</InformationalVersion>
+    </PropertyGroup>
+  </Target>
+
+  <!-- v0.20 (council I1b): one version source. The build fails when <Version> and Plugin.VERSION disagree. -->
+  <Target Name="CheckVersion" BeforeTargets="CoreCompile">
+    <PropertyGroup>
+      <PluginSource>$([System.IO.File]::ReadAllText('$(MSBuildProjectDirectory)\Plugin.cs'))</PluginSource>
+      <PluginVersion>$([System.Text.RegularExpressions.Regex]::Match($(PluginSource), 'VERSION = "([0-9.]+)"').Groups[1].Value)</PluginVersion>
+    </PropertyGroup>
+    <Error Condition="'$(PluginVersion)' != '$(Version)'" Text="Version mismatch: csproj $(Version) vs Plugin.VERSION $(PluginVersion)." />
+  </Target>
+
+  <!-- v0.20 (council I1b): deploying into the game folder is opt-in (-p:Deploy=true) and refuses while the game runs.
+       A plain `dotnet build AI -c Release` never touches the game. -->
+  <Target Name="DeployToGame" AfterTargets="Build" Condition="'$(Deploy)' == 'true'">
+    <Exec Command="tasklist /FI &quot;IMAGENAME eq Interplanetary.exe&quot; /NH" ConsoleToMSBuild="true" StandardOutputImportance="low">
+      <Output TaskParameter="ConsoleOutput" PropertyName="GameProcesses" />
+    </Exec>
+    <Error Condition="$(GameProcesses.Contains('Interplanetary.exe'))" Text="Interplanetary.exe is running: close the game before deploying." />
     <MakeDir Directories="$(GameDir)\BepInEx\plugins\InterplanetaryAI" />
     <Copy SourceFiles="$(OutDir)$(AssemblyName).dll" DestinationFolder="$(GameDir)\BepInEx\plugins\InterplanetaryAI" />
   </Target>

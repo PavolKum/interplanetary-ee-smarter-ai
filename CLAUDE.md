@@ -5,7 +5,7 @@ then the latest `docs/playtests/` note and `docs/reviews/*-disposition.md`.
 
 ## Hard rules
 
-- **Never deploy over a running game.** If `Interplanetary.exe` is running, build with `dotnet build AI -c Release -p:SkipDeploy=true`.
+- **Never deploy over a running game.** Since v0.20 a plain `dotnet build AI -c Release` never deploys; install with `-p:Deploy=true`, which fails while `Interplanetary.exe` runs.
   A plain `dotnet build AI -c Release` copies the DLL into the game's `BepInEx/plugins/InterplanetaryAI/`. Tell Pavol before installing.
 - Commit, never push unless asked.
 - `decompiled/` is the source of truth for game behaviour. Check a claim there (file:line) before coding on it.

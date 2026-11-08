@@ -27,6 +27,7 @@ namespace InterplanetaryAI
             public int HoldTurns;
             public int ReleasedEnergy;
             public int ReleasedMaterial;        // v0.19: for late free fire
+            public bool LatePulse;              // v0.20 (council S1): this turn's volley is a late pulse-wait volley (pulse clock kept)
             public float GuidedFiring, UnguidedFiring, ArtilleryProjectiles; // v0.16 item 4 (logged)
             public int FreeEnergy = -1, FiringCost;                          // v0.16.2 free fire (logged)
             public bool Reported;               // this turn's firing has been counted
@@ -104,6 +105,7 @@ namespace InterplanetaryAI
                 s.Decision = null;
                 s.ReleasedEnergy = 0;
                 s.ReleasedMaterial = 0;
+                s.LatePulse = false;
             }
         }
 
@@ -123,6 +125,13 @@ namespace InterplanetaryAI
                 int low;
                 s.LowYield.TryGetValue(commit, out low);
                 s.LowYield[commit] = found < Plugin.StrategyCfg.AbortBelowWeapons ? low + 1 : 0;
+            }
+            // v0.20 (council S1): a late pulse-wait volley is booked like the hold it replaced, so the pulse clock
+            // (LastStrikeTurn) and the max-hold count (HoldTurns) move exactly as without it.
+            if (s.LatePulse)
+            {
+                if (s.Decision.War && s.Decision.Shots > 0) s.HoldTurns++;
+                return;
             }
             if (fired > 0)
             {
@@ -152,6 +161,7 @@ namespace InterplanetaryAI
             state.Decision = null;
             state.ReleasedEnergy = 0;
             state.ReleasedMaterial = 0;
+            state.LatePulse = false;
             state.Reported = false;
             state.Aborted = false;
 
@@ -159,7 +169,7 @@ namespace InterplanetaryAI
             try
             {
                 // v0.16 item 4: the latched war turn (T16 with Orbital Assembly and WarMinIncome, else WarFallbackTurn).
-                bool war = EconomyDirector.WarPhase(turn, DirectorPatches.WarTurnFor(me, turn), recentDamage, Plugin.WarDamageTrigger.Value);
+                bool war = DirectorPatches.WarFor(me, turn, DirectorPatches.WarTurnFor(me, turn), recentDamage); // v0.20 (council I2)
                 List<CelestialBody> planets = core.EnemyPlanets;
                 List<EnemyView> views = new List<EnemyView>();
                 foreach (CelestialBody planet in planets) views.Add(AiPatches.BuildEnemyView(me, planet.Player, turn));
@@ -345,24 +355,45 @@ namespace InterplanetaryAI
             State s;
             if (!Enabled || core == null || !s_states.TryGetValue(core.PlayerData.PlayerID, out s) || s.Turn != GameManager.CurrentTurn) return;
             StrategyDecision d = s.Decision;
-            if (!Plugin.DirectorEnabled.Value || !DirectorPatches.FundedThisTurn(core.PlayerData.PlayerID)) return;
+            // v0.20 (council I1a): a war hold that late fire could have taken logs why it did not (opportunity denominator).
+            bool candidate = d != null && !d.Fire && d.War && (d.Reason == "below-saturation" || d.Reason == "pulse-wait");
+            if (!Plugin.DirectorEnabled.Value || !DirectorPatches.FundedThisTurn(core.PlayerData.PlayerID))
+            {
+                if (candidate) LogLateRefusal(core, s, d, "not-funded", core.Resources.Energy, core.Resources.Material);
+                return;
+            }
             int energyLeft = core.Resources.Energy, materialLeft = core.Resources.Material;
             EconomyPatches.AiEconomyState econ;
             if (EconomyPatches.States.TryGetValue(core.PlayerData.PlayerID, out econ))
             {
                 if (econ.BuyPending && !econ.Bought) { energyLeft -= Math.Max(0, econ.GoalEnergyCost); materialLeft -= Math.Max(0, econ.GoalMaterialCost); }
             }
-            if (!Strategy.LateFreeFire(d, energyLeft, materialLeft, s.ReleasedEnergy, s.ReleasedMaterial, Plugin.StrategyCfg)) return;
+            string refusal = Strategy.LateFreeFireRefusal(d, energyLeft, materialLeft, s.ReleasedEnergy, s.ReleasedMaterial, Plugin.StrategyCfg,
+                Plugin.StrategyCfg.LateFirePulseWait);
+            if (refusal != "")
+            {
+                if (candidate) LogLateRefusal(core, s, d, refusal, energyLeft, materialLeft);
+                return;
+            }
+            bool pulse = d.Reason == "pulse-wait";
             core.Resources.Energy -= s.ReleasedEnergy;
             DirectorPatches.NoteLateFire(core.PlayerData.PlayerID, s.ReleasedEnergy);
             core.Resources.Material -= Math.Max(0, s.ReleasedMaterial);
             Plugin.WriteDecision(new Json().Str("e", "late-free-fire").Int("t", s.Turn).Str("ai", core.PlayerData.UserNickName)
-                .Int("energyLeft", energyLeft).Int("materialLeft", materialLeft).Int("reservation", s.ReleasedEnergy)
+                .Str("held", d.Reason).Int("energyLeft", energyLeft).Int("materialLeft", materialLeft).Int("reservation", s.ReleasedEnergy)
                 .Int("materialReservation", s.ReleasedMaterial).Int("shots", d.Shots).Num("passing", d.Passing).Int("commit", d.CommitTargetId).ToString());
             d.Fire = true;
-            d.Reason = "late-free-fire";
+            d.Reason = pulse ? "late-pulse-fire" : "late-free-fire";
+            s.LatePulse = pulse;
             s.ReleasedEnergy = 0;
             s.ReleasedMaterial = 0;
+        }
+
+        private static void LogLateRefusal(AICore core, State s, StrategyDecision d, string reason, int energyLeft, int materialLeft)
+        {
+            Plugin.WriteDecision(new Json().Str("e", "late-free-fire-refused").Int("t", s.Turn).Str("ai", core.PlayerData.UserNickName)
+                .Str("held", d.Reason).Str("refusal", reason).Int("energyLeft", energyLeft).Int("materialLeft", materialLeft)
+                .Int("reservation", s.ReleasedEnergy).Int("shots", d.Shots).Num("passing", d.Passing).ToString());
         }
 
         private static void Add(Dictionary<string, float> counts, string key, float n)

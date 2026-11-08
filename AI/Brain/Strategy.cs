@@ -111,6 +111,7 @@ namespace InterplanetaryAI.Brain
         // FreeFireMinPassing shots are expected through (Terra v0.16.2: not salvos that the defenses stop almost entirely).
         public bool FreeFire = true;
         public float FreeFireMinPassing = 4f;
+        public bool LateFirePulseWait = true;      // v0.20 (council S1): late free fire also on pulse-wait holds, pulse clock kept
     }
 
     public sealed class StrategyDecision
@@ -287,9 +288,30 @@ namespace InterplanetaryAI.Brain
         public static bool LateFreeFire(StrategyDecision d, int energyLeft, int materialLeft, int releasedEnergy, int releasedMaterial,
             StrategySettings s)
         {
-            if (d == null || d.Fire || !d.War || d.CommitTargetId < 0 || d.Reason != "below-saturation") return false;
-            if (!s.FreeFire || d.Shots < s.MinWeapons || d.Passing < Math.Max(0.01f, s.FreeFireMinPassing)) return false;
-            return releasedEnergy > 0 && energyLeft >= releasedEnergy && materialLeft >= Math.Max(0, releasedMaterial);
+            return LateFreeFireRefusal(d, energyLeft, materialLeft, releasedEnergy, releasedMaterial, s, false) == "";
+        }
+
+        // v0.20 (council S1, I1a): the same rule with an optional pulse-wait path, returning why it refused ("" = fire).
+        // Pulse waits (a saturated salvo held for the pulse cadence) left energy unspent too: m25 Donnels T33 8,828 left vs a
+        // 5,960 reservation, Zenon T33 6,544. A late volley on a pulse-wait turn must not move the pulse clock (the caller
+        // keeps LastStrikeTurn and HoldTurns as they were), so the next scheduled pulse still fires in full.
+        public static string LateFreeFireRefusal(StrategyDecision d, int energyLeft, int materialLeft, int releasedEnergy,
+            int releasedMaterial, StrategySettings s, bool allowPulseWait)
+        {
+            if (d == null) return "no-decision";
+            if (d.Fire) return "firing";
+            if (!d.War) return "peace";
+            if (d.CommitTargetId < 0) return "no-commit";
+            bool energyHold = d.Reason == "below-saturation";
+            bool pulseHold = d.Reason == "pulse-wait";
+            if (!energyHold && !(pulseHold && allowPulseWait)) return "reason:" + d.Reason;
+            if (!s.FreeFire) return "free-fire-off";
+            if (d.Shots < s.MinWeapons) return "few-weapons";
+            if (d.Passing < Math.Max(0.01f, s.FreeFireMinPassing)) return "few-passing";
+            if (releasedEnergy <= 0) return "nothing-released";
+            if (energyLeft < releasedEnergy) return "energy";
+            if (materialLeft < Math.Max(0, releasedMaterial)) return "material";
+            return "";
         }
 
         // v0.16.2: holding would release energy that would go unspent (freeEnergy < 0 = unknown: hold).

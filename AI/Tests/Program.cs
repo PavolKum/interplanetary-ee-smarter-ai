@@ -1717,6 +1717,83 @@ namespace InterplanetaryAI.Tests
             Check(!Strategy.LateFreeFire(null, 17120, 2891, 3500, 0, sl), "no decision: hold");
             Check(!Strategy.LateFreeFire(held(), 17120, 2891, 3500, 0, new StrategySettings { FreeFire = false }), "free fire off: hold");
 
+            // v0.20 (council S1 + I1a): late fire on pulse-wait holds, with a refusal reason for every non-fire. Fixture m25
+            // Donnels T33: pulse-wait, 31 shots, ~21 expected through, 8,828 energy left against a 5,960 reservation.
+            Func<StrategyDecision> pulse = () => new StrategyDecision { Fire = false, War = true, CommitTargetId = 4, Reason = "pulse-wait", Shots = 31, Passing = 21.2f };
+            Check(Strategy.LateFreeFireRefusal(pulse(), 8828, 16, 5960, 0, sl, true) == "", "Donnels T33 pulse-wait, pulse path on: fire");
+            Check(Strategy.LateFreeFireRefusal(pulse(), 8828, 16, 5960, 0, sl, false) == "reason:pulse-wait", "pulse path off: refused with the hold reason");
+            Check(!Strategy.LateFreeFire(pulse(), 8828, 16, 5960, 0, sl), "the v0.19 entry point still refuses pulse waits");
+            Check(Strategy.LateFreeFireRefusal(held(), 17120, 16, 3500, 0, sl, true) == "" && Strategy.LateFreeFireRefusal(held(), 17120, 16, 3500, 0, sl, false) == "",
+                "below-saturation fires on both paths");
+            Check(Strategy.LateFreeFireRefusal(pulse(), 5959, 16, 5960, 0, sl, true) == "energy", "refusal: energy");
+            Check(Strategy.LateFreeFireRefusal(pulse(), 8828, 99, 5960, 100, sl, true) == "material", "refusal: material");
+            Check(Strategy.LateFreeFireRefusal(pulse(), 8828, 16, 0, 0, sl, true) == "nothing-released", "refusal: nothing released");
+            StrategyDecision pwFew = pulse(); pwFew.Shots = sl.MinWeapons - 1;
+            Check(Strategy.LateFreeFireRefusal(pwFew, 8828, 16, 5960, 0, sl, true) == "few-weapons", "refusal: few weapons");
+            StrategyDecision pwPass = pulse(); pwPass.Passing = 0.5f;
+            Check(Strategy.LateFreeFireRefusal(pwPass, 8828, 16, 5960, 0, sl, true) == "few-passing", "refusal: few passing");
+            StrategyDecision pwPeace = pulse(); pwPeace.War = false;
+            Check(Strategy.LateFreeFireRefusal(pwPeace, 8828, 16, 5960, 0, sl, true) == "peace", "refusal: peace");
+            StrategyDecision pwNone = pulse(); pwNone.CommitTargetId = -1;
+            Check(Strategy.LateFreeFireRefusal(pwNone, 8828, 16, 5960, 0, sl, true) == "no-commit", "refusal: no commit");
+            StrategyDecision pwFire = pulse(); pwFire.Fire = true;
+            Check(Strategy.LateFreeFireRefusal(pwFire, 8828, 16, 5960, 0, sl, true) == "firing", "refusal: already firing");
+            StrategyDecision pwBuild = pulse(); pwBuild.Reason = "building";
+            Check(Strategy.LateFreeFireRefusal(pwBuild, 8828, 16, 5960, 0, sl, true) == "reason:building", "refusal: other hold reasons stay held");
+            Check(Strategy.LateFreeFireRefusal(null, 8828, 16, 5960, 0, sl, true) == "no-decision", "refusal: no decision");
+            Check(Strategy.LateFreeFireRefusal(pulse(), 8828, 16, 5960, 0, new StrategySettings { FreeFire = false }, true) == "free-fire-off", "refusal: free fire off");
+
+            // v0.20 (council I2): retaliation latch + hysteresis. Real sequences (economy.recentDamage, trigger 600, scheduled
+            // war T20): Ash m26 T17-T19 865/606/529 went war, war, PEACE; Eddie m24 T14-T19 608/426/418/680/476/333 went
+            // war, peace, peace, war, peace, peace. The v0.19 rule reproduces the flips (baseline), the v0.20 rule does not.
+            Func<int[], float[], int, int, bool[]> run = (turns, dmg, latchFrom, quiet) =>
+            {
+                var st = new EconomyDirector.RetaliationState();
+                var r = new bool[turns.Length];
+                for (int i = 0; i < turns.Length; i++) r[i] = EconomyDirector.WarPhase(turns[i], 20, st, dmg[i], 600f, latchFrom, quiet);
+                return r;
+            };
+            int[] ashT = { 17, 18, 19 }; float[] ashD = { 865.274f, 605.691f, 528.984f };
+            Check(!EconomyDirector.WarPhase(19, 20, 528.984f, 600f), "baseline: the v0.19 rule puts Ash on peace at T19");
+            bool[] ash = run(ashT, ashD, 12, 2);
+            Check(ash[0] && ash[1] && ash[2], "Ash m26: war at T17 latches (>= T12), still war at T19");
+            int[] edT = { 14, 15, 16, 17, 18, 19 }; float[] edD = { 608.3f, 425.8f, 418f, 679.5f, 475.7f, 333f };
+            bool[] ed = run(edT, edD, 12, 2);
+            bool allWar = true; foreach (bool w in ed) allWar &= w;
+            Check(allWar, "Eddie m24: no peace after the T14 trigger");
+            int flipsOld = 0; bool prev = false;
+            for (int i = 0; i < edT.Length; i++) { bool w = EconomyDirector.WarPhase(edT[i], 20, edD[i], 600f); if (prev && !w) flipsOld++; prev = w; }
+            Check(flipsOld == 2, "baseline: the v0.19 rule flips Eddie twice; got " + flipsOld);
+            // Before the latch turn: hysteresis. T8 hit, T9 and T10 quiet -> war, war (quiet 1), peace (quiet 2); T11 hit -> war.
+            bool[] early = run(new[] { 8, 9, 10, 11 }, new[] { 700f, 500f, 500f, 700f }, 12, 2);
+            Check(early[0] && early[1] && !early[2] && early[3], "pre-latch hysteresis: war, war, peace, war");
+            // Fable v0.20 #4: a T11 hit carried into T12 by hysteresis latches (war, war, war), not war, war, peace.
+            bool[] edge = run(new[] { 11, 12, 13 }, new[] { 865f, 590f, 529f }, 12, 2);
+            Check(edge[0] && edge[1] && edge[2], "latch boundary: T11 hit, decaying T12-T13 stays war");
+            // Fable v0.20 #1: after the scheduled war turn the retaliation state is not touched (no latch logged there).
+            var post = new EconomyDirector.RetaliationState();
+            Check(EconomyDirector.WarPhase(21, 20, post, 900f, 600f, 12, 2) && !post.Latched && post.LastTurn == -1,
+                "a hit after the scheduled war turn does not set the latch");
+            bool[] early1 = run(new[] { 8, 9 }, new[] { 700f, 500f }, 12, 1);
+            Check(early1[0] && !early1[1], "quietTurns 1 = the v0.19 behaviour before the latch turn");
+            bool[] noHit = run(new[] { 13, 14 }, new[] { 100f, 0f }, 12, 2);
+            Check(!noHit[0] && !noHit[1], "no trigger: no war before the scheduled turn");
+            Check(run(new[] { 20 }, new[] { 0f }, 12, 2)[0], "scheduled war turn: war without damage");
+            var same = new EconomyDirector.RetaliationState();
+            bool first = EconomyDirector.RetaliationWar(same, 17, 865f, 600f, 12, 2);
+            bool second = EconomyDirector.RetaliationWar(same, 17, 0f, 600f, 12, 2);
+            Check(first && second, "same turn: the second caller gets the first answer");
+            Check(same.Latched && same.LatchTurn == 17, "the latch turn is recorded");
+            var samePre = new EconomyDirector.RetaliationState();
+            bool pre1 = EconomyDirector.RetaliationWar(samePre, 8, 700f, 600f, 12, 2);
+            bool pre2 = EconomyDirector.RetaliationWar(samePre, 8, 0f, 600f, 12, 2);
+            Check(pre1 && pre2 && !samePre.Latched, "same turn before the latch: the second caller (strategy) gets the director's answer");
+            var gap = new EconomyDirector.RetaliationState();
+            EconomyDirector.RetaliationWar(gap, 8, 700f, 600f, 12, 2);
+            Check(!EconomyDirector.RetaliationWar(gap, 10, 0f, 600f, 12, 2), "a skipped turn (earlier save) does not carry a pre-latch retaliation");
+            Check(EconomyDirector.RetaliationWar(null, 8, 700f, 600f, 12, 2) && !EconomyDirector.RetaliationWar(null, 8, 500f, 600f, 12, 2),
+                "no state: the plain trigger");
+
             // Who hit us, by shooter; our own shots are not an enemy's.
             DefenseLedger ledger = new DefenseLedger(3);
             ledger.Record(5, 0, "wea_Railgun", false, 0, 0, 0, 0, true);

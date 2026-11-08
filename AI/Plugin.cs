@@ -24,7 +24,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.19.0";
+        public const string VERSION = "0.20.0";
 
         internal static ManualLogSource Log;
 
@@ -62,6 +62,8 @@ namespace InterplanetaryAI
         internal static ConfigEntry<int> DefenseFromTurn;
         internal static bool HoldHookPatched;
         internal static ConfigEntry<float> WarDamageTrigger;
+        internal static ConfigEntry<int> RetaliationLatchFromTurn;   // v0.20 (council I2)
+        internal static ConfigEntry<int> RetaliationQuietTurns;      // v0.20 (council I2)
         internal static ConfigEntry<float> WarUpkeepShare;
         internal static ConfigEntry<float> RetaliationUpkeepShare;
         internal static ConfigEntry<float> WarSpendShare;
@@ -337,6 +339,7 @@ namespace InterplanetaryAI
         internal static ConfigEntry<float> HumanFirstMinPassing;     // v0.16.2
         internal static ConfigEntry<bool> FreeFire;                  // v0.16.2
         internal static ConfigEntry<float> FreeFireMinPassing;       // v0.16.2
+        internal static ConfigEntry<bool> LateFirePulseWait;         // v0.20 (council S1)
         internal static ConfigEntry<float> MaterialBoundEnergyShare; // v0.16.2
         internal static ConfigEntry<float> MaterialBoundStockShare;  // v0.16.2
         internal static ConfigEntry<int> MaterialBoundMinEnergy;     // v0.16.2
@@ -357,9 +360,60 @@ namespace InterplanetaryAI
         private static StreamWriter s_decisionWriter;
         private Harmony m_harmony;
 
+        private static ConfigFile s_config;                          // v0.20: for the config snapshot in init records
+
+        // v0.20 (council I1a): the build that produced a data set, e.g. "0.20.0+2f297e2" or "0.20.0+2f297e2.dirty"
+        // (InformationalVersion, stamped by the StampBuild target in the csproj).
+        internal static string BuildId
+        {
+            get
+            {
+                try
+                {
+                    object[] a = typeof(Plugin).Assembly.GetCustomAttributes(typeof(AssemblyInformationalVersionAttribute), false);
+                    return a.Length > 0 ? ((AssemblyInformationalVersionAttribute)a[0]).InformationalVersion : VERSION;
+                }
+                catch (Exception) { return VERSION; }
+            }
+        }
+
+        // v0.20 (council I1a): every config value that differs from its default, as a JSON object of strings, so the
+        // decision log records the effective configuration (and an experiment arm set through the config).
+        internal static string NonDefaultConfigJson()
+        {
+            var sb = new StringBuilder("{");
+            try
+            {
+                if (s_config != null)
+                {
+                    bool first = true;
+                    foreach (ConfigDefinition def in s_config.Keys)
+                    {
+                        ConfigEntryBase entry = s_config[def];
+                        if (entry == null || Equals(entry.BoxedValue, entry.DefaultValue)) continue;
+                        if (!first) sb.Append(',');
+                        first = false;
+                        sb.Append('"').Append(JsonEscape(def.Section + "." + def.Key)).Append("\":\"")
+                          .Append(JsonEscape(Convert.ToString(entry.BoxedValue, CultureInfo.InvariantCulture))).Append('"');
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Log.LogWarning("Config snapshot failed: " + e.Message);
+            }
+            return sb.Append('}').ToString();
+        }
+
+        private static string JsonEscape(string s)
+        {
+            return (s ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"");
+        }
+
         private void Awake()
         {
             Log = Logger;
+            s_config = Config;
 
             Enabled = Config.Bind("General", "Enabled", true,
                 "Master switch. The mod only acts in offline games; online games always run the native AI.");
@@ -541,6 +595,10 @@ namespace InterplanetaryAI
                 "v0.10: turn from which the defense floor (DefenseFloorShare) and the defense energy reserve apply, before weapons (WarFromTurn).");
             WarDamageTrigger = Config.Bind("Director", "WarDamageTrigger", 600f,
                 "Recent damage taken that starts retaliation before WarFromTurn.");
+            RetaliationLatchFromTurn = Config.Bind("Director", "RetaliationLatchFromTurn", 12,
+                "v0.20 (council I2): from this turn on, a retaliation (war started by WarDamageTrigger) stays war for the match. Matches 22-26: 4 war->peace flips in 10 AI-lobbies as the damage decayed, 5-8 guns idle on 'peace'.");
+            RetaliationQuietTurns = Config.Bind("Director", "RetaliationQuietTurns", 2,
+                "v0.20 (council I2): before RetaliationLatchFromTurn, a retaliation ends only after this many consecutive turns below WarDamageTrigger (1 = the v0.19 behaviour).");
             WarUpkeepShare = Config.Bind("Director", "WarUpkeepShare", 0.4f,
                 "Cap on weapon firing cost per turn as a share of energy income, from WarFromTurn.");
             RetaliationUpkeepShare = Config.Bind("Director", "RetaliationUpkeepShare", 0.15f,
@@ -715,6 +773,8 @@ namespace InterplanetaryAI
             FreeFire = Config.Bind("Strategy", "FreeFire", true,
                 "v0.16.2: fire instead of holding when last turn's construction already left at least this turn's firing cost unspent and this turn's energy still covers last turn's use (holding would only add to unspent energy). Match 19 held T21-T25 with 0.8-41k energy unspent a turn.");
             FreeFireMinPassing = Config.Bind("Strategy", "FreeFireMinPassing", 4f, "v0.16.2: fewest expected shots through the commit's defenses for free fire.");
+            LateFirePulseWait = Config.Bind("Strategy", "LateFirePulseWait", true,
+                "v0.20 (council S1): late free fire also on pulse-wait holds when the energy actually left covers the reservation; the volley is booked like the hold it replaced, so the pulse cadence is unchanged. m25: Donnels T33 held with 8,828 left vs 5,960.");
             MaterialBoundEnergyShare = Config.Bind("Director", "MaterialBoundEnergyShare", 0.2f,
                 "v0.16.2: material binds when last turn left at least this share of its energy (and MaterialBoundMinEnergy) unspent while its material was spent down to MaterialBoundStockShare. Then extraction goes first and energy gains are worth nothing. 0 = off.");
             MaterialBoundStockShare = Config.Bind("Director", "MaterialBoundStockShare", 0.1f, "v0.16.2: most material left at turn end, as a share of the turn's material, that counts as spent down.");
@@ -772,7 +832,7 @@ namespace InterplanetaryAI
             patched += TryPatch(typeof(PlayerBuildingHandler), "DealDamageToBuilding", "DealDamagePrefix", null);
             patched += TryPatch(typeof(AICore), "BeginTurn", null, "CoreBeginTurnPostfix", typeof(EconomyPatches));
             patched += TryPatch(typeof(AICore), "BeginTurn", "CoreBeginTurnPrefix", null, typeof(DirectorPatches)); // v0.12 dry-mine sales
-            patched += TryPatch(typeof(AICore), "EndTurn", null, "CoreEndTurnPostfix", typeof(EconomyPatches));
+            patched += TryPatch(typeof(AICore), "EndTurn", "CoreEndTurnPrefix", "CoreEndTurnPostfix", typeof(EconomyPatches)); // v0.20: + prefix (open searches)
             patched += TryPatch(typeof(AIConstruction), "tryConstructNewBuilding", "TryConstructPrefix", null, typeof(EconomyPatches));
             patched += TryPatch(typeof(AITechQueue), "BeginTurn", "TechQueueBeginTurnPrefix", null, typeof(EconomyPatches));
             patched += TryPatch(typeof(AIDefenseConstruction), "TryConstructDefense", "TryConstructDefensePrefix", null, typeof(EconomyPatches));
@@ -849,6 +909,7 @@ namespace InterplanetaryAI
             StrategyCfg.HumanFirstReachMinScore = Math.Max(0f, Math.Min(1f, HumanFirstReachMinScore.Value));
             StrategyCfg.FreeFire = FreeFire.Value;
             StrategyCfg.FreeFireMinPassing = Math.Max(0f, FreeFireMinPassing.Value);
+            StrategyCfg.LateFirePulseWait = LateFirePulseWait.Value;
 
             Build.Growth = BuildPlanner.Parse(GrowthWeights.Value, Build.Growth);
             Build.Pressure = BuildPlanner.Parse(PressureWeights.Value, Build.Pressure);

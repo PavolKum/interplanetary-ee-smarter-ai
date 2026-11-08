@@ -1,0 +1,19 @@
+READ-ONLY review. Do not edit, create or delete any file. Stay inside this repository: any path outside it is auto-rejected and ends your run. Finish with the complete written report; include a line containing the word "verdict".
+
+Code review of AI v0.20.0. It implements the council decision record `docs/reviews/2026-11-08-council-v020/decision-record.md` (rev 2; read sections 5-7). Diff: `docs/reviews/terra-ai-v0.20.diff` (git diff HEAD -- AI). New untracked files: `AI/tools/verify_gates.py`, `AI/tools/run_mutants.py`, `AI/tools/mutants.tsv`, `AI/tools/backup_match.py`. decompiled/ is the game source (authoritative). Fairness rules: strict visible-only targeting, no hidden enemy values, human-like accuracy, no resource cheats. Only Smarter AIs (Plugin.IsSmart) may change; original AIs run native code.
+
+Changes:
+1. I2 retaliation latch (`Brain/Director.cs` RetaliationState, RetaliationWar, WarPhase overload; `DirectorPatches.WarFor` and MatchMemory.Retaliation; `StrategyPatches` war flag). From RetaliationLatchFromTurn (12) a damage-triggered war stays war; before it, 2 consecutive sub-threshold turns end it (RetaliationQuietTurns). First call on a turn decides; later calls that turn get the same answer. The scheduled war turn is unchanged, so the pre-schedule RetaliationUpkeepShare (keyed on d.Turn >= d.WarTurn) still applies.
+2. S1 late fire on pulse-wait holds (`Brain/Strategy.cs` LateFreeFireRefusal with allowPulseWait; `StrategyPatches.LateFreeFire`, State.LatePulse; ReportFired books a late pulse volley like the hold it replaced: HoldTurns++ when war and shots, LastStrikeTurn untouched). Config LateFirePulseWait (default true).
+3. I1a logging: init `build` (InformationalVersion stamped by the csproj StampBuild target: short commit + .dirty) and `config` (non-default config values via BepInEx ConfigFile.Keys); aim-search per-gun facing buckets (commit and all) and bearings to enemy planets; fire-paid destination split own/neutral/none; director retaliationLatched/LatchTurn/Quiet, unpoweredWeapons, searchesOpenAtEnd (new prefix on AICore.EndTurn counting AIBuildingPlacementFinder.m_ongoingSearches before the modules' EndTurn); late-free-fire `held` and a new late-free-fire-refused event with a reason.
+4. I1b tooling: csproj deploy opt-in (-p:Deploy=true) failing while Interplanetary.exe runs; a version check (csproj Version vs Plugin.VERSION); verify_gates.py (PASS/FAIL/UNTESTED with denominators, --selftest, --baseline-fa4); run_mutants.py + mutants.tsv; backup_match.py.
+Tests: 648 checks pass; all 9 mutants killed (the runner found one weak test, fixed).
+
+Check especially:
+- RetaliationWar correctness: turn ordering between the director's BeginTurn and the strategy (do they pass the same recentDamage? if not, does first-call-wins create a wrong answer?), a save loaded mid-match (MatchMemory reset), turn gaps, and whether the latch can make war true before T12 forever.
+- The late pulse volley booking: does keeping LastStrikeTurn while booking HoldTurns++ exactly reproduce the control's pulse cadence and max-hold path? Any other consumer of LastStrikeTurn/HoldTurns/Reason ("late-pulse-fire" is a new reason string) that misbehaves (e.g. ShouldAbort, AimWatch FiringTurn, monitors)?
+- The CoreEndTurnPrefix: correct object path to the open searches, smart-only guard, exception safety, and that the hook count log line still reports correctly (TryPatch now passes a prefix for an existing target).
+- verify_gates.py: can every gate fail, are denominators right, does UNTESTED occur where it should?
+- Anything affecting original AIs or fairness.
+
+Report: numbered findings with file:line, severity (blocker/major/minor/nit), the failure scenario, and a fix. Then the verdict (ship / ship with fixes / do not ship).

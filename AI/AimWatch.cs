@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Text;
 using HarmonyLib;
 using Interplanetary.AI;
 using Interplanetary.AI.Trajectories;
@@ -39,7 +40,9 @@ namespace InterplanetaryAI
             public float AddedSeconds;
             public float BaseTimeout = -1f;
             public float HumanDoneAt = -1f;   // v0.19: AI timer when every human had ended his turn (-1 = not yet / no human)
-            public float TimeoutNow = -1f;    // v0.19 (Terra #3): the effective timeout on the last observed frame
+            public float TimeoutNow = -1f;
+            public int[] CommitLive = new int[4], CommitFound = new int[4]; // v0.20 (Fable #5): same frame as Live
+            public int NoTargetLive;    // v0.19 (Terra #3): the effective timeout on the last observed frame
             public string Stop = "";
             public bool Fire;
             public bool Logged;
@@ -151,6 +154,11 @@ namespace InterplanetaryAI
                 // Terra v0.18 #2: the weapons the firing hook can use (normal, powered) aimed at the commit; without a
                 // commit, every searching weapon.
                 int live = 0, found = 0;
+                // Fable v0.20 #5: the commit facing buckets are counted on the same frame and in the same loop as live,
+                // so buckets + noTarget == live by construction (the end-turn snapshot could differ after EndTurn).
+                int[] cLive = new int[4], cFound = new int[4];
+                int noTarget = 0;
+                Vector3 ownPos = __instance.Planet != null ? __instance.Planet.transform.position : Vector3.zero;
                 AIWeaponTargeting targeting = s_targeting.GetValue(__instance) as AIWeaponTargeting;
                 List<AITargetableWeapon> weapons = targeting != null ? s_targetables.GetValue(targeting) as List<AITargetableWeapon> : null;
                 if (weapons != null)
@@ -161,9 +169,20 @@ namespace InterplanetaryAI
                         CelestialBody target = tw.TrajectoryWeapon.TargetEnemy;
                         if (commit >= 0 && (target == null || target.Player == null || target.Player.PlayerID != commit)) continue;
                         live++;
-                        if (tw.TrajectoryWeapon.HasFoundPrimaryTargetTrajectory) found++;
+                        bool has = tw.TrajectoryWeapon.HasFoundPrimaryTargetTrajectory;
+                        if (has) found++;
+                        if (target == null) { noTarget++; continue; }
+                        Vector2 pos = tw.Weapon.WeaponShootingPosition;
+                        float angle = Vector2.Angle(new Vector2(pos.x - ownPos.x, pos.y - ownPos.z),
+                            new Vector2(target.transform.position.x - ownPos.x, target.transform.position.z - ownPos.z));
+                        int b = Math.Min(3, Math.Max(0, (int)(angle / 45f)));
+                        cLive[b]++;
+                        if (has) cFound[b]++;
                     }
                 }
+                w.CommitLive = cLive;
+                w.CommitFound = cFound;
+                w.NoTargetLive = noTarget;
                 w.Live = live;
                 if (found > w.LastFound)
                 {
@@ -223,6 +242,12 @@ namespace InterplanetaryAI
                 AIWeaponTargeting targeting = s_targeting.GetValue(core) as AIWeaponTargeting;
                 List<AITargetableWeapon> weapons = targeting != null ? s_targetables.GetValue(targeting) as List<AITargetableWeapon> : null;
                 Vector3 own = core.Planet.transform.position;
+                // v0.20 (council I1a, I7 go-condition): per-gun facing in 45-degree buckets (0-45, 45-90, 90-135, 135-180),
+                // live and found, once for guns aimed at the commit (sums to `live`) and once for every usable gun with a
+                // target. The I7 screen compares the found rate of the far bucket with the near one over >= 30 fire turns.
+                int commit;
+                FiringTurn(core.PlayerData.PlayerID, out commit);
+                int[] commitLive = w.CommitLive, commitFound = w.CommitFound, allLive = new int[4], allFound = new int[4];
                 if (weapons != null)
                 {
                     foreach (AITargetableWeapon tw in weapons)
@@ -234,7 +259,11 @@ namespace InterplanetaryAI
                         Vector2 normal = new Vector2(pos.x - own.x, pos.y - own.z);
                         Vector2 toTarget = new Vector2(target.transform.position.x - own.x, target.transform.position.z - own.z);
                         float angle = Vector2.Angle(normal, toTarget);
-                        if (tw.TrajectoryWeapon.HasFoundPrimaryTargetTrajectory) { foundN++; foundAngle += angle; }
+                        bool hasFound = tw.TrajectoryWeapon.HasFoundPrimaryTargetTrajectory;
+                        int bucket = Math.Min(3, Math.Max(0, (int)(angle / 45f)));
+                        allLive[bucket]++;
+                        if (hasFound) allFound[bucket]++;
+                        if (hasFound) { foundN++; foundAngle += angle; }
                         else
                         {
                             unfound++;
@@ -243,6 +272,25 @@ namespace InterplanetaryAI
                         }
                     }
                 }
+                // Bearing (degrees, x-z plane) from our planet to each living enemy planet, to measure drift between build
+                // and fire time. Planet positions are public map information.
+                var bearing = new StringBuilder("{");
+                try
+                {
+                    bool firstB = true;
+                    foreach (CelestialBody planet in core.EnemyPlanets)
+                    {
+                        if (planet == null || planet.Player == null) continue;
+                        Vector3 p = planet.transform.position;
+                        float deg = (float)(Math.Atan2(p.z - own.z, p.x - own.x) * 180.0 / Math.PI);
+                        if (!firstB) bearing.Append(',');
+                        firstB = false;
+                        bearing.Append('"').Append(planet.Player.UserNickName.Replace("\"", "'")).Append("\":")
+                               .Append(deg.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture));
+                    }
+                }
+                catch (Exception e) { ReportOnce("aim-bearing", e); }
+                bearing.Append('}');
                 Plugin.WriteDecision(new Json().Str("e", "aim-search").Int("t", w.Turn).Str("ai", core.PlayerData.UserNickName)
                     .Bool("fire", w.Fire).Int("live", w.Live).Int("found", w.Found).Int("foundAt20", w.FoundAt20).Int("foundAt40", w.FoundAt40)
                     .Num("seconds", w.LastTimer).Int("frames", w.Frames).Num("fps", w.LastTimer > 0f ? w.Frames / w.LastTimer : 0f)
@@ -251,12 +299,26 @@ namespace InterplanetaryAI
                     // Terra v0.19 #4: the aim phase only; the AI's end-turn targeting phase and other AIs can add more.
                     .Num("aimWaitAfterHuman", w.HumanDoneAt >= 0f ? Math.Max(0f, w.LastTimer - w.HumanDoneAt) : -1f)
                     .Num("foundFacingDeg", foundN > 0 ? foundAngle / foundN : -1f).Num("unfoundFacingDeg", unfound > 0 ? unfoundAngle / unfound : -1f)
-                    .Int("unfoundFacingAway", facingAway).ToString());
+                    .Int("unfoundFacingAway", facingAway)
+                    .Raw("commitLiveByFacing", IntArray(commitLive)).Int("commitLiveNoTarget", w.NoTargetLive).Raw("commitFoundByFacing", IntArray(commitFound))
+                    .Raw("allLiveByFacing", IntArray(allLive)).Raw("allFoundByFacing", IntArray(allFound))
+                    .Raw("bearing", bearing.ToString()).ToString()); // v0.20 (council I1a)
             }
             catch (Exception e)
             {
                 ReportOnce("aim-search-log", e);
             }
+        }
+
+        private static string IntArray(int[] values)
+        {
+            var sb = new StringBuilder("[");
+            for (int i = 0; i < values.Length; i++)
+            {
+                if (i > 0) sb.Append(',');
+                sb.Append(values[i].ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            return sb.Append(']').ToString();
         }
 
         private static readonly HashSet<string> s_reported = new HashSet<string>();

@@ -1,0 +1,762 @@
+diff --git a/AI/AimWatch.cs b/AI/AimWatch.cs
+index 69cbb3a..b7be20f 100644
+--- a/AI/AimWatch.cs
++++ b/AI/AimWatch.cs
+@@ -1,6 +1,7 @@
+ using System;
+ using System.Collections.Generic;
+ using System.Reflection;
++using System.Text;
+ using HarmonyLib;
+ using Interplanetary.AI;
+ using Interplanetary.AI.Trajectories;
+@@ -223,6 +224,12 @@ namespace InterplanetaryAI
+                 AIWeaponTargeting targeting = s_targeting.GetValue(core) as AIWeaponTargeting;
+                 List<AITargetableWeapon> weapons = targeting != null ? s_targetables.GetValue(targeting) as List<AITargetableWeapon> : null;
+                 Vector3 own = core.Planet.transform.position;
++                // v0.20 (council I1a, I7 go-condition): per-gun facing in 45-degree buckets (0-45, 45-90, 90-135, 135-180),
++                // live and found, once for guns aimed at the commit (sums to `live`) and once for every usable gun with a
++                // target. The I7 screen compares the found rate of the far bucket with the near one over >= 30 fire turns.
++                int commit;
++                FiringTurn(core.PlayerData.PlayerID, out commit);
++                int[] commitLive = new int[4], commitFound = new int[4], allLive = new int[4], allFound = new int[4];
+                 if (weapons != null)
+                 {
+                     foreach (AITargetableWeapon tw in weapons)
+@@ -234,7 +241,17 @@ namespace InterplanetaryAI
+                         Vector2 normal = new Vector2(pos.x - own.x, pos.y - own.z);
+                         Vector2 toTarget = new Vector2(target.transform.position.x - own.x, target.transform.position.z - own.z);
+                         float angle = Vector2.Angle(normal, toTarget);
+-                        if (tw.TrajectoryWeapon.HasFoundPrimaryTargetTrajectory) { foundN++; foundAngle += angle; }
++                        bool hasFound = tw.TrajectoryWeapon.HasFoundPrimaryTargetTrajectory;
++                        int bucket = Math.Min(3, Math.Max(0, (int)(angle / 45f)));
++                        allLive[bucket]++;
++                        if (hasFound) allFound[bucket]++;
++                        bool onCommit = commit < 0 || (target.Player != null && target.Player.PlayerID == commit);
++                        if (onCommit)
++                        {
++                            commitLive[bucket]++;
++                            if (hasFound) commitFound[bucket]++;
++                        }
++                        if (hasFound) { foundN++; foundAngle += angle; }
+                         else
+                         {
+                             unfound++;
+@@ -243,6 +260,25 @@ namespace InterplanetaryAI
+                         }
+                     }
+                 }
++                // Bearing (degrees, x-z plane) from our planet to each living enemy planet, to measure drift between build
++                // and fire time. Planet positions are public map information.
++                var bearing = new StringBuilder("{");
++                try
++                {
++                    bool firstB = true;
++                    foreach (CelestialBody planet in core.EnemyPlanets)
++                    {
++                        if (planet == null || planet.Player == null) continue;
++                        Vector3 p = planet.transform.position;
++                        float deg = (float)(Math.Atan2(p.z - own.z, p.x - own.x) * 180.0 / Math.PI);
++                        if (!firstB) bearing.Append(',');
++                        firstB = false;
++                        bearing.Append('"').Append(planet.Player.UserNickName.Replace("\"", "'")).Append("\":")
++                               .Append(deg.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture));
++                    }
++                }
++                catch (Exception e) { ReportOnce("aim-bearing", e); }
++                bearing.Append('}');
+                 Plugin.WriteDecision(new Json().Str("e", "aim-search").Int("t", w.Turn).Str("ai", core.PlayerData.UserNickName)
+                     .Bool("fire", w.Fire).Int("live", w.Live).Int("found", w.Found).Int("foundAt20", w.FoundAt20).Int("foundAt40", w.FoundAt40)
+                     .Num("seconds", w.LastTimer).Int("frames", w.Frames).Num("fps", w.LastTimer > 0f ? w.Frames / w.LastTimer : 0f)
+@@ -251,7 +287,10 @@ namespace InterplanetaryAI
+                     // Terra v0.19 #4: the aim phase only; the AI's end-turn targeting phase and other AIs can add more.
+                     .Num("aimWaitAfterHuman", w.HumanDoneAt >= 0f ? Math.Max(0f, w.LastTimer - w.HumanDoneAt) : -1f)
+                     .Num("foundFacingDeg", foundN > 0 ? foundAngle / foundN : -1f).Num("unfoundFacingDeg", unfound > 0 ? unfoundAngle / unfound : -1f)
+-                    .Int("unfoundFacingAway", facingAway).ToString());
++                    .Int("unfoundFacingAway", facingAway)
++                    .Raw("commitLiveByFacing", IntArray(commitLive)).Raw("commitFoundByFacing", IntArray(commitFound))
++                    .Raw("allLiveByFacing", IntArray(allLive)).Raw("allFoundByFacing", IntArray(allFound))
++                    .Raw("bearing", bearing.ToString()).ToString()); // v0.20 (council I1a)
+             }
+             catch (Exception e)
+             {
+@@ -259,6 +298,17 @@ namespace InterplanetaryAI
+             }
+         }
+ 
++        private static string IntArray(int[] values)
++        {
++            var sb = new StringBuilder("[");
++            for (int i = 0; i < values.Length; i++)
++            {
++                if (i > 0) sb.Append(',');
++                sb.Append(values[i].ToString(System.Globalization.CultureInfo.InvariantCulture));
++            }
++            return sb.Append(']').ToString();
++        }
++
+         private static readonly HashSet<string> s_reported = new HashSet<string>();
+ 
+         private static void ReportOnce(string what, Exception e)
+diff --git a/AI/Brain/Director.cs b/AI/Brain/Director.cs
+index 4aff1bc..858497e 100644
+--- a/AI/Brain/Director.cs
++++ b/AI/Brain/Director.cs
+@@ -268,6 +268,64 @@ namespace InterplanetaryAI.Brain
+             return best;
+         }
+ 
++        // v0.20 (council I2): a damage-triggered war ("retaliation") with memory. WarPhase alone re-evaluated the damage
++        // every turn, so a decaying hit flipped war back to peace: Ash m26 recentDamage 865/606/529 -> war, war, peace;
++        // Eddie m24 608/426/418/680/476/333 -> war, peace, peace, war, peace, peace (4 flips in 10 AI-lobbies, 5-8 guns
++        // idle on "peace"). From latchFromTurn on, a triggered retaliation stays war for the match; before it, a
++        // retaliation ends only after quietTurns consecutive sub-threshold turns (hysteresis). Called by the director and
++        // the strategy on the same turn: the first call decides, later calls that turn return the same answer.
++        public sealed class RetaliationState
++        {
++            public bool Latched;
++            public int LatchTurn = -1;
++            public int LastTurn = -1;
++            public bool LastWar;
++            public int QuietTurns;
++        }
++
++        public static bool RetaliationWar(RetaliationState s, int turn, float recentDamage, float damageTrigger, int latchFromTurn,
++            int quietTurns)
++        {
++            if (s == null) return recentDamage >= damageTrigger;
++            if (s.LastTurn == turn) return s.LastWar;
++            bool triggered = recentDamage >= damageTrigger;
++            bool war;
++            if (s.Latched) war = true;
++            else if (triggered)
++            {
++                war = true;
++                s.QuietTurns = 0;
++                if (turn >= latchFromTurn)
++                {
++                    s.Latched = true;
++                    s.LatchTurn = turn;
++                }
++            }
++            else if (s.LastWar && s.LastTurn == turn - 1)
++            {
++                s.QuietTurns++;
++                war = s.QuietTurns < Math.Max(1, quietTurns);
++                if (!war) s.QuietTurns = 0;
++            }
++            else
++            {
++                war = false;
++                s.QuietTurns = 0;
++            }
++            s.LastTurn = turn;
++            s.LastWar = war;
++            return war;
++        }
++
++        // v0.20: the war phase with the retaliation memory. The scheduled war turn is unchanged (and with it the
++        // pre-schedule RetaliationUpkeepShare, which keys on the scheduled turn, not on this flag).
++        public static bool WarPhase(int turn, int warFromTurn, RetaliationState retaliation, float recentDamage, float damageTrigger,
++            int latchFromTurn, int quietTurns)
++        {
++            bool retaliating = RetaliationWar(retaliation, turn, recentDamage, damageTrigger, latchFromTurn, quietTurns);
++            return turn >= warFromTurn || retaliating;
++        }
++
+         public static bool WarPhase(int turn, int warFromTurn, float recentDamage, float damageTrigger)
+         {
+             return turn >= warFromTurn || recentDamage >= damageTrigger;
+diff --git a/AI/Brain/Strategy.cs b/AI/Brain/Strategy.cs
+index ce92686..6d6cc31 100644
+--- a/AI/Brain/Strategy.cs
++++ b/AI/Brain/Strategy.cs
+@@ -111,6 +111,7 @@ namespace InterplanetaryAI.Brain
+         // FreeFireMinPassing shots are expected through (Terra v0.16.2: not salvos that the defenses stop almost entirely).
+         public bool FreeFire = true;
+         public float FreeFireMinPassing = 4f;
++        public bool LateFirePulseWait = true;      // v0.20 (council S1): late free fire also on pulse-wait holds, pulse clock kept
+     }
+ 
+     public sealed class StrategyDecision
+@@ -287,9 +288,30 @@ namespace InterplanetaryAI.Brain
+         public static bool LateFreeFire(StrategyDecision d, int energyLeft, int materialLeft, int releasedEnergy, int releasedMaterial,
+             StrategySettings s)
+         {
+-            if (d == null || d.Fire || !d.War || d.CommitTargetId < 0 || d.Reason != "below-saturation") return false;
+-            if (!s.FreeFire || d.Shots < s.MinWeapons || d.Passing < Math.Max(0.01f, s.FreeFireMinPassing)) return false;
+-            return releasedEnergy > 0 && energyLeft >= releasedEnergy && materialLeft >= Math.Max(0, releasedMaterial);
++            return LateFreeFireRefusal(d, energyLeft, materialLeft, releasedEnergy, releasedMaterial, s, false) == "";
++        }
++
++        // v0.20 (council S1, I1a): the same rule with an optional pulse-wait path, returning why it refused ("" = fire).
++        // Pulse waits (a saturated salvo held for the pulse cadence) left energy unspent too: m25 Donnels T33 8,828 left vs a
++        // 5,960 reservation, Zenon T33 6,544. A late volley on a pulse-wait turn must not move the pulse clock (the caller
++        // keeps LastStrikeTurn and HoldTurns as they were), so the next scheduled pulse still fires in full.
++        public static string LateFreeFireRefusal(StrategyDecision d, int energyLeft, int materialLeft, int releasedEnergy,
++            int releasedMaterial, StrategySettings s, bool allowPulseWait)
++        {
++            if (d == null) return "no-decision";
++            if (d.Fire) return "firing";
++            if (!d.War) return "peace";
++            if (d.CommitTargetId < 0) return "no-commit";
++            bool energyHold = d.Reason == "below-saturation";
++            bool pulseHold = d.Reason == "pulse-wait";
++            if (!energyHold && !(pulseHold && allowPulseWait)) return "reason:" + d.Reason;
++            if (!s.FreeFire) return "free-fire-off";
++            if (d.Shots < s.MinWeapons) return "few-weapons";
++            if (d.Passing < Math.Max(0.01f, s.FreeFireMinPassing)) return "few-passing";
++            if (releasedEnergy <= 0) return "nothing-released";
++            if (energyLeft < releasedEnergy) return "energy";
++            if (materialLeft < Math.Max(0, releasedMaterial)) return "material";
++            return "";
+         }
+ 
+         // v0.16.2: holding would release energy that would go unspent (freeEnergy < 0 = unknown: hold).
+diff --git a/AI/DirectorPatches.cs b/AI/DirectorPatches.cs
+index a7cdb31..8c847e5 100644
+--- a/AI/DirectorPatches.cs
++++ b/AI/DirectorPatches.cs
+@@ -41,6 +41,8 @@ namespace InterplanetaryAI
+             public int SlotsAtStart;
+             public int SlotsLeft;
+             public int Unpowered;
++            public int UnpoweredWeapons = -1;   // v0.20 (council I1a): weapons without power at end of turn
++            public int SearchesOpenAtEnd = -1;  // v0.20 (council I1a): placement searches cut by the end turn
+             public int PlantsForUnpowered;
+             public int PreferredIntelAttempts;
+             public int DefensesThisTurn;
+@@ -172,6 +174,7 @@ namespace InterplanetaryAI
+             public readonly IntelBidState Intel = new IntelBidState();
+             public int CreditedTurn = -1;
+             public int WarStartTurn = -1;          // latched once war begins
++            public readonly EconomyDirector.RetaliationState Retaliation = new EconomyDirector.RetaliationState(); // v0.20 (council I2)
+             public int PeakImpacts;                // largest enemy volley (impacts on us) seen so far
+             public float PeakEligibleShare = 1f;   // share of that volley that met a defense in range
+         }
+@@ -214,6 +217,35 @@ namespace InterplanetaryAI
+             return warTurn;
+         }
+ 
++        // v0.20 (council I2): the war flag shared by the director and the strategy. The retaliation memory lives in the
++        // match memory (reset on every start or load), so both callers on a turn get the same answer.
++        internal static bool WarFor(PlayerData me, int turn, int warTurn, float recentDamage)
++        {
++            MatchMemory m = MemoryOf(me.PlayerID);
++            return EconomyDirector.WarPhase(turn, warTurn, m.Retaliation, recentDamage, Plugin.WarDamageTrigger.Value,
++                Plugin.RetaliationLatchFromTurn.Value, Plugin.RetaliationQuietTurns.Value);
++        }
++
++        // v0.20 (council I1a): before AICore.EndTurn (whose construction-queue EndTurn stops every open search), count the
++        // placement searches still running: abandoned + placed does not cover them, so they were invisible in v0.19.
++        internal static void BeforeEndTurn(AICore core)
++        {
++            DirectorState d;
++            if (core == null || !s_states.TryGetValue(core.PlayerData.PlayerID, out d) || d.Turn != GameManager.CurrentTurn) return;
++            try
++            {
++                object finder = s_queueFinder.GetValue(core.Construction.ConstructionQueue);
++                List<AIBuildingPlacementSearch> searches = finder != null ? s_finderSearches.GetValue(finder) as List<AIBuildingPlacementSearch> : null;
++                d.SearchesOpenAtEnd = searches != null ? searches.Count : 0;
++            }
++            catch (Exception e) { ReportOnce("open-searches", e); }
++        }
++
++        internal static EconomyDirector.RetaliationState RetaliationOf(PlayerData me)
++        {
++            return MemoryOf(me.PlayerID).Retaliation;
++        }
++
+         private static readonly FieldInfo s_freeSlots = AccessTools.Field(typeof(AIPowerGridMaintaining), "m_freePowerSlotsByBuilding");
+         private static readonly FieldInfo s_queueList = AccessTools.Field(typeof(AIConstructionQueue), "m_constructionQueue");
+         private static readonly FieldInfo s_queueFinder = AccessTools.Field(typeof(AIConstructionQueue), "m_buildingPlacementFinder");
+@@ -389,7 +421,7 @@ namespace InterplanetaryAI
+                 }
+             }
+             d.WarTurn = WarTurnFor(me, turn); // v0.16 item 4: T16 with Orbital Assembly and WarMinIncome, else WarFallbackTurn
+-            d.War = EconomyDirector.WarPhase(turn, d.WarTurn, recentDamage, Plugin.WarDamageTrigger.Value);
++            d.War = WarFor(me, turn, d.WarTurn, recentDamage); // v0.20 (council I2): retaliation latch + hysteresis
+             d.LosslessDone = TechDone(me, LosslessTech);
+             d.EmcDone = TechDone(me, EmcTech);
+             CountProjects(core, d);
+@@ -3084,8 +3116,15 @@ namespace InterplanetaryAI
+             d.EndMaterialLeft = core.Resources.Material; // v0.16.2
+             d.Ended = true;
+             int upgradesInstalled = 0;
++            d.UnpoweredWeapons = 0;
+             foreach (BaseBuilding building in core.PlayerData.BuildingHandler.Buildings)
+             {
++                try
++                {
++                    if (building != null && building.CurrentState == BaseBuilding.BuildingState.Normal && building.BuildingData != null
++                        && building.BuildingData.weapon_functionality.IsValueSet && (building.Power == null || !building.Power.HasPower)) d.UnpoweredWeapons++;
++                }
++                catch (Exception e) { ReportOnce("unpowered-weapons", e); }
+                 if (building == null || building.IsCity || building.CurrentState != BaseBuilding.BuildingState.Normal) continue;
+                 upgradesInstalled += 2 - building.Upgrades.FreeSlots;
+             }
+@@ -3099,6 +3138,9 @@ namespace InterplanetaryAI
+                 .Num("coveredBuildings", coveredBuildings).Num("coveredCities", coveredCities) // v0.17
+                 .Int("shelteredPlaced", shelter[0]).Int("unshelteredPlaced", shelter[1])
+                 .Bool("war", d.War).Int("slotsAtStart", d.SlotsAtStart).Int("slotsLeft", d.SlotsLeft).Int("unpowered", d.Unpowered)
++                .Bool("retaliationLatched", RetaliationOf(core.PlayerData).Latched).Int("retaliationLatchTurn", RetaliationOf(core.PlayerData).LatchTurn)
++                .Int("retaliationQuiet", RetaliationOf(core.PlayerData).QuietTurns) // v0.20 (council I2)
++                .Int("unpoweredWeapons", d.UnpoweredWeapons).Int("searchesOpenAtEnd", d.SearchesOpenAtEnd) // v0.20 (council I1a)
+                 .Int("energyStart", d.TurnStartEnergy).Int("materialStart", d.TurnStartMaterial)
+                 .Int("energyLeft", core.Resources.Energy).Int("materialLeft", core.Resources.Material)
+                 .Num("upkeep", d.Upkeep).Int("ownDefenses", d.OwnDefenses).Int("desiredDefenses", d.DesiredDefenses).Int("defenseTurnCap", d.DefenseTurnCap)
+diff --git a/AI/EconomyPatches.cs b/AI/EconomyPatches.cs
+index da47fe1..43f6e1f 100644
+--- a/AI/EconomyPatches.cs
++++ b/AI/EconomyPatches.cs
+@@ -652,6 +652,17 @@ namespace InterplanetaryAI
+         }
+ 
+         // End of the AI's turn: what the construction mix actually did this turn.
++        // v0.20 (council I1a): runs before the modules' EndTurn, which stops the open placement searches.
++        private static void CoreEndTurnPrefix(AICore __instance)
++        {
++            try
++            {
++                if (!Plugin.Active || __instance == null || !__instance.PlayerData.AIPlayer || !Plugin.IsSmart(__instance.PlayerData)) return;
++                if (Plugin.DirectorEnabled.Value) DirectorPatches.BeforeEndTurn(__instance);
++            }
++            catch (Exception) { }
++        }
++
+         private static void CoreEndTurnPostfix(AICore __instance)
+         {
+             if (!Plugin.Active || !__instance.PlayerData.AIPlayer) return;
+diff --git a/AI/InterplanetaryAI.csproj b/AI/InterplanetaryAI.csproj
+index 1fe67cb..29355db 100644
+--- a/AI/InterplanetaryAI.csproj
++++ b/AI/InterplanetaryAI.csproj
+@@ -8,7 +8,7 @@
+     <Nullable>disable</Nullable>
+     <ImplicitUsings>disable</ImplicitUsings>
+     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+-    <Version>0.4.1</Version>
++    <Version>0.20.0</Version>
+     <DebugType>portable</DebugType>
+     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+     <!-- Same as QoL: without this MSBuild refuses to resolve Assembly-CSharp (MSB3258). -->
+@@ -16,6 +16,8 @@
+     <GameDir>C:\Program Files (x86)\Steam\steamapps\common\Interplanetary Enhanced Edition</GameDir>
+     <ManagedDir>$(GameDir)\Interplanetary_Data\Managed</ManagedDir>
+     <BepInExCore>$(GameDir)\BepInEx\core</BepInExCore>
++    <!-- v0.20: the StampBuild target sets InformationalVersion itself (short commit + dirty flag). -->
++    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+   </PropertyGroup>
+ 
+   <ItemGroup>
+@@ -49,8 +51,38 @@
+     </Reference>
+   </ItemGroup>
+ 
+-  <!-- Pass -p:SkipDeploy=true while the game is running. -->
+-  <Target Name="DeployToGame" AfterTargets="Build" Condition="'$(SkipDeploy)' != 'true'">
++  <!-- v0.20 (council I1a): stamp the git commit and a dirty flag into InformationalVersion ("0.20.0+abc1234" or
++       "0.20.0+abc1234.dirty"); the plugin logs it in every init record so a data set names the tree that produced it. -->
++  <Target Name="StampBuild" BeforeTargets="GetAssemblyAttributes;GenerateAssemblyInfo">
++    <Exec Command="git rev-parse --short HEAD" ConsoleToMSBuild="true" StandardOutputImportance="low" IgnoreExitCode="true" WorkingDirectory="$(MSBuildProjectDirectory)">
++      <Output TaskParameter="ConsoleOutput" PropertyName="GitCommit" />
++    </Exec>
++    <Exec Command="git status --porcelain --untracked-files=no -- ." ConsoleToMSBuild="true" StandardOutputImportance="low" IgnoreExitCode="true" WorkingDirectory="$(MSBuildProjectDirectory)">
++      <Output TaskParameter="ConsoleOutput" PropertyName="GitDirty" />
++    </Exec>
++    <PropertyGroup>
++      <GitCommit Condition="'$(GitCommit)' == ''">nogit</GitCommit>
++      <InformationalVersion>$(Version)+$(GitCommit)</InformationalVersion>
++      <InformationalVersion Condition="'$(GitDirty)' != ''">$(Version)+$(GitCommit).dirty</InformationalVersion>
++    </PropertyGroup>
++  </Target>
++
++  <!-- v0.20 (council I1b): one version source. The build fails when <Version> and Plugin.VERSION disagree. -->
++  <Target Name="CheckVersion" BeforeTargets="Build">
++    <PropertyGroup>
++      <PluginSource>$([System.IO.File]::ReadAllText('$(MSBuildProjectDirectory)\Plugin.cs'))</PluginSource>
++      <PluginVersion>$([System.Text.RegularExpressions.Regex]::Match($(PluginSource), 'VERSION = "([0-9.]+)"').Groups[1].Value)</PluginVersion>
++    </PropertyGroup>
++    <Error Condition="'$(PluginVersion)' != '$(Version)'" Text="Version mismatch: csproj $(Version) vs Plugin.VERSION $(PluginVersion)." />
++  </Target>
++
++  <!-- v0.20 (council I1b): deploying into the game folder is opt-in (-p:Deploy=true) and refuses while the game runs.
++       A plain `dotnet build AI -c Release` never touches the game. -->
++  <Target Name="DeployToGame" AfterTargets="Build" Condition="'$(Deploy)' == 'true'">
++    <Exec Command="tasklist /FI &quot;IMAGENAME eq Interplanetary.exe&quot; /NH" ConsoleToMSBuild="true" StandardOutputImportance="low">
++      <Output TaskParameter="ConsoleOutput" PropertyName="GameProcesses" />
++    </Exec>
++    <Error Condition="$(GameProcesses.Contains('Interplanetary.exe'))" Text="Interplanetary.exe is running: close the game before deploying." />
+     <MakeDir Directories="$(GameDir)\BepInEx\plugins\InterplanetaryAI" />
+     <Copy SourceFiles="$(OutDir)$(AssemblyName).dll" DestinationFolder="$(GameDir)\BepInEx\plugins\InterplanetaryAI" />
+   </Target>
+diff --git a/AI/Patches.cs b/AI/Patches.cs
+index 46bcd2a..7e68422 100644
+--- a/AI/Patches.cs
++++ b/AI/Patches.cs
+@@ -48,7 +48,8 @@ namespace InterplanetaryAI
+                     .Str("e", "init").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName).Int("id", me.PlayerID).Int("lvl", me.AILevel)
+                     .Bool("active", Plugin.Active).Bool("smart", Plugin.IsSmart(me)).Num("acc", AccuracyPlan.ForLevel(Plugin.Accuracy, me.AILevel)) // v0.17.1: smart false = the original AI (acc unused)
+                     .Bool("shadows", GameSessionManager.CurrentGameSettings != null && GameSessionManager.CurrentGameSettings.SeenBuildingsShadows) // Sol v0.15.2 #7
+-                    .Num("nativeAcc", __instance.Difficulty != null ? __instance.Difficulty.Accuracy : -1f).ToString());
++                    .Num("nativeAcc", __instance.Difficulty != null ? __instance.Difficulty.Accuracy : -1f)
++                    .Str("build", Plugin.BuildId).Raw("config", Plugin.NonDefaultConfigJson()).ToString()); // v0.20 (council I1a)
+             }
+             catch (Exception e)
+             {
+@@ -602,7 +603,8 @@ namespace InterplanetaryAI
+                 bool enemyDest = dest != null && dest.Player != null && dest.Player != me;
+                 Plugin.WriteDecision(new Json().Str("e", "fire-paid").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName)
+                     .Str("wid", weapon.WeaponData != null ? weapon.WeaponData.id.Value : "").Bool("guided", IsGuided(weapon))
+-                    .Str("destination", enemyDest ? dest.Player.UserNickName : dest == null ? "none" : "own")
++                    // v0.20 (council I1a): "own" was also any non-player body; split it into own (our planet) and neutral.
++                    .Str("destination", enemyDest ? dest.Player.UserNickName : dest == null ? "none" : dest.Player == me ? "own" : "neutral")
+                     .Int("candidates", enemyDest ? StrikeCandidateCount(me, dest.Player) : -1)
+                     .Int("energyPaid", Math.Max(0, __state - me.ResourceHandler.Energy)).ToString());
+             }
+diff --git a/AI/Plugin.cs b/AI/Plugin.cs
+index 849e799..1706d54 100644
+--- a/AI/Plugin.cs
++++ b/AI/Plugin.cs
+@@ -24,7 +24,7 @@ namespace InterplanetaryAI
+     {
+         public const string GUID = "pavol.interplanetary.ai";
+         public const string NAME = "Interplanetary EE: Smarter AI";
+-        public const string VERSION = "0.19.0";
++        public const string VERSION = "0.20.0";
+ 
+         internal static ManualLogSource Log;
+ 
+@@ -62,6 +62,8 @@ namespace InterplanetaryAI
+         internal static ConfigEntry<int> DefenseFromTurn;
+         internal static bool HoldHookPatched;
+         internal static ConfigEntry<float> WarDamageTrigger;
++        internal static ConfigEntry<int> RetaliationLatchFromTurn;   // v0.20 (council I2)
++        internal static ConfigEntry<int> RetaliationQuietTurns;      // v0.20 (council I2)
+         internal static ConfigEntry<float> WarUpkeepShare;
+         internal static ConfigEntry<float> RetaliationUpkeepShare;
+         internal static ConfigEntry<float> WarSpendShare;
+@@ -337,6 +339,7 @@ namespace InterplanetaryAI
+         internal static ConfigEntry<float> HumanFirstMinPassing;     // v0.16.2
+         internal static ConfigEntry<bool> FreeFire;                  // v0.16.2
+         internal static ConfigEntry<float> FreeFireMinPassing;       // v0.16.2
++        internal static ConfigEntry<bool> LateFirePulseWait;         // v0.20 (council S1)
+         internal static ConfigEntry<float> MaterialBoundEnergyShare; // v0.16.2
+         internal static ConfigEntry<float> MaterialBoundStockShare;  // v0.16.2
+         internal static ConfigEntry<int> MaterialBoundMinEnergy;     // v0.16.2
+@@ -357,9 +360,60 @@ namespace InterplanetaryAI
+         private static StreamWriter s_decisionWriter;
+         private Harmony m_harmony;
+ 
++        private static ConfigFile s_config;                          // v0.20: for the config snapshot in init records
++
++        // v0.20 (council I1a): the build that produced a data set, e.g. "0.20.0+2f297e2" or "0.20.0+2f297e2.dirty"
++        // (InformationalVersion, stamped by the StampBuild target in the csproj).
++        internal static string BuildId
++        {
++            get
++            {
++                try
++                {
++                    object[] a = typeof(Plugin).Assembly.GetCustomAttributes(typeof(AssemblyInformationalVersionAttribute), false);
++                    return a.Length > 0 ? ((AssemblyInformationalVersionAttribute)a[0]).InformationalVersion : VERSION;
++                }
++                catch (Exception) { return VERSION; }
++            }
++        }
++
++        // v0.20 (council I1a): every config value that differs from its default, as a JSON object of strings, so the
++        // decision log records the effective configuration (and an experiment arm set through the config).
++        internal static string NonDefaultConfigJson()
++        {
++            var sb = new StringBuilder("{");
++            try
++            {
++                if (s_config != null)
++                {
++                    bool first = true;
++                    foreach (ConfigDefinition def in s_config.Keys)
++                    {
++                        ConfigEntryBase entry = s_config[def];
++                        if (entry == null || Equals(entry.BoxedValue, entry.DefaultValue)) continue;
++                        if (!first) sb.Append(',');
++                        first = false;
++                        sb.Append('"').Append(JsonEscape(def.Section + "." + def.Key)).Append("\":\"")
++                          .Append(JsonEscape(Convert.ToString(entry.BoxedValue, CultureInfo.InvariantCulture))).Append('"');
++                    }
++                }
++            }
++            catch (Exception e)
++            {
++                Log.LogWarning("Config snapshot failed: " + e.Message);
++            }
++            return sb.Append('}').ToString();
++        }
++
++        private static string JsonEscape(string s)
++        {
++            return (s ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"");
++        }
++
+         private void Awake()
+         {
+             Log = Logger;
++            s_config = Config;
+ 
+             Enabled = Config.Bind("General", "Enabled", true,
+                 "Master switch. The mod only acts in offline games; online games always run the native AI.");
+@@ -541,6 +595,10 @@ namespace InterplanetaryAI
+                 "v0.10: turn from which the defense floor (DefenseFloorShare) and the defense energy reserve apply, before weapons (WarFromTurn).");
+             WarDamageTrigger = Config.Bind("Director", "WarDamageTrigger", 600f,
+                 "Recent damage taken that starts retaliation before WarFromTurn.");
++            RetaliationLatchFromTurn = Config.Bind("Director", "RetaliationLatchFromTurn", 12,
++                "v0.20 (council I2): from this turn on, a retaliation (war started by WarDamageTrigger) stays war for the match. Matches 22-26: 4 war->peace flips in 10 AI-lobbies as the damage decayed, 5-8 guns idle on 'peace'.");
++            RetaliationQuietTurns = Config.Bind("Director", "RetaliationQuietTurns", 2,
++                "v0.20 (council I2): before RetaliationLatchFromTurn, a retaliation ends only after this many consecutive turns below WarDamageTrigger (1 = the v0.19 behaviour).");
+             WarUpkeepShare = Config.Bind("Director", "WarUpkeepShare", 0.4f,
+                 "Cap on weapon firing cost per turn as a share of energy income, from WarFromTurn.");
+             RetaliationUpkeepShare = Config.Bind("Director", "RetaliationUpkeepShare", 0.15f,
+@@ -715,6 +773,8 @@ namespace InterplanetaryAI
+             FreeFire = Config.Bind("Strategy", "FreeFire", true,
+                 "v0.16.2: fire instead of holding when last turn's construction already left at least this turn's firing cost unspent and this turn's energy still covers last turn's use (holding would only add to unspent energy). Match 19 held T21-T25 with 0.8-41k energy unspent a turn.");
+             FreeFireMinPassing = Config.Bind("Strategy", "FreeFireMinPassing", 4f, "v0.16.2: fewest expected shots through the commit's defenses for free fire.");
++            LateFirePulseWait = Config.Bind("Strategy", "LateFirePulseWait", true,
++                "v0.20 (council S1): late free fire also on pulse-wait holds when the energy actually left covers the reservation; the volley is booked like the hold it replaced, so the pulse cadence is unchanged. m25: Donnels T33 held with 8,828 left vs 5,960.");
+             MaterialBoundEnergyShare = Config.Bind("Director", "MaterialBoundEnergyShare", 0.2f,
+                 "v0.16.2: material binds when last turn left at least this share of its energy (and MaterialBoundMinEnergy) unspent while its material was spent down to MaterialBoundStockShare. Then extraction goes first and energy gains are worth nothing. 0 = off.");
+             MaterialBoundStockShare = Config.Bind("Director", "MaterialBoundStockShare", 0.1f, "v0.16.2: most material left at turn end, as a share of the turn's material, that counts as spent down.");
+@@ -772,7 +832,7 @@ namespace InterplanetaryAI
+             patched += TryPatch(typeof(PlayerBuildingHandler), "DealDamageToBuilding", "DealDamagePrefix", null);
+             patched += TryPatch(typeof(AICore), "BeginTurn", null, "CoreBeginTurnPostfix", typeof(EconomyPatches));
+             patched += TryPatch(typeof(AICore), "BeginTurn", "CoreBeginTurnPrefix", null, typeof(DirectorPatches)); // v0.12 dry-mine sales
+-            patched += TryPatch(typeof(AICore), "EndTurn", null, "CoreEndTurnPostfix", typeof(EconomyPatches));
++            patched += TryPatch(typeof(AICore), "EndTurn", "CoreEndTurnPrefix", "CoreEndTurnPostfix", typeof(EconomyPatches)); // v0.20: + prefix (open searches)
+             patched += TryPatch(typeof(AIConstruction), "tryConstructNewBuilding", "TryConstructPrefix", null, typeof(EconomyPatches));
+             patched += TryPatch(typeof(AITechQueue), "BeginTurn", "TechQueueBeginTurnPrefix", null, typeof(EconomyPatches));
+             patched += TryPatch(typeof(AIDefenseConstruction), "TryConstructDefense", "TryConstructDefensePrefix", null, typeof(EconomyPatches));
+@@ -849,6 +909,7 @@ namespace InterplanetaryAI
+             StrategyCfg.HumanFirstReachMinScore = Math.Max(0f, Math.Min(1f, HumanFirstReachMinScore.Value));
+             StrategyCfg.FreeFire = FreeFire.Value;
+             StrategyCfg.FreeFireMinPassing = Math.Max(0f, FreeFireMinPassing.Value);
++            StrategyCfg.LateFirePulseWait = LateFirePulseWait.Value;
+ 
+             Build.Growth = BuildPlanner.Parse(GrowthWeights.Value, Build.Growth);
+             Build.Pressure = BuildPlanner.Parse(PressureWeights.Value, Build.Pressure);
+diff --git a/AI/README.md b/AI/README.md
+index f977095..46ece89 100644
+--- a/AI/README.md
++++ b/AI/README.md
+@@ -41,8 +41,10 @@ Review: two GPT-6.1 Terra passes; see `docs/reviews/terra-ai-disposition.md` for
+ ## Build, install, uninstall
+ 
+ ```
+-dotnet build AI -c Release            # deploys to <game>/BepInEx/plugins/InterplanetaryAI/
+-dotnet build AI -c Release -p:SkipDeploy=true   # while the game is running
++dotnet build AI -c Release                    # builds only; never touches the game (v0.20)
++dotnet build AI -c Release -p:Deploy=true      # also installs into <game>/BepInEx/plugins/InterplanetaryAI/; fails while the game runs
++python AI/tools/run_mutants.py                # mutation tests (AI/tools/mutants.tsv); exit 1 on a survivor
++python AI/tools/verify_gates.py <decisions.jsonl>   # council gates: PASS / FAIL / UNTESTED with denominators
+ ```
+ 
+ Config: `<game>/BepInEx/config/pavol.interplanetary.ai.cfg`. Log lines: `<game>/BepInEx/LogOutput.log` (`T12 AI 02: 9 weapons -> ...`). Decision log: `<game>/BepInEx/InterplanetaryAI/decisions-<start>.jsonl`.
+diff --git a/AI/StrategyPatches.cs b/AI/StrategyPatches.cs
+index eecc0a6..852d0af 100644
+--- a/AI/StrategyPatches.cs
++++ b/AI/StrategyPatches.cs
+@@ -27,6 +27,7 @@ namespace InterplanetaryAI
+             public int HoldTurns;
+             public int ReleasedEnergy;
+             public int ReleasedMaterial;        // v0.19: for late free fire
++            public bool LatePulse;              // v0.20 (council S1): this turn's volley is a late pulse-wait volley (pulse clock kept)
+             public float GuidedFiring, UnguidedFiring, ArtilleryProjectiles; // v0.16 item 4 (logged)
+             public int FreeEnergy = -1, FiringCost;                          // v0.16.2 free fire (logged)
+             public bool Reported;               // this turn's firing has been counted
+@@ -104,6 +105,7 @@ namespace InterplanetaryAI
+                 s.Decision = null;
+                 s.ReleasedEnergy = 0;
+                 s.ReleasedMaterial = 0;
++                s.LatePulse = false;
+             }
+         }
+ 
+@@ -124,6 +126,13 @@ namespace InterplanetaryAI
+                 s.LowYield.TryGetValue(commit, out low);
+                 s.LowYield[commit] = found < Plugin.StrategyCfg.AbortBelowWeapons ? low + 1 : 0;
+             }
++            // v0.20 (council S1): a late pulse-wait volley is booked like the hold it replaced, so the pulse clock
++            // (LastStrikeTurn) and the max-hold count (HoldTurns) move exactly as without it.
++            if (s.LatePulse)
++            {
++                if (s.Decision.War && s.Decision.Shots > 0) s.HoldTurns++;
++                return;
++            }
+             if (fired > 0)
+             {
+                 s.LastStrikeTurn = s.Turn;
+@@ -152,6 +161,7 @@ namespace InterplanetaryAI
+             state.Decision = null;
+             state.ReleasedEnergy = 0;
+             state.ReleasedMaterial = 0;
++            state.LatePulse = false;
+             state.Reported = false;
+             state.Aborted = false;
+ 
+@@ -159,7 +169,7 @@ namespace InterplanetaryAI
+             try
+             {
+                 // v0.16 item 4: the latched war turn (T16 with Orbital Assembly and WarMinIncome, else WarFallbackTurn).
+-                bool war = EconomyDirector.WarPhase(turn, DirectorPatches.WarTurnFor(me, turn), recentDamage, Plugin.WarDamageTrigger.Value);
++                bool war = DirectorPatches.WarFor(me, turn, DirectorPatches.WarTurnFor(me, turn), recentDamage); // v0.20 (council I2)
+                 List<CelestialBody> planets = core.EnemyPlanets;
+                 List<EnemyView> views = new List<EnemyView>();
+                 foreach (CelestialBody planet in planets) views.Add(AiPatches.BuildEnemyView(me, planet.Player, turn));
+@@ -345,26 +355,47 @@ namespace InterplanetaryAI
+             State s;
+             if (!Enabled || core == null || !s_states.TryGetValue(core.PlayerData.PlayerID, out s) || s.Turn != GameManager.CurrentTurn) return;
+             StrategyDecision d = s.Decision;
+-            if (!Plugin.DirectorEnabled.Value || !DirectorPatches.FundedThisTurn(core.PlayerData.PlayerID)) return;
++            // v0.20 (council I1a): a war hold that late fire could have taken logs why it did not (opportunity denominator).
++            bool candidate = d != null && !d.Fire && d.War && (d.Reason == "below-saturation" || d.Reason == "pulse-wait");
++            if (!Plugin.DirectorEnabled.Value || !DirectorPatches.FundedThisTurn(core.PlayerData.PlayerID))
++            {
++                if (candidate) LogLateRefusal(core, s, d, "not-funded", core.Resources.Energy, core.Resources.Material);
++                return;
++            }
+             int energyLeft = core.Resources.Energy, materialLeft = core.Resources.Material;
+             EconomyPatches.AiEconomyState econ;
+             if (EconomyPatches.States.TryGetValue(core.PlayerData.PlayerID, out econ))
+             {
+                 if (econ.BuyPending && !econ.Bought) { energyLeft -= Math.Max(0, econ.GoalEnergyCost); materialLeft -= Math.Max(0, econ.GoalMaterialCost); }
+             }
+-            if (!Strategy.LateFreeFire(d, energyLeft, materialLeft, s.ReleasedEnergy, s.ReleasedMaterial, Plugin.StrategyCfg)) return;
++            string refusal = Strategy.LateFreeFireRefusal(d, energyLeft, materialLeft, s.ReleasedEnergy, s.ReleasedMaterial, Plugin.StrategyCfg,
++                Plugin.StrategyCfg.LateFirePulseWait);
++            if (refusal != "")
++            {
++                if (candidate) LogLateRefusal(core, s, d, refusal, energyLeft, materialLeft);
++                return;
++            }
++            bool pulse = d.Reason == "pulse-wait";
+             core.Resources.Energy -= s.ReleasedEnergy;
+             DirectorPatches.NoteLateFire(core.PlayerData.PlayerID, s.ReleasedEnergy);
+             core.Resources.Material -= Math.Max(0, s.ReleasedMaterial);
+             Plugin.WriteDecision(new Json().Str("e", "late-free-fire").Int("t", s.Turn).Str("ai", core.PlayerData.UserNickName)
+-                .Int("energyLeft", energyLeft).Int("materialLeft", materialLeft).Int("reservation", s.ReleasedEnergy)
++                .Str("held", d.Reason).Int("energyLeft", energyLeft).Int("materialLeft", materialLeft).Int("reservation", s.ReleasedEnergy)
+                 .Int("materialReservation", s.ReleasedMaterial).Int("shots", d.Shots).Num("passing", d.Passing).Int("commit", d.CommitTargetId).ToString());
+             d.Fire = true;
+-            d.Reason = "late-free-fire";
++            d.Reason = pulse ? "late-pulse-fire" : "late-free-fire";
++            s.LatePulse = pulse;
+             s.ReleasedEnergy = 0;
+             s.ReleasedMaterial = 0;
+         }
+ 
++        private static void LogLateRefusal(AICore core, State s, StrategyDecision d, string reason, int energyLeft, int materialLeft)
++        {
++            Plugin.WriteDecision(new Json().Str("e", "late-free-fire-refused").Int("t", s.Turn).Str("ai", core.PlayerData.UserNickName)
++                .Str("held", d.Reason).Str("refusal", reason).Int("energyLeft", energyLeft).Int("materialLeft", materialLeft)
++                .Int("reservation", s.ReleasedEnergy).Int("shots", d.Shots).Num("passing", d.Passing).ToString());
++        }
++
+         private static void Add(Dictionary<string, float> counts, string key, float n)
+         {
+             float v;
+diff --git a/AI/Tests/Program.cs b/AI/Tests/Program.cs
+index d8cbf94..84cc198 100644
+--- a/AI/Tests/Program.cs
++++ b/AI/Tests/Program.cs
+@@ -1717,6 +1717,76 @@ namespace InterplanetaryAI.Tests
+             Check(!Strategy.LateFreeFire(null, 17120, 2891, 3500, 0, sl), "no decision: hold");
+             Check(!Strategy.LateFreeFire(held(), 17120, 2891, 3500, 0, new StrategySettings { FreeFire = false }), "free fire off: hold");
+ 
++            // v0.20 (council S1 + I1a): late fire on pulse-wait holds, with a refusal reason for every non-fire. Fixture m25
++            // Donnels T33: pulse-wait, 31 shots, ~21 expected through, 8,828 energy left against a 5,960 reservation.
++            Func<StrategyDecision> pulse = () => new StrategyDecision { Fire = false, War = true, CommitTargetId = 4, Reason = "pulse-wait", Shots = 31, Passing = 21.2f };
++            Check(Strategy.LateFreeFireRefusal(pulse(), 8828, 16, 5960, 0, sl, true) == "", "Donnels T33 pulse-wait, pulse path on: fire");
++            Check(Strategy.LateFreeFireRefusal(pulse(), 8828, 16, 5960, 0, sl, false) == "reason:pulse-wait", "pulse path off: refused with the hold reason");
++            Check(!Strategy.LateFreeFire(pulse(), 8828, 16, 5960, 0, sl), "the v0.19 entry point still refuses pulse waits");
++            Check(Strategy.LateFreeFireRefusal(held(), 17120, 16, 3500, 0, sl, true) == "" && Strategy.LateFreeFireRefusal(held(), 17120, 16, 3500, 0, sl, false) == "",
++                "below-saturation fires on both paths");
++            Check(Strategy.LateFreeFireRefusal(pulse(), 5959, 16, 5960, 0, sl, true) == "energy", "refusal: energy");
++            Check(Strategy.LateFreeFireRefusal(pulse(), 8828, 99, 5960, 100, sl, true) == "material", "refusal: material");
++            Check(Strategy.LateFreeFireRefusal(pulse(), 8828, 16, 0, 0, sl, true) == "nothing-released", "refusal: nothing released");
++            StrategyDecision pwFew = pulse(); pwFew.Shots = sl.MinWeapons - 1;
++            Check(Strategy.LateFreeFireRefusal(pwFew, 8828, 16, 5960, 0, sl, true) == "few-weapons", "refusal: few weapons");
++            StrategyDecision pwPass = pulse(); pwPass.Passing = 0.5f;
++            Check(Strategy.LateFreeFireRefusal(pwPass, 8828, 16, 5960, 0, sl, true) == "few-passing", "refusal: few passing");
++            StrategyDecision pwPeace = pulse(); pwPeace.War = false;
++            Check(Strategy.LateFreeFireRefusal(pwPeace, 8828, 16, 5960, 0, sl, true) == "peace", "refusal: peace");
++            StrategyDecision pwNone = pulse(); pwNone.CommitTargetId = -1;
++            Check(Strategy.LateFreeFireRefusal(pwNone, 8828, 16, 5960, 0, sl, true) == "no-commit", "refusal: no commit");
++            StrategyDecision pwFire = pulse(); pwFire.Fire = true;
++            Check(Strategy.LateFreeFireRefusal(pwFire, 8828, 16, 5960, 0, sl, true) == "firing", "refusal: already firing");
++            StrategyDecision pwBuild = pulse(); pwBuild.Reason = "building";
++            Check(Strategy.LateFreeFireRefusal(pwBuild, 8828, 16, 5960, 0, sl, true) == "reason:building", "refusal: other hold reasons stay held");
++            Check(Strategy.LateFreeFireRefusal(null, 8828, 16, 5960, 0, sl, true) == "no-decision", "refusal: no decision");
++            Check(Strategy.LateFreeFireRefusal(pulse(), 8828, 16, 5960, 0, new StrategySettings { FreeFire = false }, true) == "free-fire-off", "refusal: free fire off");
++
++            // v0.20 (council I2): retaliation latch + hysteresis. Real sequences (economy.recentDamage, trigger 600, scheduled
++            // war T20): Ash m26 T17-T19 865/606/529 went war, war, PEACE; Eddie m24 T14-T19 608/426/418/680/476/333 went
++            // war, peace, peace, war, peace, peace. The v0.19 rule reproduces the flips (baseline), the v0.20 rule does not.
++            Func<int[], float[], int, int, bool[]> run = (turns, dmg, latchFrom, quiet) =>
++            {
++                var st = new EconomyDirector.RetaliationState();
++                var r = new bool[turns.Length];
++                for (int i = 0; i < turns.Length; i++) r[i] = EconomyDirector.WarPhase(turns[i], 20, st, dmg[i], 600f, latchFrom, quiet);
++                return r;
++            };
++            int[] ashT = { 17, 18, 19 }; float[] ashD = { 865.274f, 605.691f, 528.984f };
++            Check(!EconomyDirector.WarPhase(19, 20, 528.984f, 600f), "baseline: the v0.19 rule puts Ash on peace at T19");
++            bool[] ash = run(ashT, ashD, 12, 2);
++            Check(ash[0] && ash[1] && ash[2], "Ash m26: war at T17 latches (>= T12), still war at T19");
++            int[] edT = { 14, 15, 16, 17, 18, 19 }; float[] edD = { 608.3f, 425.8f, 418f, 679.5f, 475.7f, 333f };
++            bool[] ed = run(edT, edD, 12, 2);
++            bool allWar = true; foreach (bool w in ed) allWar &= w;
++            Check(allWar, "Eddie m24: no peace after the T14 trigger");
++            int flipsOld = 0; bool prev = false;
++            for (int i = 0; i < edT.Length; i++) { bool w = EconomyDirector.WarPhase(edT[i], 20, edD[i], 600f); if (prev && !w) flipsOld++; prev = w; }
++            Check(flipsOld == 2, "baseline: the v0.19 rule flips Eddie twice; got " + flipsOld);
++            // Before the latch turn: hysteresis. T8 hit, T9 and T10 quiet -> war, war (quiet 1), peace (quiet 2); T11 hit -> war.
++            bool[] early = run(new[] { 8, 9, 10, 11 }, new[] { 700f, 500f, 500f, 700f }, 12, 2);
++            Check(early[0] && early[1] && !early[2] && early[3], "pre-latch hysteresis: war, war, peace, war");
++            bool[] early1 = run(new[] { 8, 9 }, new[] { 700f, 500f }, 12, 1);
++            Check(early1[0] && !early1[1], "quietTurns 1 = the v0.19 behaviour before the latch turn");
++            bool[] noHit = run(new[] { 13, 14 }, new[] { 100f, 0f }, 12, 2);
++            Check(!noHit[0] && !noHit[1], "no trigger: no war before the scheduled turn");
++            Check(run(new[] { 20 }, new[] { 0f }, 12, 2)[0], "scheduled war turn: war without damage");
++            var same = new EconomyDirector.RetaliationState();
++            bool first = EconomyDirector.RetaliationWar(same, 17, 865f, 600f, 12, 2);
++            bool second = EconomyDirector.RetaliationWar(same, 17, 0f, 600f, 12, 2);
++            Check(first && second, "same turn: the second caller gets the first answer");
++            Check(same.Latched && same.LatchTurn == 17, "the latch turn is recorded");
++            var samePre = new EconomyDirector.RetaliationState();
++            bool pre1 = EconomyDirector.RetaliationWar(samePre, 8, 700f, 600f, 12, 2);
++            bool pre2 = EconomyDirector.RetaliationWar(samePre, 8, 0f, 600f, 12, 2);
++            Check(pre1 && pre2 && !samePre.Latched, "same turn before the latch: the second caller (strategy) gets the director's answer");
++            var gap = new EconomyDirector.RetaliationState();
++            EconomyDirector.RetaliationWar(gap, 8, 700f, 600f, 12, 2);
++            Check(!EconomyDirector.RetaliationWar(gap, 10, 0f, 600f, 12, 2), "a skipped turn (earlier save) does not carry a pre-latch retaliation");
++            Check(EconomyDirector.RetaliationWar(null, 8, 700f, 600f, 12, 2) && !EconomyDirector.RetaliationWar(null, 8, 500f, 600f, 12, 2),
++                "no state: the plain trigger");
++
+             // Who hit us, by shooter; our own shots are not an enemy's.
+             DefenseLedger ledger = new DefenseLedger(3);
+             ledger.Record(5, 0, "wea_Railgun", false, 0, 0, 0, 0, true);
+diff --git a/AI/tools/live_monitor.py b/AI/tools/live_monitor.py
+index 42b5f3d..2961746 100644
+--- a/AI/tools/live_monitor.py
++++ b/AI/tools/live_monitor.py
+@@ -138,7 +138,11 @@ def main():
+                 print(f"T{r['t']} {r['ai']} [ORIGINAL lvl {r.get('lvl')}]: E/t {r.get('energyPerTurn')} M/t {r.get('materialPerTurn')} "
+                       f"sci {r.get('sciencePerTurn')} bld {sum(b.values())} [{top}] pop {r.get('population')} unspent E{r.get('energy')}", flush=True)
+             elif kind == "late-free-fire":
+-                print(f"T{r['t']} {r['ai']}: LATE FREE FIRE {r.get('shots')} shots (~{r.get('passing', 0):.1f} through) with {r.get('energyLeft')}E left, reservation {r.get('reservation')}E", flush=True)
++                kind_txt = "LATE PULSE FIRE" if r.get("held") == "pulse-wait" else "LATE FREE FIRE"
++                print(f"T{r['t']} {r['ai']}: {kind_txt} {r.get('shots')} shots (~{r.get('passing', 0):.1f} through) with {r.get('energyLeft')}E left, reservation {r.get('reservation')}E", flush=True)
++            elif kind == "late-free-fire-refused":
++                if r.get("refusal") in ("energy", "material", "not-funded"):
++                    print(f"T{r['t']} {r['ai']}: held {r.get('held')}, no late fire ({r.get('refusal')}: {r.get('energyLeft')}E left vs {r.get('reservation')}E)", flush=True)
+             elif kind == "aim-search":
+                 if r.get("live"):
+                     print(f"T{r['t']} {r['ai']}: AIM {r.get('found')}/{r.get('live')} in {r.get('seconds', 0):.0f}s (@20s {r.get('foundAt20')}, @40s {r.get('foundAt40')}; +{r.get('addedSeconds', 0):.0f}s, stop {r.get('stop') or '-'}; {r.get('fps', 0):.0f} fps"

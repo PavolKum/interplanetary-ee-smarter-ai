@@ -268,6 +268,68 @@ namespace InterplanetaryAI.Brain
             return best;
         }
 
+        // v0.20 (council I2): a damage-triggered war ("retaliation") with memory. WarPhase alone re-evaluated the damage
+        // every turn, so a decaying hit flipped war back to peace: Ash m26 recentDamage 865/606/529 -> war, war, peace;
+        // Eddie m24 608/426/418/680/476/333 -> war, peace, peace, war, peace, peace (4 flips in 10 AI-lobbies, 5-8 guns
+        // idle on "peace"). From latchFromTurn on, a triggered retaliation stays war for the match; before it, a
+        // retaliation ends only after quietTurns consecutive sub-threshold turns (hysteresis). Called by the director and
+        // the strategy on the same turn: the first call decides, later calls that turn return the same answer.
+        public sealed class RetaliationState
+        {
+            public bool Latched;
+            public int LatchTurn = -1;
+            public int LastTurn = -1;
+            public bool LastWar;
+            public int QuietTurns;
+        }
+
+        public static bool RetaliationWar(RetaliationState s, int turn, float recentDamage, float damageTrigger, int latchFromTurn,
+            int quietTurns)
+        {
+            if (s == null) return recentDamage >= damageTrigger;
+            if (s.LastTurn == turn) return s.LastWar;
+            bool triggered = recentDamage >= damageTrigger;
+            bool war;
+            if (s.Latched) war = true;
+            else if (triggered)
+            {
+                war = true;
+                s.QuietTurns = 0;
+            }
+            else if (s.LastWar && s.LastTurn == turn - 1)
+            {
+                s.QuietTurns++;
+                war = s.QuietTurns < Math.Max(1, quietTurns);
+                if (!war) s.QuietTurns = 0;
+            }
+            else
+            {
+                war = false;
+                s.QuietTurns = 0;
+            }
+            // The latch: any retaliation war at or after latchFromTurn, including one carried into the window by hysteresis
+            // (Fable v0.20 #4: a T11 hit decaying at T12-T13 went war, war, peace otherwise).
+            if (war && !s.Latched && turn >= latchFromTurn)
+            {
+                s.Latched = true;
+                s.LatchTurn = turn;
+            }
+            s.LastTurn = turn;
+            s.LastWar = war;
+            return war;
+        }
+
+        // v0.20: the war phase with the retaliation memory. The scheduled war turn is unchanged (and with it the
+        // pre-schedule RetaliationUpkeepShare, which keys on the scheduled turn, not on this flag).
+        public static bool WarPhase(int turn, int warFromTurn, RetaliationState retaliation, float recentDamage, float damageTrigger,
+            int latchFromTurn, int quietTurns)
+        {
+            // Fable v0.20 #1: at or after the scheduled war turn war is on anyway; do not touch the retaliation state there,
+            // so a "latch" is logged only when it changed something (before the schedule).
+            if (turn >= warFromTurn) return true;
+            return RetaliationWar(retaliation, turn, recentDamage, damageTrigger, latchFromTurn, quietTurns);
+        }
+
         public static bool WarPhase(int turn, int warFromTurn, float recentDamage, float damageTrigger)
         {
             return turn >= warFromTurn || recentDamage >= damageTrigger;

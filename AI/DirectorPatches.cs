@@ -41,6 +41,8 @@ namespace InterplanetaryAI
             public int SlotsAtStart;
             public int SlotsLeft;
             public int Unpowered;
+            public int UnpoweredWeapons = -1;   // v0.20 (council I1a): weapons without power at end of turn
+            public int SearchesOpenAtEnd = -1;  // v0.20 (council I1a): placement searches cut by the end turn
             public int PlantsForUnpowered;
             public int PreferredIntelAttempts;
             public int DefensesThisTurn;
@@ -172,6 +174,7 @@ namespace InterplanetaryAI
             public readonly IntelBidState Intel = new IntelBidState();
             public int CreditedTurn = -1;
             public int WarStartTurn = -1;          // latched once war begins
+            public readonly EconomyDirector.RetaliationState Retaliation = new EconomyDirector.RetaliationState(); // v0.20 (council I2)
             public int PeakImpacts;                // largest enemy volley (impacts on us) seen so far
             public float PeakEligibleShare = 1f;   // share of that volley that met a defense in range
         }
@@ -212,6 +215,35 @@ namespace InterplanetaryAI
                 me.ResourceHandler.EnergyProductionPerTurn, Plugin.WarMinIncome.Value);
             if (turn >= warTurn) m.WarStartTurn = turn;
             return warTurn;
+        }
+
+        // v0.20 (council I2): the war flag shared by the director and the strategy. The retaliation memory lives in the
+        // match memory (reset on every start or load), so both callers on a turn get the same answer.
+        internal static bool WarFor(PlayerData me, int turn, int warTurn, float recentDamage)
+        {
+            MatchMemory m = MemoryOf(me.PlayerID);
+            return EconomyDirector.WarPhase(turn, warTurn, m.Retaliation, recentDamage, Plugin.WarDamageTrigger.Value,
+                Plugin.RetaliationLatchFromTurn.Value, Plugin.RetaliationQuietTurns.Value);
+        }
+
+        // v0.20 (council I1a): before AICore.EndTurn (whose construction-queue EndTurn stops every open search), count the
+        // placement searches still running: abandoned + placed does not cover them, so they were invisible in v0.19.
+        internal static void BeforeEndTurn(AICore core)
+        {
+            DirectorState d;
+            if (core == null || !s_states.TryGetValue(core.PlayerData.PlayerID, out d) || d.Turn != GameManager.CurrentTurn) return;
+            try
+            {
+                object finder = s_queueFinder.GetValue(core.Construction.ConstructionQueue);
+                List<AIBuildingPlacementSearch> searches = finder != null ? s_finderSearches.GetValue(finder) as List<AIBuildingPlacementSearch> : null;
+                d.SearchesOpenAtEnd = searches != null ? searches.Count : 0;
+            }
+            catch (Exception e) { ReportOnce("open-searches", e); }
+        }
+
+        internal static EconomyDirector.RetaliationState RetaliationOf(PlayerData me)
+        {
+            return MemoryOf(me.PlayerID).Retaliation;
         }
 
         private static readonly FieldInfo s_freeSlots = AccessTools.Field(typeof(AIPowerGridMaintaining), "m_freePowerSlotsByBuilding");
@@ -389,7 +421,7 @@ namespace InterplanetaryAI
                 }
             }
             d.WarTurn = WarTurnFor(me, turn); // v0.16 item 4: T16 with Orbital Assembly and WarMinIncome, else WarFallbackTurn
-            d.War = EconomyDirector.WarPhase(turn, d.WarTurn, recentDamage, Plugin.WarDamageTrigger.Value);
+            d.War = WarFor(me, turn, d.WarTurn, recentDamage); // v0.20 (council I2): retaliation latch + hysteresis
             d.LosslessDone = TechDone(me, LosslessTech);
             d.EmcDone = TechDone(me, EmcTech);
             CountProjects(core, d);
@@ -3084,8 +3116,15 @@ namespace InterplanetaryAI
             d.EndMaterialLeft = core.Resources.Material; // v0.16.2
             d.Ended = true;
             int upgradesInstalled = 0;
+            d.UnpoweredWeapons = 0;
             foreach (BaseBuilding building in core.PlayerData.BuildingHandler.Buildings)
             {
+                try
+                {
+                    if (building != null && building.CurrentState == BaseBuilding.BuildingState.Normal && building.BuildingData != null
+                        && building.BuildingData.weapon_functionality.IsValueSet && (building.Power == null || !building.Power.HasPower)) d.UnpoweredWeapons++;
+                }
+                catch (Exception e) { ReportOnce("unpowered-weapons", e); }
                 if (building == null || building.IsCity || building.CurrentState != BaseBuilding.BuildingState.Normal) continue;
                 upgradesInstalled += 2 - building.Upgrades.FreeSlots;
             }
@@ -3099,6 +3138,9 @@ namespace InterplanetaryAI
                 .Num("coveredBuildings", coveredBuildings).Num("coveredCities", coveredCities) // v0.17
                 .Int("shelteredPlaced", shelter[0]).Int("unshelteredPlaced", shelter[1])
                 .Bool("war", d.War).Int("slotsAtStart", d.SlotsAtStart).Int("slotsLeft", d.SlotsLeft).Int("unpowered", d.Unpowered)
+                .Bool("retaliationLatched", RetaliationOf(core.PlayerData).Latched).Int("retaliationLatchTurn", RetaliationOf(core.PlayerData).LatchTurn)
+                .Int("retaliationQuiet", RetaliationOf(core.PlayerData).QuietTurns) // v0.20 (council I2)
+                .Int("unpoweredWeapons", d.UnpoweredWeapons).Int("searchesOpenAtEnd", d.SearchesOpenAtEnd) // v0.20 (council I1a)
                 .Int("energyStart", d.TurnStartEnergy).Int("materialStart", d.TurnStartMaterial)
                 .Int("energyLeft", core.Resources.Energy).Int("materialLeft", core.Resources.Material)
                 .Num("upkeep", d.Upkeep).Int("ownDefenses", d.OwnDefenses).Int("desiredDefenses", d.DesiredDefenses).Int("defenseTurnCap", d.DefenseTurnCap)

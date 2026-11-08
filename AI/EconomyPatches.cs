@@ -652,6 +652,17 @@ namespace InterplanetaryAI
         }
 
         // End of the AI's turn: what the construction mix actually did this turn.
+        // v0.20 (council I1a): runs before the modules' EndTurn, which stops the open placement searches.
+        private static void CoreEndTurnPrefix(AICore __instance)
+        {
+            try
+            {
+                if (!Plugin.Active || __instance == null || !__instance.PlayerData.AIPlayer || !Plugin.IsSmart(__instance.PlayerData)) return;
+                if (Plugin.DirectorEnabled.Value) DirectorPatches.BeforeEndTurn(__instance);
+            }
+            catch (Exception e) { ReportOnce("end-turn-prefix", e); } // Fable v0.20 #9
+        }
+
         private static void CoreEndTurnPostfix(AICore __instance)
         {
             if (!Plugin.Active || !__instance.PlayerData.AIPlayer) return;

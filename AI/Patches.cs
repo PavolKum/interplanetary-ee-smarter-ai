@@ -48,7 +48,8 @@ namespace InterplanetaryAI
                     .Str("e", "init").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName).Int("id", me.PlayerID).Int("lvl", me.AILevel)
                     .Bool("active", Plugin.Active).Bool("smart", Plugin.IsSmart(me)).Num("acc", AccuracyPlan.ForLevel(Plugin.Accuracy, me.AILevel)) // v0.17.1: smart false = the original AI (acc unused)
                     .Bool("shadows", GameSessionManager.CurrentGameSettings != null && GameSessionManager.CurrentGameSettings.SeenBuildingsShadows) // Sol v0.15.2 #7
-                    .Num("nativeAcc", __instance.Difficulty != null ? __instance.Difficulty.Accuracy : -1f).ToString());
+                    .Num("nativeAcc", __instance.Difficulty != null ? __instance.Difficulty.Accuracy : -1f)
+                    .Str("build", Plugin.BuildId).Raw("config", Plugin.NonDefaultConfigJson()).ToString()); // v0.20 (council I1a)
             }
             catch (Exception e)
             {
@@ -602,7 +603,8 @@ namespace InterplanetaryAI
                 bool enemyDest = dest != null && dest.Player != null && dest.Player != me;
                 Plugin.WriteDecision(new Json().Str("e", "fire-paid").Int("t", GameManager.CurrentTurn).Str("ai", me.UserNickName)
                     .Str("wid", weapon.WeaponData != null ? weapon.WeaponData.id.Value : "").Bool("guided", IsGuided(weapon))
-                    .Str("destination", enemyDest ? dest.Player.UserNickName : dest == null ? "none" : "own")
+                    // v0.20 (council I1a): "own" was also any non-player body; split it into own (our planet) and neutral.
+                    .Str("destination", enemyDest ? dest.Player.UserNickName : dest == null ? "none" : dest.Player == me ? "own" : "neutral")
                     .Int("candidates", enemyDest ? StrikeCandidateCount(me, dest.Player) : -1)
                     .Int("energyPaid", Math.Max(0, __state - me.ResourceHandler.Energy)).ToString());
             }

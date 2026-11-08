@@ -41,8 +41,10 @@ Review: two GPT-6.1 Terra passes; see `docs/reviews/terra-ai-disposition.md` for
 ## Build, install, uninstall
 
 ```
-dotnet build AI -c Release            # deploys to <game>/BepInEx/plugins/InterplanetaryAI/
-dotnet build AI -c Release -p:SkipDeploy=true   # while the game is running
+dotnet build AI -c Release                    # builds only; never touches the game (v0.20)
+dotnet build AI -c Release -p:Deploy=true      # also installs into <game>/BepInEx/plugins/InterplanetaryAI/; fails while the game runs
+python AI/tools/run_mutants.py                # mutation tests (AI/tools/mutants.tsv); exit 1 on a survivor
+python AI/tools/verify_gates.py <decisions.jsonl>   # council gates: PASS / FAIL / UNTESTED with denominators
 ```
 
 Config: `<game>/BepInEx/config/pavol.interplanetary.ai.cfg`. Log lines: `<game>/BepInEx/LogOutput.log` (`T12 AI 02: 9 weapons -> ...`). Decision log: `<game>/BepInEx/InterplanetaryAI/decisions-<start>.jsonl`.

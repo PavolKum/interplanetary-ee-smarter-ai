@@ -138,7 +138,11 @@ def main():
                 print(f"T{r['t']} {r['ai']} [ORIGINAL lvl {r.get('lvl')}]: E/t {r.get('energyPerTurn')} M/t {r.get('materialPerTurn')} "
                       f"sci {r.get('sciencePerTurn')} bld {sum(b.values())} [{top}] pop {r.get('population')} unspent E{r.get('energy')}", flush=True)
             elif kind == "late-free-fire":
-                print(f"T{r['t']} {r['ai']}: LATE FREE FIRE {r.get('shots')} shots (~{r.get('passing', 0):.1f} through) with {r.get('energyLeft')}E left, reservation {r.get('reservation')}E", flush=True)
+                kind_txt = "LATE PULSE FIRE" if r.get("held") == "pulse-wait" else "LATE FREE FIRE"
+                print(f"T{r['t']} {r['ai']}: {kind_txt} {r.get('shots')} shots (~{r.get('passing', 0):.1f} through) with {r.get('energyLeft')}E left, reservation {r.get('reservation')}E", flush=True)
+            elif kind == "late-free-fire-refused":
+                if r.get("refusal") in ("energy", "material", "not-funded"):
+                    print(f"T{r['t']} {r['ai']}: held {r.get('held')}, no late fire ({r.get('refusal')}: {r.get('energyLeft')}E left vs {r.get('reservation')}E)", flush=True)
             elif kind == "aim-search":
                 if r.get("live"):
                     print(f"T{r['t']} {r['ai']}: AIM {r.get('found')}/{r.get('live')} in {r.get('seconds', 0):.0f}s (@20s {r.get('foundAt20')}, @40s {r.get('foundAt40')}; +{r.get('addedSeconds', 0):.0f}s, stop {r.get('stop') or '-'}; {r.get('fps', 0):.0f} fps"
