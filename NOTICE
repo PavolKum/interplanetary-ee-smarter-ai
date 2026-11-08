@@ -1,0 +1,16 @@
+Interplanetary EE: Smarter AI
+Copyright (c) 2026 Pavol (PavolKum). Licensed under the MIT License (see LICENSE).
+
+This is an unofficial fan mod. It is not affiliated with, endorsed by or
+sponsored by TJR Games or Team Jolly Roger. "Interplanetary" and
+"Interplanetary: Enhanced Edition" are trademarks of their respective owners.
+
+This repository ships no game code, game assets or game data. The mod patches
+the game at runtime and needs a legal copy of Interplanetary: Enhanced Edition.
+Building from source references the game's own DLLs from your local install;
+they are never copied into this repository or into a release.
+
+Third-party software, downloaded separately from its own releases and not
+included here:
+- BepInEx 5 (LGPL-2.1): https://github.com/BepInEx/BepInEx
+- HarmonyX (MIT), bundled with BepInEx: https://github.com/BepInEx/HarmonyX

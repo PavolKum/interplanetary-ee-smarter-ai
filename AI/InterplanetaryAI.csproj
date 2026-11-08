@@ -11,9 +11,11 @@
     <Version>0.22.0</Version>
     <DebugType>portable</DebugType>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
-    <!-- Same as QoL: without this MSBuild refuses to resolve Assembly-CSharp (MSB3258). -->
+    <!-- Without this MSBuild refuses to resolve Assembly-CSharp (MSB3258). -->
     <_FindDependencies>false</_FindDependencies>
-    <GameDir>C:\Program Files (x86)\Steam\steamapps\common\Interplanetary Enhanced Edition</GameDir>
+    <!-- The game folder supplies the referenced DLLs (game + BepInEx). Default: the standard Steam library.
+         Override for another library: dotnet build AI -c Release -p:GameDir="D:\SteamLibrary\steamapps\common\Interplanetary Enhanced Edition" -->
+    <GameDir Condition="'$(GameDir)' == ''">$(MSBuildProgramFiles32)\Steam\steamapps\common\Interplanetary Enhanced Edition</GameDir>
     <ManagedDir>$(GameDir)\Interplanetary_Data\Managed</ManagedDir>
     <BepInExCore>$(GameDir)\BepInEx\core</BepInExCore>
     <!-- v0.20: the StampBuild target sets InformationalVersion itself (short commit + dirty flag). -->
@@ -65,6 +67,12 @@
       <InformationalVersion>$(Version)+$(GitCommit)</InformationalVersion>
       <InformationalVersion Condition="'$(GitDirty)' != ''">$(Version)+$(GitCommit).dirty</InformationalVersion>
     </PropertyGroup>
+  </Target>
+
+  <!-- Fail early with a clear message when the game (or BepInEx) is not where GameDir points. -->
+  <Target Name="CheckGameDir" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="!Exists('$(ManagedDir)\Assembly-CSharp.dll')" Text="Game not found: $(ManagedDir)\Assembly-CSharp.dll is missing. Pass the game folder with -p:GameDir=&quot;...\Interplanetary Enhanced Edition&quot;." />
+    <Error Condition="!Exists('$(BepInExCore)\BepInEx.dll')" Text="BepInEx not found: $(BepInExCore)\BepInEx.dll is missing. Install BepInEx 5.4.x x64 into the game folder and run the game once." />
   </Target>
 
   <!-- v0.20 (council I1b): one version source. The build fails when <Version> and Plugin.VERSION disagree. -->

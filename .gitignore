@@ -7,3 +7,10 @@ docs/reviews/*.err
 docs/reviews/*.tmp
 __pycache__/
 docs/playtests/data/
+
+# Public repo: never track game source, extracted game data or private notes
+decompiled/
+docs/ruleset/
+docs/original-mechanics.md
+**/*.err
+release/
