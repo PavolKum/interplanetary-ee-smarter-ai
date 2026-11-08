@@ -95,6 +95,16 @@ def main():
     prompt = open(prompt_path, encoding="utf-8").read()
     if args.cmd:
         cmd = list(args.cmd) + [prompt]
+    elif args.model.startswith("agy:"):
+        # 2026-11-08 (Pavol): Gemini lanes run through the Antigravity CLI subscription, not OpenRouter credit.
+        # "agy:gemini-4-argon-high" / "agy:gemini-3.8-flash-high" (see `agy models`). Plan mode = read-only.
+        exe = shutil.which("agy") or os.path.join(os.environ.get("LOCALAPPDATA", ""), "agy", "bin", "agy.exe")
+        if not os.path.isfile(exe):
+            print("FAIL: agy (Antigravity CLI) not found")
+            return 2
+        cmd = [exe, "-p", prompt, "--model", args.model[len("agy:"):], "--mode", "plan",
+               "--print-timeout", "%ds" % args.timeout]
+        args.stall = args.timeout  # agy writes no stderr trace while it works; only the overall timeout applies
     else:
         exe = find_opencode()
         if not exe:
