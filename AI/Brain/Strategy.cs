@@ -280,6 +280,18 @@ namespace InterplanetaryAI.Brain
             return passShare >= s.ReturnFirePassShare && passing >= Math.Max(0.01f, s.ReturnFireMinPassing);
         }
 
+        // v0.19 (matches 22-24, Terra v0.19 #1-#2): late free fire. At the AI's end turn, after construction and before the
+        // firing goal, a turn held only for energy ("below-saturation" with free fire otherwise met) fires when the energy and
+        // material actually left cover the reservation the hold released. The turn's defense reserve, repairs and builds have
+        // already been funded, so the salvo uses only what would go unspent. Match 24: Doc T23 held with 17,120 left.
+        public static bool LateFreeFire(StrategyDecision d, int energyLeft, int materialLeft, int releasedEnergy, int releasedMaterial,
+            StrategySettings s)
+        {
+            if (d == null || d.Fire || !d.War || d.CommitTargetId < 0 || d.Reason != "below-saturation") return false;
+            if (!s.FreeFire || d.Shots < s.MinWeapons || d.Passing < Math.Max(0.01f, s.FreeFireMinPassing)) return false;
+            return releasedEnergy > 0 && energyLeft >= releasedEnergy && materialLeft >= Math.Max(0, releasedMaterial);
+        }
+
         // v0.16.2: holding would release energy that would go unspent (freeEnergy < 0 = unknown: hold).
         public static bool FreeFireHolds(int weapons, float passing, float freeEnergy, float firingCost, StrategySettings s)
         {

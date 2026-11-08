@@ -34,6 +34,7 @@ namespace InterplanetaryAI
             // this turn
             public int Turn = -1;
             public bool Started;
+            public bool Funded;           // v0.19 (Terra v0.19b #2): StartConstruction finished the defense reserve and repairs
             public bool Ended;            // v0.16.2: EndTurn recorded EndEnergyLeft / EndMaterialLeft
             public bool War;
             public bool Defensive;        // v0.10: defense floor and reserve from DefenseFromTurn (before weapons)
@@ -276,6 +277,24 @@ namespace InterplanetaryAI
         // surplus) and what last turn used from its construction start (defense reserve, repairs, construction). Read at the
         // strategy decision, before this turn's director state replaces it. False = unknown (no state, not the turn just
         // before, or the turn never ended).
+        // v0.19: this turn's construction start ran to the end (defense reserve withheld, repairs paid).
+        internal static bool FundedThisTurn(int playerId)
+        {
+            DirectorState d;
+            return s_states.TryGetValue(playerId, out d) && d.Turn == GameManager.CurrentTurn && d.Started && d.Funded;
+        }
+
+        // v0.19 (Terra v0.19c #1): a late free fire took the firing reservation back after construction started as a hold.
+        // Take it out of this turn's construction start too, so next turn's FreeFireInputs sees the same shape as a planned
+        // firing turn (whose start never held the reservation) instead of counting the salvo as construction use. An abort
+        // after it keeps the reservation for defense rolls, as on a planned firing turn.
+        internal static void NoteLateFire(int playerId, int reservation)
+        {
+            DirectorState d;
+            if (reservation > 0 && s_states.TryGetValue(playerId, out d) && d.Turn == GameManager.CurrentTurn && d.Started)
+                d.EnergyAtStart = Math.Max(0, d.EnergyAtStart - reservation);
+        }
+
         internal static bool FreeFireInputs(PlayerData me, int turn, out int lastUnspent, out int lastUses)
         {
             lastUnspent = -1;
@@ -680,9 +699,10 @@ namespace InterplanetaryAI
             }
             // v0.16 (Sol re-check round 3): a pending superweapon purchase keeps its funding through repairs.
             bool goalPending = economy.BuyPending && !economy.Bought;
-            RepairAfterReserve(core, d, goalPending ? economy.GoalEnergyCost : 0, goalPending ? economy.GoalMaterialCost : 0);
+            bool repaired = RepairAfterReserve(core, d, goalPending ? economy.GoalEnergyCost : 0, goalPending ? economy.GoalMaterialCost : 0);
             d.TurnStartEnergy = core.Resources.Energy;
             d.TurnStartMaterial = core.Resources.Material;
+            d.Funded = repaired;
         }
 
         // Free power slots on buildings that distribute power, after this turn's power-line connections.
@@ -1126,11 +1146,12 @@ namespace InterplanetaryAI
         // has been taken from the construction budget, so repairs and the reserve use ONE current-turn defense request.
         // core.Resources is native's turn snapshot (firing already reserved, AIResources.BeginTurn); repairs leave the
         // recovery floor and are charged to the snapshot and the queue allotment as well as to the player's stock.
-        private static void RepairAfterReserve(AICore core, DirectorState d, int keepEnergy, int keepMaterial)
+        // v0.19 (Terra v0.19c #2): true when the repair stage completed (disabled or nothing to repair counts); false on an error.
+        private static bool RepairAfterReserve(AICore core, DirectorState d, int keepEnergy, int keepMaterial)
         {
             try
             {
-                if (!Plugin.RepairEnabled.Value || Plugin.RepairsPerTurn.Value <= 0) return;
+                if (!Plugin.RepairEnabled.Value || Plugin.RepairsPerTurn.Value <= 0) return true;
                 PlayerData me = core.PlayerData;
                 PlayerResourceHandler res = me.ResourceHandler;
                 bool dry = GameSessionManager.CurrentGameSettings.PlanetMaterial != -1 && res.PlanetMaterial <= 0;
@@ -1161,7 +1182,7 @@ namespace InterplanetaryAI
                     });
                 }
                 d.RepairHeld = d.DefenseReserve;
-                if (candidates.Count == 0) return;
+                if (candidates.Count == 0) return true;
                 float recovery = Math.Max(0f, Plugin.DefenseRecoveryShare.Value) * d.EnergyIncome;
                 int energyBudget = (int)Math.Min(Math.Max(0f, Plugin.RepairEnergyShare.Value) * core.Resources.Energy,
                     Math.Max(0f, core.Resources.Energy - recovery - Math.Max(0, keepEnergy)));
@@ -1188,10 +1209,12 @@ namespace InterplanetaryAI
                 d.Repaired = n;
                 d.RepairEnergy = spentE;
                 d.RepairMaterial = spentM;
+                return true;
             }
             catch (Exception e)
             {
                 ReportOnce("repair", e);
+                return false;
             }
         }
 

@@ -632,6 +632,9 @@ namespace InterplanetaryAI
                 // v0.10 hold fire: nothing in the firing lists, nothing fired, no firing energy charged (the reserved
                 // energy went to construction this turn).
                 AICore holder = (AICore)s_goalCore.GetValue(__instance);
+                // v0.19 (Terra v0.19b #1): the goal runs inside AIWeaponTargeting.EndTurn, the last module; construction's
+                // EndTurn has already run. A turn held only for energy may still fire here, before the hold is read.
+                if (holder != null) StrategyPatches.LateFreeFire(holder);
                 if (holder != null && StrategyPatches.HoldFire(holder.PlayerData.PlayerID))
                 {
                     List<AITrajectoryWeapon> holdHitting = (List<AITrajectoryWeapon>)s_goalHitting.GetValue(__instance);

@@ -1,0 +1,19 @@
+READ-ONLY review. Do not edit, create or delete any file. Stay inside this repository: any path outside it is auto-rejected and ends your run. Finish with the complete written report; include a line containing the word "verdict".
+
+Second re-review of AI v0.19.0 (first slice), revised after your review docs/reviews/terra-ai-v0.19b.md (verdict: do not ship). Diff: docs/reviews/terra-ai-v0.19c.diff (git diff HEAD -- AI). Context: docs/playtests/2026-11-08-v0.18.0-match24.md, data docs/playtests/data/v018m24-*. decompiled/ is the game source (authoritative). Fairness rules: strict visible-only targeting, no hidden enemy values, human-like accuracy, no resource cheats. Only Smarter AIs (Plugin.IsSmart) may be changed; original AIs must run native code.
+
+What changed since v0.19b:
+- Blocker #1: StrategyPatches.LateFreeFire is no longer called from EconomyPatches.CoreEndTurnPostfix. It is now called at the start of AiPatches.GoalTargetWeaponsPrefix (AI/Patches.cs, smart goals only, after the __state/SmartGoal checks) immediately before the existing HoldFire check. AICore module order (decompiled AICore.cs constructor): ... PowerGrid, Intel, Construction, m_weaponTargeting, so construction's EndTurn has run when AIWeaponTargeting.EndTurn calls TargetWeapons. The existing list rebuild, accuracy filter, ShouldAbort and the goal postfix's ReportFired then run once in their normal order.
+- Major #2: LateFreeFire now requires Plugin.DirectorEnabled and DirectorPatches.FundedThisTurn (new DirectorState.Funded, set at the end of StartConstruction after the defense reserve is withheld from core.Resources.Energy and RepairAfterReserve ran; DirectorState is recreated each turn in DirectorPatches.BeginTurn). The energy and material compared are also reduced by the economy's superweapon savings (AiEconomyState.ReservedEnergy/ReservedMaterial) and, when a purchase is pending (BuyPending && !Bought), its GoalEnergyCost/GoalMaterialCost.
+- Minor #4: the Doc T23 fixture now uses materialLeft 16 and 9 primary trajectories; the material case is labelled synthetic.
+- Minor #3 (aim-watch stop label ambiguity) is NOT changed in this slice; it is logging only and is accepted as a known limitation.
+- 620 unit checks pass; removing the reason, energy or material guard in Strategy.LateFreeFire each fails one check. There is no game-lifecycle test harness; the lifecycle will be verified from the next match's decision log (late-free-fire event followed by a non-empty fire record).
+
+Check especially:
+- Is the goal prefix truly reached before any firing list or action is built for this turn, and only once per turn (AreWeaponsTargeted)? Can TargetWeapons be called from anywhere else (e.g. the end-turn timeout path) so the late check is skipped or runs twice?
+- Does the director's defense reserve and repair accounting leave core.Resources.Energy as true spare after construction's EndTurn? Are there other planned costs still in core.Resources at that point (queued construction not yet charged, power purchases, intel batches, counterintel, projects) that the late fire could take?
+- Is subtracting ReservedEnergy/ReservedMaterial correct, or are those savings already outside core.Resources (double subtraction makes the check stricter, which is acceptable; a missed subtraction is not)?
+- ReportFired/HoldTurns/strike history and the abort path after a late flip; DirectorPatches.EndTurn's EndEnergyLeft after the take-back (next turn's FreeEnergy).
+- Anything that would affect original AIs or fairness.
+
+Report: numbered findings with file:line, severity (blocker/major/minor/nit), the failure scenario, and a fix. Then the verdict (ship / ship with fixes / do not ship).

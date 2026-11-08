@@ -24,7 +24,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.18.0";
+        public const string VERSION = "0.19.0";
 
         internal static ManualLogSource Log;
 

@@ -1693,6 +1693,30 @@ namespace InterplanetaryAI.Tests
             Check(Strategy.FreeEnergy(3000f, 5000f, 3000f, 1200f) < 1200f, "income fell: this turn cannot fund last turn's use and a salvo");
             Check(Strategy.FreeEnergy(-1f, 0f, 9000f, 1000f) < 0f, "last turn unknown: -1");
 
+            // v0.19 late free fire (match 24, Doc T23): held below saturation for energy (free 1,034 vs 3,500), 9 primary
+            // trajectories onto the human, 17,120 energy and 16 material left when construction ended (no material cost here).
+            StrategySettings sl = new StrategySettings();
+            Func<StrategyDecision> held = () => new StrategyDecision { Fire = false, War = true, CommitTargetId = 4, Reason = "below-saturation", Shots = 25, Passing = 9.0f };
+            Check(Strategy.LateFreeFire(held(), 17120, 16, 3500, 0, sl), "Doc T23: 17,120 left covers the 3,500 reservation: fire");
+            Check(!Strategy.LateFreeFire(held(), 3499, 2891, 3500, 0, sl), "left below the reservation: hold");
+            Check(Strategy.LateFreeFire(held(), 3500, 2891, 3500, 0, sl), "exactly the reservation left: fire");
+            Check(!Strategy.LateFreeFire(held(), 17120, 99, 3500, 100, sl), "synthetic: material for guided weapons not left: hold");
+            Check(!Strategy.LateFreeFire(held(), 17120, 2891, 0, 0, sl), "nothing was released: nothing to take back");
+            StrategyDecision pw = held(); pw.Reason = "pulse-wait";
+            Check(!Strategy.LateFreeFire(pw, 17120, 2891, 3500, 0, sl), "a pulse wait is a choice, not an energy hold");
+            StrategyDecision few = held(); few.Passing = sl.FreeFireMinPassing - 0.5f;
+            Check(!Strategy.LateFreeFire(few, 17120, 2891, 3500, 0, sl), "under FreeFireMinPassing expected through: hold");
+            StrategyDecision small = held(); small.Shots = sl.MinWeapons - 1;
+            Check(!Strategy.LateFreeFire(small, 17120, 2891, 3500, 0, sl), "under MinWeapons: hold");
+            StrategyDecision peace = held(); peace.War = false;
+            Check(!Strategy.LateFreeFire(peace, 17120, 2891, 3500, 0, sl), "peace: hold");
+            StrategyDecision none = held(); none.CommitTargetId = -1;
+            Check(!Strategy.LateFreeFire(none, 17120, 2891, 3500, 0, sl), "no commit: hold");
+            StrategyDecision fired = held(); fired.Fire = true;
+            Check(!Strategy.LateFreeFire(fired, 17120, 2891, 3500, 0, sl), "already firing: no second take");
+            Check(!Strategy.LateFreeFire(null, 17120, 2891, 3500, 0, sl), "no decision: hold");
+            Check(!Strategy.LateFreeFire(held(), 17120, 2891, 3500, 0, new StrategySettings { FreeFire = false }), "free fire off: hold");
+
             // Who hit us, by shooter; our own shots are not an enemy's.
             DefenseLedger ledger = new DefenseLedger(3);
             ledger.Record(5, 0, "wea_Railgun", false, 0, 0, 0, 0, true);

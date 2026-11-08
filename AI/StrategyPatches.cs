@@ -26,6 +26,7 @@ namespace InterplanetaryAI
             public int LastStrikeTurn = -1000;
             public int HoldTurns;
             public int ReleasedEnergy;
+            public int ReleasedMaterial;        // v0.19: for late free fire
             public float GuidedFiring, UnguidedFiring, ArtilleryProjectiles; // v0.16 item 4 (logged)
             public int FreeEnergy = -1, FiringCost;                          // v0.16.2 free fire (logged)
             public bool Reported;               // this turn's firing has been counted
@@ -102,6 +103,7 @@ namespace InterplanetaryAI
             {
                 s.Decision = null;
                 s.ReleasedEnergy = 0;
+                s.ReleasedMaterial = 0;
             }
         }
 
@@ -149,6 +151,7 @@ namespace InterplanetaryAI
             state.Turn = turn;
             state.Decision = null;
             state.ReleasedEnergy = 0;
+            state.ReleasedMaterial = 0;
             state.Reported = false;
             state.Aborted = false;
 
@@ -329,6 +332,37 @@ namespace InterplanetaryAI
             core.Construction.ConstructionQueue.AllottedEnergy += energyBack;
             core.Construction.ConstructionQueue.AllottedMaterial += materialBack;
             state.ReleasedEnergy = energyBack;
+            state.ReleasedMaterial = materialBack;
+        }
+
+        // v0.19: from AiPatches.GoalTargetWeaponsPrefix (AIWeaponTargeting.EndTurn, the last module, so construction's EndTurn
+        // has run; before the hold is read). A turn held only for energy fires when what is actually left covers the released
+        // reservation: take it back from the AI ledger and flip the decision. Only after the director funded this turn's defense
+        // reserve and repairs (Terra v0.19b #2); a pending superweapon purchase stays untouched (its savings are already outside
+        // core.Resources, Terra v0.19c). ShouldAbort still guards.
+        internal static void LateFreeFire(AICore core)
+        {
+            State s;
+            if (!Enabled || core == null || !s_states.TryGetValue(core.PlayerData.PlayerID, out s) || s.Turn != GameManager.CurrentTurn) return;
+            StrategyDecision d = s.Decision;
+            if (!Plugin.DirectorEnabled.Value || !DirectorPatches.FundedThisTurn(core.PlayerData.PlayerID)) return;
+            int energyLeft = core.Resources.Energy, materialLeft = core.Resources.Material;
+            EconomyPatches.AiEconomyState econ;
+            if (EconomyPatches.States.TryGetValue(core.PlayerData.PlayerID, out econ))
+            {
+                if (econ.BuyPending && !econ.Bought) { energyLeft -= Math.Max(0, econ.GoalEnergyCost); materialLeft -= Math.Max(0, econ.GoalMaterialCost); }
+            }
+            if (!Strategy.LateFreeFire(d, energyLeft, materialLeft, s.ReleasedEnergy, s.ReleasedMaterial, Plugin.StrategyCfg)) return;
+            core.Resources.Energy -= s.ReleasedEnergy;
+            DirectorPatches.NoteLateFire(core.PlayerData.PlayerID, s.ReleasedEnergy);
+            core.Resources.Material -= Math.Max(0, s.ReleasedMaterial);
+            Plugin.WriteDecision(new Json().Str("e", "late-free-fire").Int("t", s.Turn).Str("ai", core.PlayerData.UserNickName)
+                .Int("energyLeft", energyLeft).Int("materialLeft", materialLeft).Int("reservation", s.ReleasedEnergy)
+                .Int("materialReservation", s.ReleasedMaterial).Int("shots", d.Shots).Num("passing", d.Passing).Int("commit", d.CommitTargetId).ToString());
+            d.Fire = true;
+            d.Reason = "late-free-fire";
+            s.ReleasedEnergy = 0;
+            s.ReleasedMaterial = 0;
         }
 
         private static void Add(Dictionary<string, float> counts, string key, float n)

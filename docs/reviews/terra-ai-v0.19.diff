@@ -1,0 +1,156 @@
+diff --git a/AI/AimWatch.cs b/AI/AimWatch.cs
+index 49830b2..ed7bf7c 100644
+--- a/AI/AimWatch.cs
++++ b/AI/AimWatch.cs
+@@ -38,6 +38,7 @@ namespace InterplanetaryAI
+             public float LastTimer;
+             public float AddedSeconds;
+             public float BaseTimeout = -1f;
++            public float HumanDoneAt = -1f;   // v0.19: AI timer when every human had ended his turn (-1 = not yet)
+             public string Stop = "";
+             public bool Fire;
+             public bool Logged;
+@@ -137,6 +138,10 @@ namespace InterplanetaryAI
+                 if (w.BaseTimeout < 0f) w.BaseTimeout = timeout;
+                 w.Frames++;
+                 w.LastTimer = timer;
++                // v0.19 (matches 22-24): the native timeout also waits for the humans (AICore.Update: m_timeOutTimer >=
++                // m_timeOut && PlayerManager.HaveAllHumanPlayersFinishedTurn), so "seconds" alone mixes the AI's window
++                // with the human's turn. Record when the humans finished to tell the two apart.
++                if (w.HumanDoneAt < 0f && PlayerManager.HaveAllHumanPlayersFinishedTurn) w.HumanDoneAt = timer;
+                 int commit;
+                 w.Fire = FiringTurn(__instance.PlayerData.PlayerID, out commit);
+ 
+@@ -173,6 +178,7 @@ namespace InterplanetaryAI
+                     int needed = (int)Math.Ceiling(Math.Max(0f, Math.Min(1f, Plugin.AimTargetShare.Value)) * live);
+                     if (live > 0 && found >= live) w.Stop = "all aimed";
+                     else if (timer < timeout) w.Stop = "native ready";
++                    else if (w.HumanDoneAt > timeout) w.Stop = "human turn"; // the window had ended before the human did
+                     else if (!w.Fire) w.Stop = "hold window";
+                     else if (found >= needed) w.Stop = "enough";
+                     else if (timer >= Plugin.AimingWindowMax.Value) w.Stop = "cap";
+@@ -231,6 +237,8 @@ namespace InterplanetaryAI
+                     .Bool("fire", w.Fire).Int("live", w.Live).Int("found", w.Found).Int("foundAt20", w.FoundAt20).Int("foundAt40", w.FoundAt40)
+                     .Num("seconds", w.LastTimer).Int("frames", w.Frames).Num("fps", w.LastTimer > 0f ? w.Frames / w.LastTimer : 0f)
+                     .Num("baseWindow", w.BaseTimeout).Num("addedSeconds", w.AddedSeconds).Num("lastProgress", w.LastProgress).Str("stop", w.Stop)
++                    .Num("humanDoneAt", w.HumanDoneAt)
++                    .Num("waitAfterHuman", w.HumanDoneAt >= 0f ? Math.Max(0f, w.LastTimer - w.HumanDoneAt) : -1f)
+                     .Num("foundFacingDeg", foundN > 0 ? foundAngle / foundN : -1f).Num("unfoundFacingDeg", unfound > 0 ? unfoundAngle / unfound : -1f)
+                     .Int("unfoundFacingAway", facingAway).ToString());
+             }
+diff --git a/AI/Brain/Strategy.cs b/AI/Brain/Strategy.cs
+index 3b3cbb1..67a7e8a 100644
+--- a/AI/Brain/Strategy.cs
++++ b/AI/Brain/Strategy.cs
+@@ -111,6 +111,7 @@ namespace InterplanetaryAI.Brain
+         // FreeFireMinPassing shots are expected through (Terra v0.16.2: not salvos that the defenses stop almost entirely).
+         public bool FreeFire = true;
+         public float FreeFireMinPassing = 4f;
++        public float FreeFireGrowthShare = 0.5f;                         // v0.19: share of this turn's income growth counted as free
+     }
+ 
+     public sealed class StrategyDecision
+@@ -292,10 +293,15 @@ namespace InterplanetaryAI.Brain
+         // beyond last turn's use (reserve, repairs, construction) if it held: an income drop or new demand shrinks it.
+         // lastUses = energy at last turn's construction start - its surplus; energyNowNet = this turn's energy with the firing
+         // reservation taken. -1 = unknown.
+-        public static float FreeEnergy(float lastUnspent, float lastUses, float energyNowNet, float firingCost)
++        // v0.19: growthShare of this turn's growth over last turn's start also counts. Without it a jump in income (match 24:
++        // Doc 8.9k -> 26k energy/turn at T23) held fire a turn with 17k left unspent. The rest of the growth stays with
++        // construction, whose demand can rise with the income. growthShare 0 = the v0.16.2 rule.
++        public static float FreeEnergy(float lastUnspent, float lastUses, float energyNowNet, float firingCost, float growthShare = 0f)
+         {
+             if (lastUnspent < 0f || lastUses < 0f) return -1f;
+-            return Math.Min(lastUnspent, energyNowNet + Math.Max(0f, firingCost) - lastUses);
++            float carry = energyNowNet + Math.Max(0f, firingCost) - lastUses; // = lastUnspent + this turn's growth
++            if (carry <= lastUnspent) return carry;
++            return lastUnspent + Math.Max(0f, Math.Min(1f, growthShare)) * (carry - lastUnspent);
+         }
+ 
+         // v0.16.2: the leading human is the commit when enough of the salvo reaches through his defenses (HumanFirstShare).
+diff --git a/AI/Plugin.cs b/AI/Plugin.cs
+index a7b68b7..8b82272 100644
+--- a/AI/Plugin.cs
++++ b/AI/Plugin.cs
+@@ -24,7 +24,7 @@ namespace InterplanetaryAI
+     {
+         public const string GUID = "pavol.interplanetary.ai";
+         public const string NAME = "Interplanetary EE: Smarter AI";
+-        public const string VERSION = "0.18.0";
++        public const string VERSION = "0.19.0";
+ 
+         internal static ManualLogSource Log;
+ 
+@@ -337,6 +337,7 @@ namespace InterplanetaryAI
+         internal static ConfigEntry<float> HumanFirstMinPassing;     // v0.16.2
+         internal static ConfigEntry<bool> FreeFire;                  // v0.16.2
+         internal static ConfigEntry<float> FreeFireMinPassing;       // v0.16.2
++        internal static ConfigEntry<float> FreeFireGrowthShare;      // v0.19
+         internal static ConfigEntry<float> MaterialBoundEnergyShare; // v0.16.2
+         internal static ConfigEntry<float> MaterialBoundStockShare;  // v0.16.2
+         internal static ConfigEntry<int> MaterialBoundMinEnergy;     // v0.16.2
+@@ -715,6 +716,8 @@ namespace InterplanetaryAI
+             FreeFire = Config.Bind("Strategy", "FreeFire", true,
+                 "v0.16.2: fire instead of holding when last turn's construction already left at least this turn's firing cost unspent and this turn's energy still covers last turn's use (holding would only add to unspent energy). Match 19 held T21-T25 with 0.8-41k energy unspent a turn.");
+             FreeFireMinPassing = Config.Bind("Strategy", "FreeFireMinPassing", 4f, "v0.16.2: fewest expected shots through the commit's defenses for free fire.");
++            FreeFireGrowthShare = Config.Bind("Strategy", "FreeFireGrowthShare", 0.5f,
++                "v0.19: share of this turn's energy growth over last turn's start that free fire may also use (0 = v0.16.2: only last turn's unspent). Match 24: a jump from 8.9k to 26k energy/turn held fire a turn with 17k unspent.");
+             MaterialBoundEnergyShare = Config.Bind("Director", "MaterialBoundEnergyShare", 0.2f,
+                 "v0.16.2: material binds when last turn left at least this share of its energy (and MaterialBoundMinEnergy) unspent while its material was spent down to MaterialBoundStockShare. Then extraction goes first and energy gains are worth nothing. 0 = off.");
+             MaterialBoundStockShare = Config.Bind("Director", "MaterialBoundStockShare", 0.1f, "v0.16.2: most material left at turn end, as a share of the turn's material, that counts as spent down.");
+@@ -849,6 +852,7 @@ namespace InterplanetaryAI
+             StrategyCfg.HumanFirstReachMinScore = Math.Max(0f, Math.Min(1f, HumanFirstReachMinScore.Value));
+             StrategyCfg.FreeFire = FreeFire.Value;
+             StrategyCfg.FreeFireMinPassing = Math.Max(0f, FreeFireMinPassing.Value);
++            StrategyCfg.FreeFireGrowthShare = Math.Max(0f, Math.Min(1f, FreeFireGrowthShare.Value));
+ 
+             Build.Growth = BuildPlanner.Parse(GrowthWeights.Value, Build.Growth);
+             Build.Pressure = BuildPlanner.Parse(PressureWeights.Value, Build.Pressure);
+diff --git a/AI/StrategyPatches.cs b/AI/StrategyPatches.cs
+index 3eca743..16c02c1 100644
+--- a/AI/StrategyPatches.cs
++++ b/AI/StrategyPatches.cs
+@@ -263,7 +263,8 @@ namespace InterplanetaryAI
+                 state.FiringCost = Math.Max(0, core.Resources.EnergyUpkeep);
+                 int lastUnspent, lastUses;
+                 state.FreeEnergy = DirectorPatches.FreeFireInputs(me, turn, out lastUnspent, out lastUses)
+-                    ? (int)Strategy.FreeEnergy(lastUnspent, lastUses, core.Resources.Energy, state.FiringCost) : -1;
++                    ? (int)Strategy.FreeEnergy(lastUnspent, lastUses, core.Resources.Energy, state.FiringCost,
++                        Plugin.StrategyCfg.FreeFireGrowthShare) : -1;
+                 decision = Strategy.Decide(turn, war, salvo, accuracy, targets, DefensePlanner.Counters, state.LastStrikeTurn, state.HoldTurns,
+                     weapons, Plugin.StrategyCfg, state.LastCommitId, state.LastWeapons, underAttack, accuracyById, hitLastPhase,
+                     guidedIds, guidedPopDamage, guidedFunded, AverageById(popSumById, countById),
+diff --git a/AI/Tests/Program.cs b/AI/Tests/Program.cs
+index 10a8b4d..99aa469 100644
+--- a/AI/Tests/Program.cs
++++ b/AI/Tests/Program.cs
+@@ -1693,6 +1693,15 @@ namespace InterplanetaryAI.Tests
+             Check(Strategy.FreeEnergy(3000f, 5000f, 3000f, 1200f) < 1200f, "income fell: this turn cannot fund last turn's use and a salvo");
+             Check(Strategy.FreeEnergy(-1f, 0f, 9000f, 1000f) < 0f, "last turn unknown: -1");
+ 
++            // v0.19 (match 24, Doc T23): income jumped 8.9k -> 26k a turn; last turn left 1,034, the salvo costs 3,500.
++            // Without growth the hold kept 17k unspent; half the growth (1,034 + 0.5 x 19,566) funds the salvo.
++            Check(Strategy.FreeEnergy(1034f, 7900f, 25000f, 3500f) < 3500f, "v0.16.2 rule (growth share 0): the jump turn holds");
++            Check(Math.Abs(Strategy.FreeEnergy(1034f, 7900f, 25000f, 3500f, 0.5f) - 10817f) < 0.5f, "growth share 0.5: 1,034 + 9,783 free");
++            Check(Math.Abs(Strategy.FreeEnergy(1034f, 7900f, 25000f, 3500f, 1f) - 20600f) < 0.5f, "growth share 1: the whole carry");
++            Check(Math.Abs(Strategy.FreeEnergy(1034f, 7900f, 25000f, 3500f, 7f) - 20600f) < 0.5f, "growth share clamped to 1");
++            Check(Strategy.FreeEnergy(3000f, 5000f, 3000f, 1200f, 0.5f) < 1200f, "income fell: the growth share adds nothing");
++            Check(Math.Abs(Strategy.FreeEnergy(33613f, 1900f, 38967f, 3000f, 0.5f) - 36840f) < 0.5f, "glut turn with growth: 33,613 + 0.5 x 6,454");
++
+             // Who hit us, by shooter; our own shots are not an enemy's.
+             DefenseLedger ledger = new DefenseLedger(3);
+             ledger.Record(5, 0, "wea_Railgun", false, 0, 0, 0, 0, true);
+diff --git a/AI/tools/live_monitor.py b/AI/tools/live_monitor.py
+index 29e256c..ef887fc 100644
+--- a/AI/tools/live_monitor.py
++++ b/AI/tools/live_monitor.py
+@@ -139,7 +139,8 @@ def main():
+                       f"sci {r.get('sciencePerTurn')} bld {sum(b.values())} [{top}] pop {r.get('population')} unspent E{r.get('energy')}", flush=True)
+             elif kind == "aim-search":
+                 if r.get("live"):
+-                    print(f"T{r['t']} {r['ai']}: AIM {r.get('found')}/{r.get('live')} in {r.get('seconds', 0):.0f}s (@20s {r.get('foundAt20')}, @40s {r.get('foundAt40')}; +{r.get('addedSeconds', 0):.0f}s, stop {r.get('stop') or '-'}; {r.get('fps', 0):.0f} fps)"
++                    print(f"T{r['t']} {r['ai']}: AIM {r.get('found')}/{r.get('live')} in {r.get('seconds', 0):.0f}s (@20s {r.get('foundAt20')}, @40s {r.get('foundAt40')}; +{r.get('addedSeconds', 0):.0f}s, stop {r.get('stop') or '-'}; {r.get('fps', 0):.0f} fps"
++                          + (f"; human done @{r['humanDoneAt']:.0f}s, AI wait after {r.get('waitAfterHuman', 0):.0f}s" if r.get("humanDoneAt", -1) >= 0 else "") + ")"
+                           f" unfound face {r.get('unfoundFacingDeg', -1):.0f} deg ({r.get('unfoundFacingAway')} >90) vs found {r.get('foundFacingDeg', -1):.0f}{' FIRE' if r.get('fire') else ''}", flush=True)
+             elif kind == "turn-start-error":
+                 print(f"T{r['t']} {r['ai']}: TURN-START ERROR in {r.get('module')} ({'swallowed' if r.get('swallowed', True) else 'passed on'}): {r.get('error')}", flush=True)

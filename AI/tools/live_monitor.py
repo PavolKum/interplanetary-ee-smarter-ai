@@ -137,9 +137,12 @@ def main():
                 top = ",".join(f"{k}{v}" for k, v in sorted(b.items(), key=lambda kv: -kv[1])[:5])
                 print(f"T{r['t']} {r['ai']} [ORIGINAL lvl {r.get('lvl')}]: E/t {r.get('energyPerTurn')} M/t {r.get('materialPerTurn')} "
                       f"sci {r.get('sciencePerTurn')} bld {sum(b.values())} [{top}] pop {r.get('population')} unspent E{r.get('energy')}", flush=True)
+            elif kind == "late-free-fire":
+                print(f"T{r['t']} {r['ai']}: LATE FREE FIRE {r.get('shots')} shots (~{r.get('passing', 0):.1f} through) with {r.get('energyLeft')}E left, reservation {r.get('reservation')}E", flush=True)
             elif kind == "aim-search":
                 if r.get("live"):
-                    print(f"T{r['t']} {r['ai']}: AIM {r.get('found')}/{r.get('live')} in {r.get('seconds', 0):.0f}s (@20s {r.get('foundAt20')}, @40s {r.get('foundAt40')}; +{r.get('addedSeconds', 0):.0f}s, stop {r.get('stop') or '-'}; {r.get('fps', 0):.0f} fps)"
+                    print(f"T{r['t']} {r['ai']}: AIM {r.get('found')}/{r.get('live')} in {r.get('seconds', 0):.0f}s (@20s {r.get('foundAt20')}, @40s {r.get('foundAt40')}; +{r.get('addedSeconds', 0):.0f}s, stop {r.get('stop') or '-'}; {r.get('fps', 0):.0f} fps"
+                          + (f"; human done @{r['humanDoneAt']:.0f}s, aim wait after {r.get('aimWaitAfterHuman', 0):.0f}s" if r.get("humanDoneAt", -1) >= 0 else "") + ")"
                           f" unfound face {r.get('unfoundFacingDeg', -1):.0f} deg ({r.get('unfoundFacingAway')} >90) vs found {r.get('foundFacingDeg', -1):.0f}{' FIRE' if r.get('fire') else ''}", flush=True)
             elif kind == "turn-start-error":
                 print(f"T{r['t']} {r['ai']}: TURN-START ERROR in {r.get('module')} ({'swallowed' if r.get('swallowed', True) else 'passed on'}): {r.get('error')}", flush=True)

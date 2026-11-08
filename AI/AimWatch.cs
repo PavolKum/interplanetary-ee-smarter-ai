@@ -38,6 +38,8 @@ namespace InterplanetaryAI
             public float LastTimer;
             public float AddedSeconds;
             public float BaseTimeout = -1f;
+            public float HumanDoneAt = -1f;   // v0.19: AI timer when every human had ended his turn (-1 = not yet / no human)
+            public float TimeoutNow = -1f;    // v0.19 (Terra #3): the effective timeout on the last observed frame
             public string Stop = "";
             public bool Fire;
             public bool Logged;
@@ -137,6 +139,12 @@ namespace InterplanetaryAI
                 if (w.BaseTimeout < 0f) w.BaseTimeout = timeout;
                 w.Frames++;
                 w.LastTimer = timer;
+                // v0.19 (matches 22-24): the native timeout also waits for the humans (AICore.Update: m_timeOutTimer >=
+                // m_timeOut && PlayerManager.HaveAllHumanPlayersFinishedTurn), so "seconds" alone mixes the AI's window
+                // with the human's turn. Record when the humans finished to tell the two apart.
+                // Terra v0.19 #4: the native property is vacuously true with no playing human; record nothing then.
+                if (w.HumanDoneAt < 0f && AnyPlayingHuman() && PlayerManager.HaveAllHumanPlayersFinishedTurn) w.HumanDoneAt = timer;
+                w.TimeoutNow = timeout;
                 int commit;
                 w.Fire = FiringTurn(__instance.PlayerData.PlayerID, out commit);
 
@@ -173,6 +181,7 @@ namespace InterplanetaryAI
                     int needed = (int)Math.Ceiling(Math.Max(0f, Math.Min(1f, Plugin.AimTargetShare.Value)) * live);
                     if (live > 0 && found >= live) w.Stop = "all aimed";
                     else if (timer < timeout) w.Stop = "native ready";
+                    else if (w.HumanDoneAt > timeout) w.Stop = "human turn"; // the window had ended before the human did
                     else if (!w.Fire) w.Stop = "hold window";
                     else if (found >= needed) w.Stop = "enough";
                     else if (timer >= Plugin.AimingWindowMax.Value) w.Stop = "cap";
@@ -184,6 +193,13 @@ namespace InterplanetaryAI
             {
                 ReportOnce("aim-watch", e);
             }
+        }
+
+        private static bool AnyPlayingHuman()
+        {
+            foreach (PlayerData p in PlayerManager.PlayerList)
+                if (p != null && !p.AIPlayer && p.CurrentGameStatus == PlayerData.PlayerGameStatusEnum.Playing) return true;
+            return false;
         }
 
         private static bool Usable(AITargetableWeapon tw)
@@ -231,6 +247,9 @@ namespace InterplanetaryAI
                     .Bool("fire", w.Fire).Int("live", w.Live).Int("found", w.Found).Int("foundAt20", w.FoundAt20).Int("foundAt40", w.FoundAt40)
                     .Num("seconds", w.LastTimer).Int("frames", w.Frames).Num("fps", w.LastTimer > 0f ? w.Frames / w.LastTimer : 0f)
                     .Num("baseWindow", w.BaseTimeout).Num("addedSeconds", w.AddedSeconds).Num("lastProgress", w.LastProgress).Str("stop", w.Stop)
+                    .Num("humanDoneAt", w.HumanDoneAt).Num("timeoutAtReady", w.TimeoutNow)
+                    // Terra v0.19 #4: the aim phase only; the AI's end-turn targeting phase and other AIs can add more.
+                    .Num("aimWaitAfterHuman", w.HumanDoneAt >= 0f ? Math.Max(0f, w.LastTimer - w.HumanDoneAt) : -1f)
                     .Num("foundFacingDeg", foundN > 0 ? foundAngle / foundN : -1f).Num("unfoundFacingDeg", unfound > 0 ? unfoundAngle / unfound : -1f)
                     .Int("unfoundFacingAway", facingAway).ToString());
             }
