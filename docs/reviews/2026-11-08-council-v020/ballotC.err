@@ -1,0 +1,33 @@
+[0m
+> plan · google/gemini-3.8-flash
+[0m
+[0m✱ [0mGlob "*"[90m in docs/reviews/2026-11-08-council-v020 · 46 matches[0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/matrix.md
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/charter.md
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/ballot.prompt.txt
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/ballotC.prompt.txt
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/ballotA.md[90m [limit=100][0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/ballotB.md[90m [limit=100][0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/laneC.md
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/xreviewC-on-D.md
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/xreviewB-on-C.md
+[0m✱ [0mGrep "TurnStartInit"[90m in decompiled · 23 matches[0m
+[0m→ [0mRead decompiled/Interplanetary.PlayerDataManagement/PlayerResourceHandler.cs[90m [offset=145, limit=60][0m
+[0m✱ [0mGrep "RollDefense"[90m in decompiled · 0 matches[0m
+[0m→ [0mRead decompiled/Interplanetary.PlayerDataManagement/PlayerDefenseHandler.cs[90m [offset=220, limit=70][0m
+[0m→ [0mRead decompiled/Interplanetary.PlayerDataManagement/PlayerDefenseHandler.cs[90m [offset=195, limit=30][0m
+[0m→ [0mRead decompiled/Interplanetary.GameEngine/GameManager.cs[90m [limit=60, offset=350][0m
+[0m✱ [0mGrep "Action[Pp]hase"[90m in decompiled/Interplanetary.GameEngine/GameManager.cs · 100 matches[0m
+[0m✱ [0mGrep "energyBefore"[90m in AI · 2 matches[0m
+[0m→ [0mRead docs/playtests/data/v019m26-human-telemetry.jsonl[90m [limit=25, offset=1][0m
+[0m✱ [0mGrep "m_currentEnergy"[90m in decompiled/Interplanetary.PlayerDataManagement/PlayerDefenseHandler.cs · 6 matches[0m
+[0m✱ [0mGrep "EnergyActivationCost"[90m in decompiled · 6 matches[0m
+[0m✱ [0mGrep "DamagePopulation"[90m in decompiled · 0 matches[0m
+[0m✱ [0mGrep "ActionphaseBuildingDamageEvent"[90m in decompiled · 20 matches[0m
+[0m→ [0mRead decompiled/Interplanetary.GameEngine/ActionphaseManager.cs[90m [offset=270, limit=80][0m
+[0m✱ [0mGrep "energyBefore"[90m in docs/reviews/2026-11-08-council-v020/laneD.md · 100 matches[0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/laneB.md[90m [limit=100][0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/laneE.md[90m [offset=1, limit=80][0m
+[0m✱ [0mGrep "materialLeft"[90m in docs/reviews/2026-11-08-council-v020/xreviewD-on-E.md · 38 matches[0m
+[0m✱ [0mGrep "HumanFirst"[90m in docs/reviews/2026-11-08-council-v020 · 11 matches[0m
+[0m✱ [0mGrep "observedImpacts"[90m in AI · 3 matches[0m

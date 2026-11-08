@@ -1,0 +1,45 @@
+[0m
+> plan · google/gemini-3.8-flash
+[0m
+[0m$ [0msha256sum "docs/reviews/2026-11-08-council-v020/decision-record.md"
+d01bdb5b59637ef3491ac8fd864b6fe9f2efd8d0030615772947ca8946cc8423 *docs/reviews/2026-11-08-council-v020/decision-record.md
+[0m
+[0m✱ [0mGlob "*"[90m in docs/reviews/2026-11-08-council-v020 · 61 matches[0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/charter.md[90m [offset=1, limit=100][0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/signoffD.prompt.txt[90m [offset=1, limit=50][0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/signoffC.md[90m [offset=1, limit=50][0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/signoffA.md[90m [offset=1, limit=50][0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/signoffB.md[90m [limit=50, offset=1][0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/laneC.md[90m [limit=200, offset=1][0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/xreviewC-on-D.md[90m [offset=1, limit=200][0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/ballotC.md[90m [limit=200, offset=1][0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/decision-record.md[90m [offset=1, limit=200][0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/decision-record.md[90m [limit=100, offset=201][0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/matrix.md[90m [limit=100, offset=1][0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/ballotA.md[90m [offset=1, limit=100][0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/ballotB.md[90m [limit=100, offset=1][0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/ballotD.md[90m [offset=1, limit=100][0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/ballotE.md[90m [offset=1, limit=100][0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/xreviewB-on-C.md[90m [limit=60, offset=1][0m
+[0m
+[0m$ [0mgit status --porcelain
+?? context-log_261107-205429-codex-68ad.md
+?? docs/original-mechanics.md
+?? docs/public-readiness-audit.md
+?? docs/reviews/2026-11-01-council-v016/laneA.err
+?? docs/reviews/2026-11-01-council-v016/laneB.err
+?? docs/reviews/2026-11-01-council-v016/laneC.err
+?? docs/reviews/2026-11-01-council-v016/laneC.md
+?? docs/reviews/2026-11-01-council-v016/signoff2A.err
+?? docs/reviews/2026-11-01-council-v016/signoff2B.err
+?? docs/reviews/2026-11-01-council-v016/signoffA.err
+?? docs/reviews/2026-11-01-council-v016/signoffB.err
+?? docs/reviews/2026-11-01-council-v016/xreviewA.err
+?? docs/reviews/2026-11-01-council-v016/xreviewB.err
+?? docs/reviews/2026-11-08-council-v020/
+?? docs/reviews/terra-ai-v0.10.attempt1.md
+?? docs/reviews/terra-ai-v0.16.1.attempt1.md
+?? docs/reviews/terra-ai-v0.17-final.diff
+?? docs/reviews/terra-ai-v0.6-diagnosis.attempt2.md
+?? docs/ruleset/
+[0m

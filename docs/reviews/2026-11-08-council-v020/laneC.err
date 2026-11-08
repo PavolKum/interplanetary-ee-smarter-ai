@@ -1,0 +1,429 @@
+[0m
+> plan · google/gemini-3.8-flash
+[0m
+[0m$ [0mgit rev-parse --short HEAD
+4d7c160
+[0m
+[0m$ [0mgit status --short
+?? context-log_261107-205429-codex-68ad.md
+?? docs/original-mechanics.md
+?? docs/public-readiness-audit.md
+?? docs/reviews/2026-11-01-council-v016/laneA.err
+?? docs/reviews/2026-11-01-council-v016/laneB.err
+?? docs/reviews/2026-11-01-council-v016/laneC.err
+?? docs/reviews/2026-11-01-council-v016/laneC.md
+?? docs/reviews/2026-11-01-council-v016/signoff2A.err
+?? docs/reviews/2026-11-01-council-v016/signoff2B.err
+?? docs/reviews/2026-11-01-council-v016/signoffA.err
+?? docs/reviews/2026-11-01-council-v016/signoffB.err
+?? docs/reviews/2026-11-01-council-v016/xreviewA.err
+?? docs/reviews/2026-11-01-council-v016/xreviewB.err
+?? docs/reviews/2026-11-08-council-v020/
+?? docs/reviews/terra-ai-v0.10.attempt1.md
+?? docs/reviews/terra-ai-v0.16.1.attempt1.md
+?? docs/reviews/terra-ai-v0.17-final.diff
+?? docs/reviews/terra-ai-v0.6-diagnosis.attempt2.md
+?? docs/ruleset/
+[0m
+[0m✱ [0mGlob "docs/reviews/**/*"[90m 100 matches[0m
+[0m✱ [0mGlob "docs/reviews/2026-11-08-council-v020/*"[90m 15 matches[0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/brief.md[90m [limit=100][0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/charter.md
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/laneC.prompt.txt
+[0m→ [0mRead docs/PROGRESS.md[90m [limit=100, offset=1][0m
+[0m→ [0mRead docs/playtests/2026-11-07-v0.18.0-match22.md[90m [offset=1, limit=120][0m
+[0m→ [0mRead docs/playtests/2026-11-07-v0.18.0-match23.md[90m [limit=120, offset=1][0m
+[0m→ [0mRead docs/playtests/2026-11-08-v0.18.0-match24.md[90m [limit=120, offset=1][0m
+[0m→ [0mRead docs/playtests/2026-11-08-v0.19.0-match25.md[90m [offset=1, limit=120][0m
+[0m→ [0mRead docs/playtests/2026-11-08-v0.19.0-match26.md[90m [offset=1, limit=120][0m
+[0m✱ [0mGlob "docs/reviews/terra-ai-v0.19*"[90m 13 matches[0m
+[0m→ [0mRead docs/reviews/terra-ai-v0.19-disposition.md
+[0m✱ [0mGlob "AI/**/*.cs"[90m 21 matches[0m
+[0m✱ [0mGlob "AI/tools/*"[90m 9 matches[0m
+[0m✱ [0mGlob "docs/playtests/data/*"[90m 0 matches[0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/evidence-manifest.tsv
+[0m→ [0mRead docs/playtests/data/v018m22-ai-decisions.jsonl[90m [limit=5][0m
+[0m→ [0mRead AI/Brain/Strategy.cs[90m [limit=120, offset=1][0m
+[0m→ [0mRead AI/Brain/Strategy.cs[90m [limit=120, offset=121][0m
+[0m→ [0mRead AI/Brain/Strategy.cs[90m [offset=241, limit=120][0m
+[0m→ [0mRead AI/Brain/Strategy.cs[90m [offset=361, limit=100][0m
+[0m✱ [0mGrep "Decide\("[90m in AI · 44 matches[0m
+[0m→ [0mRead AI/StrategyPatches.cs[90m [limit=100, offset=230][0m
+[0m→ [0mRead AI/StrategyPatches.cs[90m [limit=80, offset=150][0m
+[0m✱ [0mGrep "WarTurnFor"[90m in AI · 3 matches[0m
+[0m→ [0mRead AI/DirectorPatches.cs[90m [offset=205, limit=50][0m
+[0m✱ [0mGrep "WarPhase"[90m in AI · 7 matches[0m
+[0m→ [0mRead AI/Brain/Director.cs[90m [offset=265, limit=40][0m
+[0m✱ [0mGrep "WarStart"[90m in AI · 9 matches[0m
+[0m→ [0mRead AI/Brain/Tempo.cs[90m [offset=50, limit=50][0m
+[0m
+[0m$ [0mpython -c "import json; print('python ok')"
+python ok
+[0m
+[0m→ [0mRead AI/tools/summarize_decisions.py[90m [limit=70, offset=1][0m
+[0m
+[0m$ [0mpython AI/tools/summarize_decisions.py docs/playtests/data/v019m25-ai-decisions.jsonl
+log: docs/playtests/data/v019m25-ai-decisions.jsonl - 2161 records
+  init Beastie  id=1 lvl=1 active=True acc 0.75 -> native ORIGINAL AI
+  init Zenon    id=2 lvl=3 active=True acc 1 -> 0.7
+  init Donnels  id=3 lvl=3 active=True acc 1 -> 0.7
+  init Sarai    id=4 lvl=3 active=True acc 1 -> 0.7
+turns 1-37
+
+weapon-turns assigned per target (primary trajectory found):
+  Donnels  jogi* 455 (307), Zenon 45 (36), Sarai 20 (12), Beastie 0 (0)
+  Sarai    jogi* 432 (301), Donnels 39 (20), Beastie 29 (6), Zenon 6 (5)
+  Zenon    jogi* 461 (309), Beastie 30 (3), Donnels 27 (12), Sarai 22 (10)
+  (* = human)
+
+powered weapon-turns 1445: primary found 1021 (71%), secondary only 312
+planned hits 1014, fired as hits 816, fired as misses 179
+
+guided strikes: jogi/city 8, jogi/weapon 4, Donnels/city 2, Beastie/city 1, Sarai/weapon 1, Donnels/weapon 1
+
+threat scores at T37 (score: leader / grudge / finish):
+  Zenon    jogi 0.73 (0.07/0.10/0.47); Sarai 0.84 (0.43/0.19/0.12); Donnels 1.52 (1.00/0.35/0.07); Beastie 0.39 (0.01/0.27/0.00)
+  Donnels  Zenon 1.38 (1.00/0.16/0.12); jogi 0.69 (0.09/0.04/0.47); Sarai 1.10 (0.53/0.35/0.12); Beastie 0.29 (0.02/0.18/0.00)
+  Sarai    Zenon 1.03 (0.81/0.00/0.12); jogi 0.99 (0.07/0.35/0.47); Donnels 1.19 (1.00/0.02/0.07); Beastie 0.33 (0.01/0.22/0.00)
+
+economy per AI (energy / material / science per turn; planet material):
+  Donnels  T10 1950/2275/373 pm387341 G  T20 11694/7111/566 pm327808  T30 11153/13375/1916 pm202127  T37 48888/10856/748 pm83686
+           buildings T37: OffshoreMine 65, NuclearPlant 39, KineticDefense 33, FloatingPlant 28, Railgun 26, TelescopeArray 21, IonDefense 18, SolarPlant 16, Mine 12, DataSecurityHub 12, ShieldDefense 9, city 4, Coilcannon 4, NuclearMissile 1
+           saving for goal from T31; last reserve E0 M0
+  Sarai    T10 1950/2275/376 pm387341 G  T20 13144/6304/1002 pm325249  T30 41420/8284/1137 pm216029  T37 23067/16122/2192 pm96449
+           buildings T37: OffshoreMine 72, FloatingPlant 62, KineticDefense 33, Railgun 29, IonDefense 19, TelescopeArray 19, DataSecurityHub 13, Mine 11, ShieldDefense 8, SolarPlant 6, city 5, Missile 1, NuclearPlant 1, NuclearMissile 1
+           saving for goal from T26; last reserve E0 M0
+  Zenon    T10 1950/2275/375 pm387341 G  T20 12994/6136/998 pm328137  T30 21274/10799/678 pm213051  T37 40583/13191/721 pm69478
+           buildings T37: OffshoreMine 86, KineticDefense 40, FloatingPlant 32, TelescopeArray 21, Railgun 21, SolarPlant 16, IonDefense 15, NuclearPlant 12, DataSecurityHub 12, Mine 11, Coilcannon 9, ShieldDefense 9, city 4, NuclearMissile 1
+           saving for goal from T31; last reserve E0 M0
+
+superweapons queued: T26 Sarai bui_NuclearMissile, T31 Donnels bui_NuclearMissile, T31 Zenon bui_NuclearMissile, T34 Zenon bui_NuclearMissile
+
+research plan targets queued:
+  Donnels  33: DesignerNanomaterials, VerticalFarming, QuantumCommunications, AtmosphericInterferenceMitigation, Octaazacubane, AdvancedGenetics (last 6)
+  Sarai    40: AdvancedGenetics, SelfHealingMaterials, AITargetTracking, MultiChainedStages, GammaRayLasers, MassDrivers (last 6)
+  Zenon    33: UltrasonicProjection, Metamaterials, DesignerNanomaterials, VerticalFarming, QuantumCommunications, AtmosphericInterferenceMitigation (last 6)
+
+build planner picks -> module said yes: firepower 0->0, energy 0->0, material 0->0, defense 0->0
+smart defense queued: KineticDefense 110, IonDefense 68, ShieldDefense 27
+
+director (v0.3) per AI:
+  Donnels  turns 1-37, war from T20, upgrades installed at end 375, refunds 24, mean energy left unspent 6236
+           queued: OffshoreMine(material) 66, OffshoreEfficiency1(upgrade) 66, OffshoreMaterialYield1(upgrade) 50, NuclearPlant(power) 49, FloatingPlant(power) 35, KineticDefense(defense) 33, KineticEnergyCostDown1(upgrade) 33, Railgun(weapon) 32, FloatingEnergyYield2(upgrade) 27, FloatingEnergyYield1(upgrade) 27, SolarPlant(power) 26, TelescopeArray(intel) 21, RadiotelescopeIntelYield1(upgrade) 21, RailgunProjectileAmount2(upgrade) 21
+           placement gave up: IonDefense 9, SolarPlant 8, NuclearPlant 7
+           power slots start->left: T5:3->3 T10:20->16 T15:84->69 T20:85->65 T25:72->60 T30:74->70 T35:180->177
+  Sarai    turns 1-37, war from T20, upgrades installed at end 444, refunds 44, mean energy left unspent 3827
+           queued: FloatingPlant(power) 88, OffshoreMine(material) 77, OffshoreEfficiency1(upgrade) 77, FloatingEnergyYield1(upgrade) 71, FloatingEnergyYield2(upgrade) 71, OffshoreMaterialYield1(upgrade) 36, NuclearPlant(power) 35, KineticDefense(defense) 34, KineticEnergyCostDown1(upgrade) 34, NuclearPlant(abandoned) 33, KineticRange1(upgrade) 32, Railgun(weapon) 30, RailgunProjectileAmount2(upgrade) 24, RailgunRadius3(upgrade) 23
+           placement gave up: NuclearPlant 33, SolarPlant 10, Coilcannon 1
+           power slots start->left: T5:3->3 T10:20->16 T15:88->71 T20:93->69 T25:96->87 T30:169->160 T35:163->162
+  Zenon    turns 1-37, war from T20, upgrades installed at end 339, refunds 39, mean energy left unspent 3291
+           queued: OffshoreMine(material) 93, OffshoreMaterialYield1(upgrade) 75, OffshoreEfficiency1(upgrade) 75, FloatingPlant(power) 45, KineticDefense(defense) 43, KineticEnergyCostDown1(upgrade) 36, SolarPlant(power) 32, Railgun(weapon) 31, FloatingEnergyYield1(upgrade) 26, FloatingEnergyYield2(upgrade) 26, IonDefense(antinuke) 24, NuclearPlant(power) 24, TelescopeArray(intel) 22, RadiotelescopeIntelYield1(upgrade) 21
+           placement gave up: SolarPlant 14, IonDefense 13, NuclearPlant 12
+           power slots start->left: T5:3->3 T10:22->18 T15:85->69 T20:107->80 T25:87->80 T30:99->79 T35:100->90
+[0m
+[0m$ [0mpython AI/tools/summarize_decisions.py docs/playtests/data/v019m26-ai-decisions.jsonl
+log: docs/playtests/data/v019m26-ai-decisions.jsonl - 1338 records
+  init Ash      id=1 lvl=3 active=True acc 1 -> 0.7
+  init Hawking  id=2 lvl=3 active=True acc 1 -> 0.7
+  init Armiger  id=3 lvl=1 active=True acc 0.75 -> native ORIGINAL AI
+turns 1-43
+
+weapon-turns assigned per target (primary trajectory found):
+  Ash      jogi* 445 (255), Hawking 75 (52), Armiger 56 (37)
+  Hawking  jogi* 429 (246), Ash 35 (17), Armiger 0 (0)
+  (* = human)
+
+powered weapon-turns 802: primary found 607 (76%), secondary only 134
+planned hits 589, fired as hits 397, fired as misses 82
+
+guided strikes: Armiger/city 12, Hawking/city 10, jogi/city 9, jogi/weapon 9, Hawking/weapon 5, Armiger/weapon 4, Ash/city 2, Ash/weapon 1
+
+threat scores at T43 (score: leader / grudge / finish):
+  Ash      jogi 1.09 (0.64/0.35/0.00)
+
+economy per AI (energy / material / science per turn; planet material):
+  Ash      T10 1950/2275/368 pm387341 G  T20 8244/5841/756 pm334269  T30 12165/14730/1038 pm224275  T40 18912/6739/389 pm43774  T43 4954/610/141 pm38909
+           buildings T43: FloatingPlant 11, KineticDefense 11, IonDefense 5, DataSecurityHub 4, Coilcannon 4, TelescopeArray 3, OffshoreMine 2, Railgun 2, Missile 2, city 1, Mine 1, ShieldDefense 1, SolarPlant 1
+  Hawking  T10 1950/2275/378 pm387341 G  T20 10394/5871/621 pm318648  T30 12475/6065/505 pm241046  T35 10878/3204/270 pm219290
+           buildings T35: FloatingPlant 19, KineticDefense 16, OffshoreMine 11, Railgun 10, SolarPlant 8, TelescopeArray 8, IonDefense 5, Coilcannon 4, Mine 3, Missile 2, DataSecurityHub 2, NuclearPlant 2, city 1
+
+superweapons queued: none
+
+research plan targets queued:
+  Ash      39: Octaazacubane, AdvancedGenetics, SelfHealingMaterials, AITargetTracking, MultiChainedStages, GammaRayLasers (last 6)
+  Hawking  27: EmDrives, ThermonuclearWarheads, InductionCoils, ZeroReluctanceEngineering, MagneticSaturationElimination, RoboticMining (last 6)
+
+build planner picks -> module said yes: firepower 0->0, energy 0->0, material 0->0, defense 0->0
+smart defense queued: KineticDefense 83, IonDefense 27, ShieldDefense 16
+
+director (v0.3) per AI:
+  Ash      turns 1-43, war from T17, upgrades installed at end 66, refunds 203, mean energy left unspent 5417
+           queued: OffshoreMine(material) 108, OffshoreEfficiency1(upgrade) 97, FloatingPlant(power) 84, FloatingEnergyYield2(upgrade) 68, FloatingEnergyYield1(upgrade) 68, KineticDefense(defense) 67, OffshoreMaterialYield1(upgrade) 55, Railgun(weapon) 45, KineticEnergyCostDown1(upgrade) 41, KineticRange1(upgrade) 41, NuclearPlant(power) 41, OffshoreMaterialYield2(upgrade) 40, NuclearPlant(abandoned) 38, IonDefense(antinuke) 35
+           placement gave up: NuclearPlant 38, IonDefense 35, Railgun 30, KineticDefense 25, Mine 16, SolarPlant 16, OffshoreMine 11, Coilcannon 11, DataSecurityHub 8, Missile 7, ShieldDefense 4, TelescopeArray 2
+           power slots start->left: T5:4->4 T10:21->17 T15:98->88 T20:79->67 T25:66->58 T30:62->60 T35:143->139 T40:77->75
+  Hawking  turns 1-35, war from T20, upgrades installed at end 97, refunds 26, mean energy left unspent 6389
+           queued: FloatingPlant(power) 48, KineticDefense(defense) 41, OffshoreMine(material) 38, OffshoreMaterialYield1(upgrade) 36, OffshoreEfficiency1(upgrade) 36, KineticEnergyCostDown1(upgrade) 35, FloatingEnergyYield2(upgrade) 35, TelescopeArray(intel) 34, FloatingEnergyYield1(upgrade) 34, SolarPlant(power) 31, RadiotelescopeIntelYield1(upgrade) 26, Railgun(weapon) 26, IonDefense(antinuke) 15, KineticRange1(upgrade) 13
+           placement gave up: SolarPlant 11, NuclearPlant 7, IonDefense 6, Railgun 1, TelescopeArray 1
+           power slots start->left: T5:3->3 T10:23->19 T15:116->111 T20:91->72 T25:77->70 T30:98->82 T35:60->60
+[0m
+[0m✱ [0mGrep "AIBuildingPlacementFinder"[90m in AI · 6 matches[0m
+[0m→ [0mRead AI/DirectorPatches.cs[90m [limit=80, offset=2970][0m
+[0m✱ [0mGrep "PlacementStepCap"[90m in AI · 5 matches[0m
+[0m✱ [0mGrep "AIBuildingPlacementSearch"[90m in AI · 24 matches[0m
+[0m→ [0mRead AI/DirectorPatches.cs[90m [limit=60, offset=2920][0m
+[0m→ [0mRead AI/DirectorPatches.cs[90m [limit=100, offset=2780][0m
+[0m→ [0mRead AI/DirectorPatches.cs[90m [limit=50, offset=2880][0m
+[0m✱ [0mGrep "ShelterCoveredSteps"[90m in AI · 5 matches[0m
+[0m✱ [0mGrep "class AIBuildingPlacementSearch"[90m in decompiled · 1 match[0m
+[0m✱ [0mGrep "public bool step"[90m in decompiled/Interplanetary.AI.Construction/AIBuildingPlacementSearch.cs · 0 matches[0m
+[0m✱ [0mGlob "decompiled/**/AIBuildingPlacementSearch.cs"[90m 1 match[0m
+[0m✱ [0mGrep "step\("[90m in decompiled/Interplanetary.AI.Construction/AIBuildingPlacementSearch.cs · 2 matches[0m
+[0m→ [0mRead decompiled/Interplanetary.AI.Construction/AIBuildingPlacementSearch.cs[90m [limit=50, offset=90][0m
+[0m→ [0mRead AI/DirectorPatches.cs[90m [limit=80, offset=2420][0m
+[0m✱ [0mGrep "CoverageStepCap"[90m in AI · 2 matches[0m
+[0m→ [0mRead AI/DirectorPatches.cs[90m [offset=2540, limit=80][0m
+[0m✱ [0mGrep "class Shelter"[90m in AI · 2 matches[0m
+[0m→ [0mRead AI/Brain/Coverage.cs[90m [limit=60, offset=320][0m
+[0m→ [0mRead AI/Brain/Coverage.cs[90m [limit=20, offset=380][0m
+[0m✱ [0mGrep "bui_Railgun"[90m in AI · 4 matches[0m
+[0m✱ [0mGrep "degrees"[90m in AI · 0 matches[0m
+[0m✱ [0mGrep "degrees away"[90m in docs · 4 matches[0m
+[0m→ [0mRead AI/AimWatch.cs[90m [limit=80, offset=1][0m
+[0m→ [0mRead AI/AimWatch.cs[90m [limit=80, offset=81][0m
+[0m→ [0mRead AI/AimWatch.cs[90m [limit=110, offset=161][0m
+[0m✱ [0mGrep "CelestialBody"[90m in decompiled · 100 matches[0m
+[0m✱ [0mGrep "Rotation"[90m in decompiled · 100 matches[0m
+[0m✱ [0mGlob "decompiled/**/CelestialBody.cs"[90m 1 match[0m
+[0m✱ [0mGrep "Orbit|Rotation"[90m in decompiled/Interplanetary.Prefabs/CelestialBody.cs · 18 matches[0m
+[0m
+[0m$ [0mpython -c "
+import json
+
+for match, filename in [
+    ('M22', 'docs/playtests/data/v018m22-ai-decisions.jsonl'),
+    ('M23', 'docs/playtests/data/v018m23-ai-decisions.jsonl'),
+    ('M24', 'docs/playtests/data/v018m24-ai-decisions.jsonl'),
+    ('M25', 'docs/playtests/data/v019m25-ai-decisions.jsonl'),
+    ('M26', 'docs/playtests/data/v019m26-ai-decisions.jsonl')
+]:
+    with open(filename, 'r', encoding='utf-8') as f:
+        records = [json.loads(line) for line in f if line.strip()]
+    # filter for last game if multiple in file
+    inits = [i for i, r in enumerate(records) if r.get('e') == 'init']
+    if inits:
+        # find last contiguous block of inits
+        last_block_start = inits[0]
+        for i in range(1, len(inits)):
+            if inits[i] != inits[i-1] + 1:
+                last_block_start = inits[i]
+        records = records[last_block_start:]
+    
+    abandon_counts = {}
+    aim_searches = []
+    unspent_energy = []
+    war_turns = {}
+    peace_flips = []
+    
+    for r in records:
+        e = r.get('e')
+        if e == 'abandoned': # or in director
+            pass
+        if e == 'director':
+            fails = r.get('placementFailures', {})
+            for k, v in fails.items():
+                abandon_counts[k] = abandon_counts.get(k, 0) + v
+            if 'energyUnspent' in r:
+                unspent_energy.append((r['t'], r['ai'], r['energyUnspent']))
+            if 'war' in r and r.get('war'):
+                if r['ai'] not in war_turns:
+                    war_turns[r['ai']] = r['t']
+        if e == 'strategy':
+            if r.get('reason') == 'peace' and r['ai'] in war_turns and r['t'] > war_turns[r['ai']]:
+                peace_flips.append((r['t'], r['ai'], r['reason']))
+        if e == 'aim-search':
+            aim_searches.append(r)
+            
+    print(f'=== {match} ===')
+    print('War starts:', war_turns)
+    print('Peace flips after war:', peace_flips)
+    if aim_searches:
+        unf_angles = [r['unfoundFacingDeg'] for r in aim_searches if r.get('unfoundFacingDeg', -1) >= 0]
+        unf_away = sum(r.get('unfoundFacingAway', 0) for r in aim_searches)
+        live_tot = sum(r.get('live', 0) for r in aim_searches)
+        found_tot = sum(r.get('found', 0) for r in aim_searches)
+        avg_ang = sum(unf_angles)/len(unf_angles) if unf_angles else 0
+        print(f'Aim: live={live_tot}, found={found_tot} ({found_tot/live_tot*100:.1f}%), avg unfound angle={avg_ang:.1f} deg, unfound facing away (>90) count={unf_away}')
+"
+=== M22 ===
+War starts: {'Eiai': 13}
+Peace flips after war: [(18, 'Eiai', 'peace'), (19, 'Eiai', 'peace')]
+Aim: live=294, found=216 (73.5%), avg unfound angle=119.6 deg, unfound facing away (>90) count=84
+=== M23 ===
+War starts: {'Arc': 16, 'Beastie': 20}
+Peace flips after war: []
+Aim: live=662, found=505 (76.3%), avg unfound angle=107.7 deg, unfound facing away (>90) count=117
+=== M24 ===
+War starts: {'Eddie': 14, 'Doc': 18}
+Peace flips after war: [(15, 'Eddie', 'peace'), (16, 'Eddie', 'peace'), (18, 'Eddie', 'peace'), (19, 'Eddie', 'peace')]
+Aim: live=532, found=376 (70.7%), avg unfound angle=111.4 deg, unfound facing away (>90) count=113
+=== M25 ===
+War starts: {'Zenon': 20, 'Donnels': 20, 'Sarai': 20}
+Peace flips after war: []
+Aim: live=1298, found=927 (71.4%), avg unfound angle=99.5 deg, unfound facing away (>90) count=254
+=== M26 ===
+War starts: {'Ash': 17, 'Hawking': 20}
+Peace flips after war: [(19, 'Ash', 'peace')]
+Aim: live=741, found=569 (76.8%), avg unfound angle=105.1 deg, unfound facing away (>90) count=134
+[0m
+[0m$ [0mpython -c "
+import json
+for m, path, ai in [('M24', 'docs/playtests/data/v018m24-ai-decisions.jsonl', 'Eddie'), ('M26', 'docs/playtests/data/v019m26-ai-decisions.jsonl', 'Ash')]:
+    with open(path, 'r', encoding='utf-8') as f:
+        rows = [json.loads(l) for l in f if l.strip()]
+    for r in rows:
+        if r.get('ai') == ai and r.get('t') in [14, 15, 16, 17, 18, 19, 20]:
+            if r.get('e') in ['director', 'strategy']:
+                print(m, ai, 'T', r.get('t'), r.get('e'), 'war=', r.get('war'), 'reason=', r.get('reason'), 'recentDamage=', r.get('recentDamage'), 'warTurn=', r.get('warTurn'))
+"
+M24 Eddie T 14 strategy war= True reason= no-weapons recentDamage= None warTurn= None
+M24 Eddie T 14 director war= True reason= None recentDamage= None warTurn= 20
+M24 Eddie T 15 strategy war= False reason= peace recentDamage= None warTurn= None
+M24 Eddie T 15 director war= False reason= None recentDamage= None warTurn= 20
+M24 Eddie T 16 strategy war= False reason= peace recentDamage= None warTurn= None
+M24 Eddie T 16 director war= False reason= None recentDamage= None warTurn= 20
+M24 Eddie T 17 strategy war= True reason= below-saturation recentDamage= None warTurn= None
+M24 Eddie T 17 director war= True reason= None recentDamage= None warTurn= 20
+M24 Eddie T 18 strategy war= False reason= peace recentDamage= None warTurn= None
+M24 Eddie T 18 director war= False reason= None recentDamage= None warTurn= 20
+M24 Eddie T 19 strategy war= False reason= peace recentDamage= None warTurn= None
+M24 Eddie T 19 director war= False reason= None recentDamage= None warTurn= 20
+M24 Eddie T 20 strategy war= True reason= below-saturation recentDamage= None warTurn= None
+M24 Eddie T 20 director war= True reason= None recentDamage= None warTurn= 20
+M26 Ash T 14 strategy war= False reason= no-weapons recentDamage= None warTurn= None
+M26 Ash T 14 director war= False reason= None recentDamage= None warTurn= 20
+M26 Ash T 15 strategy war= False reason= no-weapons recentDamage= None warTurn= None
+M26 Ash T 15 director war= False reason= None recentDamage= None warTurn= 20
+M26 Ash T 16 strategy war= False reason= no-weapons recentDamage= None warTurn= None
+M26 Ash T 16 director war= False reason= None recentDamage= None warTurn= 20
+M26 Ash T 17 strategy war= True reason= no-weapons recentDamage= None warTurn= None
+M26 Ash T 17 director war= True reason= None recentDamage= None warTurn= 20
+M26 Ash T 18 strategy war= True reason= no-weapons recentDamage= None warTurn= None
+M26 Ash T 18 director war= True reason= None recentDamage= None warTurn= 20
+M26 Ash T 19 strategy war= False reason= peace recentDamage= None warTurn= None
+M26 Ash T 19 director war= False reason= None recentDamage= None warTurn= 20
+M26 Ash T 20 strategy war= True reason= building recentDamage= None warTurn= None
+M26 Ash T 20 director war= True reason= None recentDamage= None warTurn= 20
+[0m
+[0m$ [0mpython -c "
+import json
+for m, path, ai, t in [('M24', 'docs/playtests/data/v018m24-ai-decisions.jsonl', 'Eddie', 14), ('M26', 'docs/playtests/data/v019m26-ai-decisions.jsonl', 'Ash', 17), ('M26', 'docs/playtests/data/v019m26-ai-decisions.jsonl', 'Ash', 19)]:
+    with open(path, 'r', encoding='utf-8') as f:
+        for l in f:
+            r = json.loads(l)
+            if r.get('ai') == ai and r.get('t') == t and r.get('e') == 'director':
+                print(m, ai, t, r)
+"
+M24 Eddie 14 {'e': 'director', 't': 14, 'ai': 'Eddie', 'coveredBuildings': 0.375, 'coveredCities': 0.2, 'shelteredPlaced': 6, 'unshelteredPlaced': 1, 'war': True, 'slotsAtStart': 85, 'slotsLeft': 74, 'unpowered': 0, 'energyStart': 3350, 'materialStart': 3199, 'energyLeft': 750, 'materialLeft': 24, 'upkeep': 600, 'ownDefenses': 0, 'desiredDefenses': 12, 'defenseTurnCap': 4, 'lastImpacts': 2, 'lastIntercepted': 0, 'lastNoEligibleDefense': 2, 'lastNearCity': 0, 'lastNoDefenseNearby': 2, 'coverageKinetic': 0, 'nukeThreat': False, 'scienceWeight': 3.466, 'planScienceLeft': 29137, 'weaponUpgrades': 0, 'antiNukeMissing': 0, 'antiNukeOwned': 0, 'antiNukeQueued': 0, 'citiesProtected': 0, 'citiesCovered': 0, 'cities': 5, 'lastUnpaidRolls': 0, 'lastDefenseEnergy': 0, 'observedNeed': 0, 'observedPass': '', 'upgradesInstalled': 34, 'weaponTarget': 'Doc', 'targetDefenses': {}, 'intelBuildings': 0, 'blindEnemies': 3, 'defenseReserve': 0, 'holdingFire': True, 'releasedEnergy': 0, 'materialGlut': False, 'energyGlut': False, 'sustainableMaterial': 12115.42, 'energySaturated': False, 'materialReserve': 0, 'soldMines': 0, 'soldMaterial': 0, 'aimedWeapons': 6, 'repaired': 7, 'repairEnergy': 700, 'repairMaterial': 1075, 'refunds': 0, 'placementFailures': {}, 'steps': 18, 'visibleCities': 0, 'ownIntel': 0, 'guidedThreat': False, 'warTurn': 20, 'lossless': False, 'permanentProjects': 3, 'jamming': 0, 'sstar': 0, 'rareMaterial': 0, 'extractionBlocked': 0, 'intelBatchSize': 8, 'projectSlotsFree': 3, 'materialBound': True, 'extractionFirstMaterial': 1100, 'extractionFirstBought': 6, 'projectSlotsTotal': 7, 'projectSlots': '972ad077-e51b-4a85-90bf-f1e6ce09a423=1/1:0:0;8c2d1e0d-a935-48bc-bd1b-7e61b4a8eeae=1/1:0:0;c38f43eb-a558-4507-a57f-b7b1991f4d46=1/1:0:0;1753717f-fbc3-40b2-9b70-d626ab79fdda=0/2:1:1;1138de13-12e6-409f-9f9e-a836ee62d517=0/2:2:0', 'permanentsBlocked': 54, 'intelPolicy': 'bid', 'intelAllowed': 8, 'intelSpent': 0, 'intelCredited': 23150, 'intelFailedBatches': 0, 'intelVerdict': '', 'intelProbes': 0, 'intelLidar': 0, 'intelUpgradesQueued': 0, 'intelBatchTurn': -1000, 'intelBatchBought': 0, 'blind': True, 'targetCandidates': 0, 'guidedRefused': 8, 'forwardDefenseNeed': 0, 'repairHeld': 0, 'reserveWanted': 0, 'reserveShortfall': 0, 'defenseUpgrades': 0, 'keyTechs': 'ExperimentalMatterControl,MaglevServos', 'upgradedDefenses': 'powered=0', 'peakImpacts': 2, 'antiNukeProtecting': 0, 'antiNukeWanted': 0, 'minCityCover': 0, 'antiNukeNearCities': 0, 'antiNukePerCity': 0, 'idleEnergy': 750, 'ownCityPop': '972ad077-e51b-4a85-90bf-f1e6ce09a423=369;8c2d1e0d-a935-48bc-bd1b-7e61b4a8eeae=354;c38f43eb-a558-4507-a57f-b7b1991f4d46=397;1753717f-fbc3-40b2-9b70-d626ab79fdda=517;1138de13-12e6-409f-9f9e-a836ee62d517=704', 'queued': {'defense:bui_KineticDefense': 4, 'upgrade:upg_OffshoreMaterialYield1': 5, 'material:bui_OffshoreMine': 1, 'weapon:bui_Railgun': 6, 'upgrade:upg_OffshoreEfficiency1': 1}}
+M26 Ash 17 {'e': 'director', 't': 17, 'ai': 'Ash', 'coveredBuildings': 0.803, 'coveredCities': 0.8, 'shelteredPlaced': 0, 'unshelteredPlaced': 0, 'war': True, 'slotsAtStart': 96, 'slotsLeft': 88, 'unpowered': 0, 'energyStart': 2490, 'materialStart': 5352, 'energyLeft': 40, 'materialLeft': 202, 'upkeep': 0, 'ownDefenses': 10, 'desiredDefenses': 21, 'defenseTurnCap': 4, 'lastImpacts': 5, 'lastIntercepted': 0, 'lastNoEligibleDefense': 4, 'lastNearCity': 1, 'lastNoDefenseNearby': 4, 'coverageKinetic': 0.703, 'nukeThreat': True, 'scienceWeight': 3.75, 'planScienceLeft': 27700, 'weaponUpgrades': 0, 'antiNukeMissing': 10, 'antiNukeOwned': 0, 'antiNukeQueued': 6, 'citiesProtected': 0, 'citiesCovered': 4, 'cities': 5, 'lastUnpaidRolls': 0, 'lastDefenseEnergy': 100, 'observedNeed': 125, 'observedPass': '', 'upgradesInstalled': 55, 'weaponTarget': 'Hawking', 'targetDefenses': {'bui_KineticDefense': 10}, 'intelBuildings': 8, 'blindEnemies': 0, 'defenseReserve': 1500, 'holdingFire': True, 'releasedEnergy': 0, 'materialGlut': True, 'energyGlut': False, 'sustainableMaterial': 12822.36, 'energySaturated': False, 'materialReserve': 0, 'soldMines': 0, 'soldMaterial': 0, 'aimedWeapons': 0, 'repaired': 4, 'repairEnergy': 400, 'repairMaterial': 550, 'refunds': 4, 'placementFailures': {'bui_IonDefense': 4}, 'steps': 25, 'visibleCities': 12, 'ownIntel': 64, 'guidedThreat': True, 'warTurn': 20, 'lossless': False, 'permanentProjects': 3, 'jamming': 3, 'sstar': 0, 'rareMaterial': 0, 'extractionBlocked': 0, 'intelBatchSize': 8, 'projectSlotsFree': 0, 'materialBound': True, 'extractionFirstMaterial': 0, 'extractionFirstBought': 0, 'projectSlotsTotal': 6, 'projectSlots': '1fedd174-0a03-4155-b8c6-b356f32acb99=0/0:0:0;b269ccc2-9052-4117-972a-303cdc93d852=1/1:0:0;f3292bef-0d60-4398-a2bd-fd4449ea65b7=1/1:0:0;0cb3892c-b0ae-4660-bbe9-f0bdc7ae70e7=1/2:1:0;31d7ff07-c389-445f-a0b4-23e5339ed4c8=0/2:2:0', 'permanentsBlocked': 78, 'intelPolicy': 'seeing', 'intelAllowed': 0, 'intelSpent': 1600, 'intelCredited': 36240, 'intelFailedBatches': 0, 'intelVerdict': '', 'intelProbes': 0, 'intelLidar': 0, 'intelUpgradesQueued': 0, 'intelBatchTurn': 16, 'intelBatchBought': 8, 'blind': False, 'targetCandidates': 10, 'guidedRefused': 0, 'forwardDefenseNeed': 106, 'repairHeld': 1500, 'reserveWanted': 1500, 'reserveShortfall': 0, 'defenseUpgrades': 1, 'keyTechs': 'ExperimentalMatterControl,MaglevServos,PlasmaChannelInduction', 'upgradedDefenses': 'upg_KineticEnergyCostDown1=5;powered=10', 'peakImpacts': 5, 'antiNukeProtecting': 0, 'antiNukeWanted': 10, 'minCityCover': 0, 'antiNukeNearCities': 0, 'antiNukePerCity': 2, 'idleEnergy': 1540, 'ownCityPop': '1fedd174-0a03-4155-b8c6-b356f32acb99=138;b269ccc2-9052-4117-972a-303cdc93d852=253;f3292bef-0d60-4398-a2bd-fd4449ea65b7=363;0cb3892c-b0ae-4660-bbe9-f0bdc7ae70e7=678;31d7ff07-c389-445f-a0b4-23e5339ed4c8=725', 'queued': {'antinuke:bui_IonDefense': 10, 'defense:bui_KineticDefense': 2, 'upgrade:upg_KineticEnergyCostDown1': 1, 'abandoned:bui_IonDefense': 4, 'project:pro_ScienceYieldShortGlobal1': 3, 'upgrade:upg_OffshoreEfficiency1': 4}}
+M26 Ash 19 {'e': 'director', 't': 19, 'ai': 'Ash', 'coveredBuildings': 0.803, 'coveredCities': 0.8, 'shelteredPlaced': 0, 'unshelteredPlaced': 0, 'war': False, 'slotsAtStart': 83, 'slotsLeft': 79, 'unpowered': 0, 'energyStart': 2577, 'materialStart': 7484, 'energyLeft': 27, 'materialLeft': 59, 'upkeep': 500, 'ownDefenses': 23, 'desiredDefenses': 25, 'defenseTurnCap': 3, 'lastImpacts': 4, 'lastIntercepted': 0, 'lastNoEligibleDefense': 4, 'lastNearCity': 1, 'lastNoDefenseNearby': 4, 'coverageKinetic': 0.782, 'nukeThreat': True, 'scienceWeight': 2.533, 'planScienceLeft': 25818, 'weaponUpgrades': 0, 'antiNukeMissing': 4, 'antiNukeOwned': 6, 'antiNukeQueued': 0, 'citiesProtected': 4, 'citiesCovered': 4, 'cities': 5, 'lastUnpaidRolls': 0, 'lastDefenseEnergy': 0, 'observedNeed': 0, 'observedPass': '', 'upgradesInstalled': 72, 'weaponTarget': 'Armiger', 'targetDefenses': {'bui_KineticDefense': 3}, 'intelBuildings': 8, 'blindEnemies': 0, 'defenseReserve': 1717, 'holdingFire': True, 'releasedEnergy': 500, 'materialGlut': True, 'energyGlut': False, 'sustainableMaterial': 13384.92, 'energySaturated': False, 'materialReserve': 0, 'soldMines': 0, 'soldMaterial': 0, 'aimedWeapons': 5, 'repaired': 0, 'repairEnergy': 0, 'repairMaterial': 0, 'refunds': 2, 'placementFailures': {'bui_IonDefense': 2}, 'steps': 42, 'visibleCities': 12, 'ownIntel': 96, 'guidedThreat': True, 'warTurn': 20, 'lossless': False, 'permanentProjects': 3, 'jamming': 2, 'sstar': 0, 'rareMaterial': 0, 'extractionBlocked': 0, 'intelBatchSize': 8, 'projectSlotsFree': 1, 'materialBound': False, 'extractionFirstMaterial': 0, 'extractionFirstBought': 0, 'projectSlotsTotal': 6, 'projectSlots': '1fedd174-0a03-4155-b8c6-b356f32acb99=0/0:0:0;b269ccc2-9052-4117-972a-303cdc93d852=0/0:0:0;f3292bef-0d60-4398-a2bd-fd4449ea65b7=0/1:0:1;0cb3892c-b0ae-4660-bbe9-f0bdc7ae70e7=0/2:1:1;31d7ff07-c389-445f-a0b4-23e5339ed4c8=1/3:2:0', 'permanentsBlocked': 288, 'intelPolicy': 'seeing', 'intelAllowed': 0, 'intelSpent': 2000, 'intelCredited': 44924, 'intelFailedBatches': 0, 'intelVerdict': 'success', 'intelProbes': 0, 'intelLidar': 8, 'intelUpgradesQueued': 0, 'intelBatchTurn': 18, 'intelBatchBought': 8, 'blind': False, 'targetCandidates': 13, 'guidedRefused': 0, 'forwardDefenseNeed': 141, 'repairHeld': 1717, 'reserveWanted': 1717, 'reserveShortfall': 0, 'defenseUpgrades': 4, 'keyTechs': 'ExperimentalMatterControl,MicrowaveEnergyTranmission,MaglevServos,PlasmaChannelInduction', 'upgradedDefenses': 'upg_KineticEnergyCostDown1=10;powered=23', 'peakImpacts': 5, 'antiNukeProtecting': 6, 'antiNukeWanted': 4, 'minCityCover': 0, 'antiNukeNearCities': 6, 'antiNukePerCity': 2, 'idleEnergy': 1744, 'ownCityPop': '1fedd174-0a03-4155-b8c6-b356f32acb99=182;b269ccc2-9052-4117-972a-303cdc93d852=123;f3292bef-0d60-4398-a2bd-fd4449ea65b7=389;0cb3892c-b0ae-4660-bbe9-f0bdc7ae70e7=722;31d7ff07-c389-445f-a0b4-23e5339ed4c8=783', 'queued': {'antinuke:bui_IonDefense': 2, 'defense:bui_KineticDefense': 4, 'upgrade:upg_KineticEnergyCostDown1': 4, 'upgrade:upg_SolarPEnergyYield2': 4, 'upgrade:upg_FloatingEnergyYield2': 13, 'upgrade:upg_FloatingEnergyYield1': 13, 'abandoned:bui_IonDefense': 2, 'upgrade:upg_MineEfficiency1': 1}}
+[0m
+[0m$ [0mpython -c "
+import json
+with open('docs/playtests/data/v019m26-ai-decisions.jsonl', 'r', encoding='utf-8') as f:
+    for line in f:
+        r = json.loads(line)
+        if r.get('ai') == 'Ash' and r.get('e') == 'director' and r.get('t') in [30, 33, 35, 37, 40]:
+            print(f'T{r[\"t\"]}: slotsAtStart={r.get(\"slotsAtStart\")}, slotsLeft={r.get(\"slotsLeft\")}, unspent={r.get(\"energyUnspent\")}, queued={r.get(\"queued\")}, fails={r.get(\"placementFailures\")}')
+"
+T30: slotsAtStart=62, slotsLeft=60, unspent=None, queued={'upgrade:upg_RadiotelescopeIntelYield1': 1, 'defense:bui_KineticDefense': 2, 'defense:bui_IonDefense': 1, 'upgrade:upg_KineticRange1': 4, 'counterintel:bui_DataSecurityHub': 1, 'upgrade:upg_RailgunRadius3': 5, 'upgrade:upg_RailgunProjectileAmount2': 1, 'weapon:bui_Railgun': 2, 'project:pro_ScienceYieldShortGlobal1': 1, 'project:pro_ScienceYieldShort1': 2, 'upgrade:upg_MineEfficiency1': 2, 'abandoned:bui_IonDefense': 1, 'abandoned:bui_DataSecurityHub': 1, 'abandoned:bui_Railgun': 2}, fails={'bui_IonDefense': 1, 'bui_DataSecurityHub': 1, 'bui_Railgun': 2}
+T33: slotsAtStart=125, slotsLeft=118, unspent=None, queued={'defense:bui_KineticDefense': 5, 'upgrade:upg_KineticEnergyCostDown1': 2, 'upgrade:upg_KineticRange1': 2, 'counterintel:bui_DataSecurityHub': 1, 'weapon:bui_Coilcannon': 1, 'upgrade:upg_CoilcannonPopulationDamage1': 6, 'weaponupgrade:upg_CoilcannonPopulationDamage1': 6, 'project:pro_EnergyYieldLongGlobal1': 1, 'upgrade:upg_FloatingEnergyYield2': 6, 'upgrade:upg_FloatingEnergyYield1': 6, 'power:bui_NuclearPlant': 2, 'power:bui_FloatingPlant': 8, 'abandoned:bui_NuclearPlant': 2}, fails={'bui_NuclearPlant': 2}
+T35: slotsAtStart=143, slotsLeft=139, unspent=None, queued={'defense:bui_ShieldDefense': 3, 'counterintel:bui_DataSecurityHub': 1, 'upgrade:upg_CoilcannonAllDamage1': 2, 'weaponupgrade:upg_CoilcannonAllDamage1': 2}, fails={}
+T37: slotsAtStart=137, slotsLeft=135, unspent=None, queued={'upgrade:upg_KineticEnergyCostDown1': 2, 'upgrade:upg_KineticRange1': 2, 'counterintel:bui_DataSecurityHub': 1, 'upgrade:upg_DataScienceYield1': 1, 'upgrade:upg_OffshoreMaterialYield2': 16, 'abandoned:bui_DataSecurityHub': 1, 'upgrade:upg_MineMaterialYield2': 1, 'material:bui_OffshoreMine': 2, 'material:bui_Mine': 2, 'abandoned:bui_Mine': 2}, fails={'bui_DataSecurityHub': 1, 'bui_Mine': 2}
+T40: slotsAtStart=77, slotsLeft=75, unspent=None, queued={'power:bui_SolarPlant': 5, 'intel:bui_TelescopeArray': 1, 'defense:bui_ShieldDefense': 4, 'defense:bui_KineticDefense': 4, 'counterintel:bui_DataSecurityHub': 1, 'weapon:bui_Railgun': 2, 'weapon:bui_Coilcannon': 2, 'upgrade:upg_DataScienceYield1': 1, 'abandoned:bui_ShieldDefense': 3, 'abandoned:bui_KineticDefense': 4, 'defense:bui_IonDefense': 5, 'abandoned:bui_IonDefense': 4, 'abandoned:bui_SolarPlant': 4, 'power:bui_NuclearPlant': 2, 'power:bui_FloatingPlant': 4, 'abandoned:bui_TelescopeArray': 1, 'abandoned:bui_DataSecurityHub': 1, 'abandoned:bui_Railgun': 2, 'abandoned:bui_Coilcannon': 2, 'abandoned:bui_NuclearPlant': 2}, fails={'bui_ShieldDefense': 3, 'bui_KineticDefense': 4, 'bui_IonDefense': 4, 'bui_SolarPlant': 4, 'bui_TelescopeArray': 1, 'bui_DataSecurityHub': 1, 'bui_Railgun': 2, 'bui_Coilcannon': 2, 'bui_NuclearPlant': 2}
+[0m
+[0m✱ [0mGrep "tryPlaceBuildingNextToExistingBuilding"[90m in decompiled/Interplanetary.AI.Construction/AIBuildingPlacementSearch.cs · 2 matches[0m
+[0m→ [0mRead decompiled/Interplanetary.AI.Construction/AIBuildingPlacementSearch.cs[90m [offset=195, limit=50][0m
+[0m
+[0m$ [0mpython -c "
+import json
+with open('docs/playtests/data/v019m26-ai-decisions.jsonl', 'r', encoding='utf-8') as f:
+    for line in f:
+        r = json.loads(line)
+        if r.get('ai') == 'Ash' and r.get('e') == 'director' and r.get('t') in [25, 30, 35]:
+            print(f'T{r[\"t\"]}: queued={r.get(\"queued\")}')
+"
+T25: queued={'antinuke:bui_IonDefense': 2, 'upgrade:upg_OffshoreMaterialYield1': 5, 'material:bui_OffshoreMine': 5, 'material:bui_Mine': 1, 'defense:bui_KineticDefense': 2, 'upgrade:upg_KineticRange1': 4, 'counterintel:bui_DataSecurityHub': 1, 'abandoned:bui_IonDefense': 2, 'weapon:bui_Railgun': 2, 'weapon:bui_Missile': 2, 'upgrade:upg_OffshoreEfficiency1': 5, 'abandoned:bui_KineticDefense': 2, 'abandoned:bui_Railgun': 2, 'abandoned:bui_Missile': 1}
+T30: queued={'upgrade:upg_RadiotelescopeIntelYield1': 1, 'defense:bui_KineticDefense': 2, 'defense:bui_IonDefense': 1, 'upgrade:upg_KineticRange1': 4, 'counterintel:bui_DataSecurityHub': 1, 'upgrade:upg_RailgunRadius3': 5, 'upgrade:upg_RailgunProjectileAmount2': 1, 'weapon:bui_Railgun': 2, 'project:pro_ScienceYieldShortGlobal1': 1, 'project:pro_ScienceYieldShort1': 2, 'upgrade:upg_MineEfficiency1': 2, 'abandoned:bui_IonDefense': 1, 'abandoned:bui_DataSecurityHub': 1, 'abandoned:bui_Railgun': 2}
+T35: queued={'defense:bui_ShieldDefense': 3, 'counterintel:bui_DataSecurityHub': 1, 'upgrade:upg_CoilcannonAllDamage1': 2, 'weaponupgrade:upg_CoilcannonAllDamage1': 2}
+[0m
+[0m✱ [0mGrep "bui_FloatingPlant"[90m in AI/DirectorPatches.cs · 4 matches[0m
+[0m→ [0mRead AI/DirectorPatches.cs[90m [offset=1940, limit=60][0m
+[0m✱ [0mGrep "step-"[90m in AI/DirectorPatches.cs · 1 match[0m
+[0m✱ [0mGrep "// Step"[90m in AI/DirectorPatches.cs · 0 matches[0m
+[0m✱ [0mGrep "ConstructionQueuePrefix"[90m in AI/DirectorPatches.cs · 0 matches[0m
+[0m✱ [0mGrep "DirectorPatches"[90m in AI/Plugin.cs · 16 matches[0m
+[0m✱ [0mGrep "bool TryConstruct"[90m in AI/DirectorPatches.cs · 3 matches[0m
+[0m→ [0mRead AI/DirectorPatches.cs[90m [limit=100, offset=616][0m
+[0m→ [0mRead AI/DirectorPatches.cs[90m [offset=720, limit=100][0m
+[0m→ [0mRead AI/DirectorPatches.cs[90m [limit=100, offset=820][0m
+[0m✱ [0mGrep "bool TryWeapon"[90m in AI/DirectorPatches.cs · 2 matches[0m
+[0m→ [0mRead AI/DirectorPatches.cs[90m [limit=65, offset=1285][0m
+[0m✱ [0mGrep "MaxWeapons"[90m in AI/Plugin.cs · 4 matches[0m
+[0m→ [0mRead AI/Plugin.cs[90m [limit=20, offset=480][0m
+[0m→ [0mRead AI/Brain/TargetPlanner.cs[90m [offset=1, limit=100][0m
+[0m
+[0m$ [0mpython -c "
+import json
+with open('docs/playtests/data/v019m26-ai-decisions.jsonl', 'r', encoding='utf-8') as f:
+    for line in f:
+        r = json.loads(line)
+        if r.get('ai') == 'Ash' and r.get('e') == 'strategy' and r.get('t') in range(20, 27):
+            print(f'T{r[\"t\"]}: commit={r.get(\"commitTarget\")}, humanFirst={r.get(\"humanFirst\")}, fire={r.get(\"fire\")}, reason={r.get(\"reason\")}, targets={[(t[\"name\"], t[\"score\"], t[\"passing\"], t[\"value\"]) for t in r.get(\"targets\", [])]}')
+"
+T20: commit=None, humanFirst=False, fire=False, reason=building, targets=[]
+T21: commit=None, humanFirst=False, fire=False, reason=building, targets=[]
+T22: commit=None, humanFirst=False, fire=True, reason=return-fire, targets=[]
+T23: commit=None, humanFirst=True, fire=False, reason=below-saturation, targets=[]
+T24: commit=None, humanFirst=False, fire=True, reason=saturated, targets=[]
+T25: commit=None, humanFirst=False, fire=True, reason=free-fire, targets=[]
+T26: commit=None, humanFirst=True, fire=True, reason=free-fire, targets=[]
+[0m
+[0m$ [0mpython -c "
+import json
+with open('docs/playtests/data/v019m26-ai-decisions.jsonl', 'r', encoding='utf-8') as f:
+    for line in f:
+        r = json.loads(line)
+        if r.get('ai') == 'Ash' and r.get('e') == 'strategy' and r.get('t') in [22, 24, 25]:
+            print(f'T{r[\"t\"]}: {r}')
+"
+T22: {'e': 'strategy', 't': 22, 'ai': 'Ash', 'war': True, 'fire': True, 'reason': 'return-fire', 'shots': 14, 'arriving': 10.25, 'passing': 8.708, 'passShare': 0.85, 'commit': 'Armiger', 'lastStrike': -1000, 'holdTurns': 2, 'releasedEnergy': 0, 'passingBy': {'Hawking': 6, 'jogi': 6, 'Armiger': 9}, 'arrivingBy': {'Hawking': 10, 'jogi': 10, 'Armiger': 10}, 'eligibleBy': {'Hawking': 6, 'jogi': 5, 'Armiger': 2}, 'rollsBy': {'Hawking': 168, 'jogi': 31, 'Armiger': 7}, 'defensesBy': {'Hawking': 29, 'jogi': 23, 'Armiger': 4}, 'scoreBy': {'Hawking': 1102, 'jogi': 240, 'Armiger': 454}, 'aimedAt': 3, 'observedImpactsBy': {'Hawking': 0, 'jogi': 0, 'Armiger': 0}, 'observedInterceptedBy': {'Hawking': 0, 'jogi': 0, 'Armiger': 0}, 'precision': False, 'visibleCities': 5, 'guidedArriving': 2.55, 'guidedPassing': 2.55, 'smallestVisibleCityPop': 452, 'guidedPopDamage': 150, 'guidedFiring': 900, 'unguidedFiring': 1100, 'artilleryProjectiles': 11, 'humanFirst': False, 'hitByCommit': True, 'freeEnergy': 101, 'firingCost': 2000}
+T24: {'e': 'strategy', 't': 24, 'ai': 'Ash', 'war': True, 'fire': True, 'reason': 'saturated', 'shots': 20, 'arriving': 14.9, 'passing': 12.59, 'passShare': 0.845, 'commit': 'Armiger', 'lastStrike': 22, 'holdTurns': 1, 'releasedEnergy': 0, 'passingBy': {'Hawking': 8, 'jogi': 10, 'Armiger': 13}, 'arrivingBy': {'Hawking': 15, 'jogi': 15, 'Armiger': 15}, 'eligibleBy': {'Hawking': 9, 'jogi': 7, 'Armiger': 3}, 'rollsBy': {'Hawking': 168, 'jogi': 63, 'Armiger': 7}, 'defensesBy': {'Hawking': 35, 'jogi': 25, 'Armiger': 5}, 'scoreBy': {'Hawking': 1100, 'jogi': 368, 'Armiger': 496}, 'aimedAt': 0, 'observedImpactsBy': {'Hawking': 0, 'jogi': 0, 'Armiger': 10}, 'observedInterceptedBy': {'Hawking': 0, 'jogi': 0, 'Armiger': 0}, 'precision': False, 'visibleCities': 5, 'guidedArriving': 5.1, 'guidedPassing': 5.1, 'smallestVisibleCityPop': 182, 'guidedPopDamage': 150, 'guidedFiring': 1800, 'unguidedFiring': 1050, 'artilleryProjectiles': 14, 'humanFirst': False, 'hitByCommit': False, 'freeEnergy': 1026, 'firingCost': 2850}
+T25: {'e': 'strategy', 't': 25, 'ai': 'Ash', 'war': True, 'fire': True, 'reason': 'free-fire', 'shots': 21, 'arriving': 15.6, 'passing': 7.793, 'passShare': 0.5, 'commit': 'Hawking', 'lastStrike': 24, 'holdTurns': 0, 'releasedEnergy': 0, 'passingBy': {'Hawking': 8, 'jogi': 10, 'Armiger': 7}, 'arrivingBy': {'Hawking': 16, 'jogi': 16, 'Armiger': 8}, 'eligibleBy': {'Hawking': 10, 'jogi': 7, 'Armiger': 1}, 'rollsBy': {'Hawking': 166, 'jogi': 61, 'Armiger': 8}, 'defensesBy': {'Hawking': 38, 'jogi': 23, 'Armiger': 6}, 'scoreBy': {'Hawking': 1450, 'jogi': 357, 'Armiger': 235}, 'aimedAt': 3, 'observedImpactsBy': {'Hawking': 2, 'jogi': 2, 'Armiger': 20}, 'observedInterceptedBy': {'Hawking': 1, 'jogi': 0, 'Armiger': 0}, 'precision': False, 'visibleCities': 5, 'guidedArriving': 5.1, 'guidedPassing': 3.238, 'smallestVisibleCityPop': 464, 'guidedPopDamage': 150, 'guidedFiring': 1800, 'unguidedFiring': 1150, 'artilleryProjectiles': 15, 'humanFirst': False, 'hitByCommit': True, 'freeEnergy': 16467, 'firingCost': 2950}
+[0m
+[0m$ [0mpython -c "
+import json
+with open('docs/playtests/data/v019m25-ai-decisions.jsonl', 'r', encoding='utf-8') as f:
+    for line in f:
+        r = json.loads(line)
+        if r.get('e') == 'strategy' and r.get('t') in [21, 22, 23, 24, 25]:
+            print(f'T{r[\"t\"]} {r[\"ai\"]}: commit={r.get(\"commit\")}, humanFirst={r.get(\"humanFirst\")}, scoreBy={r.get(\"scoreBy\")}, passingBy={r.get(\"passingBy\")}')
+"
+T21 Zenon: commit=jogi, humanFirst=True, scoreBy={'jogi': 852, 'Sarai': 1168, 'Donnels': 1086, 'Beastie': 482}, passingBy={'jogi': 7, 'Sarai': 9, 'Donnels': 10, 'Beastie': 12}
+T21 Donnels: commit=jogi, humanFirst=True, scoreBy={'Zenon': 1112, 'jogi': 852, 'Sarai': 1168, 'Beastie': 482}, passingBy={'Zenon': 8, 'jogi': 6, 'Sarai': 8, 'Beastie': 10}
+T21 Sarai: commit=jogi, humanFirst=True, scoreBy={'Zenon': 1143, 'jogi': 876, 'Donnels': 1116, 'Beastie': 483}, passingBy={'Zenon': 10, 'jogi': 7, 'Donnels': 10, 'Beastie': 12}
+T22 Zenon: commit=jogi, humanFirst=True, scoreBy={'jogi': 778, 'Sarai': 1163, 'Donnels': 1436, 'Beastie': 231}, passingBy={'jogi': 6, 'Sarai': 9, 'Donnels': 9, 'Beastie': 12}
+T22 Donnels: commit=jogi, humanFirst=True, scoreBy={'Zenon': 1110, 'jogi': 778, 'Sarai': 1163, 'Beastie': 491}, passingBy={'Zenon': 10, 'jogi': 8, 'Sarai': 10, 'Beastie': 14}
+T22 Sarai: commit=jogi, humanFirst=True, scoreBy={'Zenon': 1134, 'jogi': 795, 'Donnels': 1182, 'Beastie': 492}, passingBy={'Zenon': 10, 'jogi': 8, 'Donnels': 10, 'Beastie': 14}
+T23 Zenon: commit=Beastie, humanFirst=False, scoreBy={'jogi': 281, 'Sarai': 372, 'Donnels': 1455, 'Beastie': 198}, passingBy={'jogi': 11, 'Sarai': 13, 'Donnels': 12, 'Beastie': 19}
+T23 Donnels: commit=jogi, humanFirst=True, scoreBy={'Zenon': 1454, 'jogi': 951, 'Sarai': 1237, 'Beastie': 142}, passingBy={'Zenon': 18, 'jogi': 17, 'Sarai': 18, 'Beastie': 26}
+T23 Sarai: commit=Beastie, humanFirst=False, scoreBy={'Zenon': 343, 'jogi': 281, 'Donnels': 1177, 'Beastie': 458}, passingBy={'Zenon': 18, 'jogi': 17, 'Donnels': 17, 'Beastie': 25}
+T24 Zenon: commit=jogi, humanFirst=True, scoreBy={'jogi': 454, 'Sarai': 820, 'Donnels': 1157, 'Beastie': 120}, passingBy={'jogi': 13, 'Sarai': 12, 'Donnels': 13, 'Beastie': 18}
+T24 Donnels: commit=jogi, humanFirst=True, scoreBy={'Zenon': 1376, 'jogi': 1100, 'Sarai': 1283, 'Beastie': 171}, passingBy={'Zenon': 17, 'jogi': 13, 'Sarai': 16, 'Beastie': 25}
+T24 Sarai: commit=jogi, humanFirst=True, scoreBy={'Zenon': 812, 'jogi': 454, 'Donnels': 1170, 'Beastie': 308}, passingBy={'Zenon': 17, 'jogi': 19, 'Donnels': 17, 'Beastie': 25}
+T25 Zenon: commit=jogi, humanFirst=True, scoreBy={'jogi': 571, 'Sarai': 885, 'Donnels': 1305, 'Beastie': 121}, passingBy={'jogi': 11, 'Sarai': 10, 'Donnels': 12, 'Beastie': 17}
+T25 Donnels: commit=jogi, humanFirst=True, scoreBy={'Zenon': 1404, 'jogi': 1100, 'Sarai': 1206, 'Beastie': 192}, passingBy={'Zenon': 16, 'jogi': 18, 'Sarai': 15, 'Beastie': 25}
+T25 Sarai: commit=jogi, humanFirst=True, scoreBy={'Zenon': 742, 'jogi': 571, 'Donnels': 1143, 'Beastie': 464}, passingBy={'Zenon': 16, 'jogi': 12, 'Donnels': 16, 'Beastie': 25}
+[0m
+[0m→ [0mRead AI/tools/human_research_order.py[90m [limit=60, offset=1][0m
+[0m✱ [0mGrep "ResearchPlan"[90m in AI/Plugin.cs · 41 matches[0m
+[0m→ [0mRead AI/Plugin.cs[90m [limit=35, offset=180][0m

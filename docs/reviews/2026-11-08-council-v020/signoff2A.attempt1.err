@@ -1,0 +1,47 @@
+[0m
+> plan · openai/gpt-6.1-terra
+[0m
+[0m$ [0msha256sum "docs/reviews/2026-11-08-council-v020/decision-record.md"
+5d5b648b20460919e8d4cf39edadc06285dfbf4d308a1dae6bfe68d71a44f727 *docs/reviews/2026-11-08-council-v020/decision-record.md
+[0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/decision-record.md
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/signoffA.md
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/laneA.md
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/xreviewA-on-B.md
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/xreviewE-on-A.md
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/ballotA.md
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/signoffE.md
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/signoffB.md
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/ballotB.md
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/ballotD.md
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/ballotC.md
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/ballotE.md
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/matrix.md
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/charter.md
+[0m→ [0mRead AI/Patches.cs[90m [offset=390, limit=125][0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/signoffD.md
+[0m→ [0mRead AI/AimWatch.cs[90m [offset=130, limit=135][0m
+[0m→ [0mRead AI/StrategyPatches.cs[90m [offset=105, limit=100][0m
+[0m→ [0mRead AI/Patches.cs[90m [offset=575, limit=245][0m
+[0m→ [0mRead AI/Brain/Strategy.cs[90m [offset=355, limit=80][0m
+[0m→ [0mRead AI/Brain/DefenseLedger.cs[90m [offset=30, limit=95][0m
+[0m→ [0mRead AI/AimWatch.cs[90m [limit=120, offset=1][0m
+[0m→ [0mRead AI/DirectorPatches.cs[90m [limit=115, offset=830][0m
+[0m→ [0mRead AI/DirectorPatches.cs[90m [limit=85, offset=380][0m
+[0m✱ [0mGrep "target = commit|plannedHits|usable weapons|FA4|firingHits"[90m in docs/reviews/2026-11-08-council-v020 · 50 matches[0m
+[0m✱ [0mGrep "plannedHits|"realized"|firingHits|damage|hit/miss"[90m in docs/reviews/2026-11-08-council-v020/ballotA.md · 100 matches[0m
+[0m✱ [0mGrep "AimedWeapons|aimedWeapons|WeaponCount|WeaponBuilding|WarTurn|DesiredDefenses"[90m in AI/DirectorPatches.cs · 33 matches[0m
+[0m✱ [0mGrep "DestroyBuilding|CurrentState.*Destroyed|RemoveBuilding"[90m in decompiled/Interplanetary.PlayerDataManagement · 23 matches[0m
+[0m✱ [0mGrep "plannedHits|firingHits|AccuracyOverride|GuidedAccuracy|accuracyById|HumanFirst|observedImpactsBy"[90m in AI · 80 matches[0m
+[0m✱ [0mGrep "configured|accuracy|0.7|Guided|firingHits|per-class|chance"[90m in docs/reviews/2026-11-08-council-v020/laneE.md · 100 matches[0m
+[0m→ [0mRead AI/Patches.cs[90m [limit=75, offset=305][0m
+[0m→ [0mRead AI/Plugin.cs[90m [limit=45, offset=382][0m
+[0m→ [0mRead AI/DirectorPatches.cs[90m [limit=45, offset=350][0m
+[0m→ [0mRead decompiled/Interplanetary.PlayerDataManagement/PlayerBuildingHandler.cs[90m [limit=90, offset=620][0m
+[0m→ [0mRead AI/Brain/Director.cs[90m [limit=60, offset=260][0m
+[0m→ [0mRead docs/playtests/data/v019m25-ai-decisions.jsonl[90m [offset=679, limit=14][0m
+[0m→ [0mRead AI/Brain/Offense.cs[90m [limit=180, offset=1][0m
+[93m[1m! [0mpermission requested: external_directory (C:\Users\pavol\Reposos_Local\interplanetary-mods\*); auto-rejecting
+[0m✗ [0mGrep "nothing" failed[90m in C:/Users/pavol/Reposos_Local/interplanetary-mods/AI[0m
+[91m[1mError: [0mThe user rejected permission to use this specific tool call.

@@ -1,0 +1,132 @@
+[0m
+> plan · openai/gpt-6.1-terra
+[0m
+[0m→ [0mRead AI/README.md
+[0m✱ [0mGlob "docs/reviews/2026-11-08-council-v020/*"[90m 44 matches[0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/matrix.md
+[0m✱ [0mGlob "docs/playtests/*"[90m 24 matches[0m
+[0m✱ [0mGlob "docs/reviews/*-disposition.md"[90m 26 matches[0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/laneB.md
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/laneA.md
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/laneC.md
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/laneD.md
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/xreviewB-on-C.md
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/xreviewC-on-D.md
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/laneE.md
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/xreviewA-on-B.md
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/xreviewD-on-E.md
+[0m→ [0mRead docs/playtests/2026-11-08-v0.19.0-match26.md
+[0m→ [0mRead docs/reviews/terra-ai-v0.19-disposition.md
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/xreviewE-on-A.md
+[0m
+[0m$ [0mpython -B -c "import json,collections; p='docs/playtests/data/v018m24-ai-decisions.jsonl'; a=[json.loads(s) for s in open(p,encoding='utf-8') if s.strip()]; d=[r for r in a if r.get('e')=='director' and r.get('ai') in ('Doc','Eddie')]; print({n:dict(collections.Counter({k:sum(r.get('placementFailures',{}).get(k,0) for r in d if r['ai']==n) for k in set().union(*(r.get('placementFailures',{}).keys() for r in d if r['ai']==n))})) for n in ('Doc','Eddie')}); print({n:sum(sum(r.get('placementFailures',{}).values()) for r in d if r['ai']==n) for n in ('Doc','Eddie')})"
+{'Doc': {'bui_TelescopeArray': 6, 'bui_IonDefense': 14, 'bui_NuclearPlant': 10, 'bui_Mine': 1, 'bui_SolarPlant': 11, 'bui_KineticDefense': 4, 'bui_Railgun': 6}, 'Eddie': {'bui_IonDefense': 12, 'bui_NuclearPlant': 4, 'bui_SolarPlant': 6, 'bui_KineticDefense': 2, 'bui_Railgun': 2}}
+{'Doc': 52, 'Eddie': 26}
+[0m
+[0m→ [0mRead AI/Brain/Strategy.cs[90m [offset=190, limit=275][0m
+[0m✱ [0mGrep "resource_credit|energyBefore|round_start|turn_end"[90m in docs · 25 matches[0m
+[0m✱ [0mGrep "TurnStartInit|resource_credit|RoundStart|RoundEnd|StartTurn|EndTurn|ActionPhase"[90m in decompiled · 100 matches[0m
+[0m→ [0mRead AI/StrategyPatches.cs[90m [offset=120, limit=290][0m
+[0m→ [0mRead AI/DirectorPatches.cs[90m [offset=190, limit=40][0m
+[0m→ [0mRead AI/DirectorPatches.cs[90m [offset=820, limit=130][0m
+[0m→ [0mRead AI/DirectorPatches.cs[90m [offset=1270, limit=95][0m
+[0m→ [0mRead decompiled/Interplanetary.PlayerDataManagement/PlayerResourceHandler.cs[90m [offset=105, limit=90][0m
+[0m→ [0mRead decompiled/Interplanetary.PlayerDataManagement/PlayerDefenseHandler.cs[90m [offset=207, limit=110][0m
+[0m✱ [0mGlob "**/*Telemetry*.cs"[90m 1 match[0m
+[0m✱ [0mGlob "**/*telemetry*"[90m 0 matches[0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/evidence-manifest.tsv[90m [limit=30][0m
+[0m✱ [0mGrep "RoundStart|RoundEnd|TurnStart|ActionPhase|Init\("[90m in decompiled/Interplanetary.PlayerDataManagement · 17 matches[0m
+[0m✱ [0mGrep "RoundStart|RoundEnd|TurnStart|Actionphase|ActionPhase|CurrentTurn\+\+|CurrentTurn =|CurrentTurn"[90m in decompiled/Interplanetary.GameEngine · 25 matches[0m
+[0m
+[0m$ [0mpython -B -c "import json; p='docs/playtests/data/v019m26-human-telemetry.jsonl'; a=[json.loads(s) for s in open(p,encoding='utf-8') if s.strip()]; print([(i,r) for i,r in enumerate(a) if r.get('eventType') in ('round_start','turn_end','resource_credit') and 22<=r.get('turn',-1)<=24])"
+...output truncated...
+
+Full output saved to: C:\Users\pavol\.local\share\opencode\tool-output\tool_1bb2a783c001n0n0B1Bq1y1BMP
+
+(no output)
+[0m
+[0m→ [0mRead decompiled/Interplanetary.GameEngine/GameManager.cs[90m [offset=60, limit=45][0m
+[0m→ [0mRead decompiled/Interplanetary.GameEngine/GameManager.cs[90m [offset=300, limit=95][0m
+[0m→ [0mRead decompiled/Interplanetary.GameEngine/GameManager.cs[90m [offset=470, limit=100][0m
+[0m→ [0mRead AI/AimWatch.cs[90m [offset=120, limit=150][0m
+[0m→ [0mRead decompiled/Interplanetary.PlayerDataManagement/PlayerData.cs[90m [offset=430, limit=35][0m
+[0m→ [0mRead decompiled/Interplanetary.GameEngine/PlayerManager.cs[90m [offset=640, limit=65][0m
+[0m✱ [0mGrep "TurnStartValueUpdate|RoundStartInit\(|TurnStartInit\(|m_currentTurn|CurrentTurn"[90m in decompiled/Interplanetary.GameEngine · 53 matches[0m
+[0m
+[0m$ [0mpython -B -c "import json; p='docs/playtests/data/v019m26-human-telemetry.jsonl'; a=[json.loads(s) for s in open(p,encoding='utf-8') if s.strip()]; print([(r.get('eventType'),r.get('turn'),list(r.keys())) for r in a if r.get('eventType') in ('round_start','turn_end','resource_credit')][:9])"
+[('turn_end', 0, ['schemaVersion', 'recorderVersion', 'scope', 'sessionId', 'observedAtUtc', 'phase', 'eventType', 'eventKey', 'sequence', 'playerId', 'turn', 'partialRound', 'state', 'credit', 'shot', 'damage']), ('resource_credit', 1, ['schemaVersion', 'recorderVersion', 'scope', 'sessionId', 'observedAtUtc', 'phase', 'eventType', 'eventKey', 'sequence', 'playerId', 'turn', 'partialRound', 'state', 'credit', 'shot', 'damage']), ('round_start', 1, ['schemaVersion', 'recorderVersion', 'scope', 'sessionId', 'observedAtUtc', 'phase', 'eventType', 'eventKey', 'sequence', 'playerId', 'turn', 'partialRound', 'state', 'credit', 'shot', 'damage']), ('turn_end', 1, ['schemaVersion', 'recorderVersion', 'scope', 'sessionId', 'observedAtUtc', 'phase', 'eventType', 'eventKey', 'sequence', 'playerId', 'turn', 'partialRound', 'state', 'credit', 'shot', 'damage']), ('resource_credit', 2, ['schemaVersion', 'recorderVersion', 'scope', 'sessionId', 'observedAtUtc', 'phase', 'eventType', 'eventKey', 'sequence', 'playerId', 'turn', 'partialRound', 'state', 'credit', 'shot', 'damage']), ('round_start', 2, ['schemaVersion', 'recorderVersion', 'scope', 'sessionId', 'observedAtUtc', 'phase', 'eventType', 'eventKey', 'sequence', 'playerId', 'turn', 'partialRound', 'state', 'credit', 'shot', 'damage']), ('turn_end', 2, ['schemaVersion', 'recorderVersion', 'scope', 'sessionId', 'observedAtUtc', 'phase', 'eventType', 'eventKey', 'sequence', 'playerId', 'turn', 'partialRound', 'state', 'credit', 'shot', 'damage']), ('resource_credit', 3, ['schemaVersion', 'recorderVersion', 'scope', 'sessionId', 'observedAtUtc', 'phase', 'eventType', 'eventKey', 'sequence', 'playerId', 'turn', 'partialRound', 'state', 'credit', 'shot', 'damage']), ('round_start', 3, ['schemaVersion', 'recorderVersion', 'scope', 'sessionId', 'observedAtUtc', 'phase', 'eventType', 'eventKey', 'sequence', 'playerId', 'turn', 'partialRound', 'state', 'credit', 'shot', 'damage'])]
+[0m
+[0m→ [0mRead AI/Patches.cs[90m [offset=425, limit=135][0m
+[0m→ [0mRead AI/Patches.cs[90m [offset=600, limit=215][0m
+[0m→ [0mRead docs/reviews/terra-ai-v0.6-diagnosis.md[90m [offset=20, limit=37][0m
+[0m✱ [0mGrep "IsHitIntercepted|RoundStart|GameManagerStatusEnum|ResourceHandler|ActionphaseResults|CurrentTurn|Simulation|simulate|Calculate"[90m in decompiled/Interplanetary.GameEngine · 30 matches[0m
+[0m
+[0m$ [0mpython -B -c "import json; a=[json.loads(s) for s in open('docs/playtests/data/v019m26-human-telemetry.jsonl',encoding='utf-8') if s.strip()]; print([(r['turn'],r['eventType'],r.get('phase'),r['sequence'],r.get('credit'),list((r.get('state') or {}).keys()),list(((r.get('state') or {}).get('player') or {}).keys())) for r in a if r.get('eventType') in ('turn_end','round_start','resource_credit') and r.get('turn') in (22,23,24)])"
+[(22, 'resource_credit', 'RoundStart', 141, {'materials': 8335, 'science': 799, 'energyRefreshed': 9245, 'energyBefore': 1195, 'planetMaterialsConsumed': 12360}, [], []), (22, 'round_start', 'PlayerTurn', 142, None, ['schemaVersion', 'bridgeVersion', 'observedAtUtc', 'availability', 'sessionId', 'scope', 'phase', 'online', 'turn', 'player'], ['playerId', 'planetIndex', 'technologiesUnlocked', 'localHuman', 'status', 'turnStatus', 'resources', 'buildings', 'research', 'researchQueue']), (22, 'turn_end', 'WaitingPlayerData', 152, None, ['schemaVersion', 'bridgeVersion', 'observedAtUtc', 'availability', 'sessionId', 'scope', 'phase', 'online', 'turn', 'player'], ['playerId', 'planetIndex', 'technologiesUnlocked', 'localHuman', 'status', 'turnStatus', 'resources', 'buildings', 'research', 'researchQueue']), (23, 'resource_credit', 'RoundStart', 153, {'materials': 9468, 'science': 712, 'energyRefreshed': 15513, 'energyBefore': 595, 'planetMaterialsConsumed': 15595}, [], []), (23, 'round_start', 'PlayerTurn', 154, None, ['schemaVersion', 'bridgeVersion', 'observedAtUtc', 'availability', 'sessionId', 'scope', 'phase', 'online', 'turn', 'player'], ['playerId', 'planetIndex', 'technologiesUnlocked', 'localHuman', 'status', 'turnStatus', 'resources', 'buildings', 'research', 'researchQueue']), (23, 'turn_end', 'WaitingPlayerData', 160, None, ['schemaVersion', 'bridgeVersion', 'observedAtUtc', 'availability', 'sessionId', 'scope', 'phase', 'online', 'turn', 'player'], ['playerId', 'planetIndex', 'technologiesUnlocked', 'localHuman', 'status', 'turnStatus', 'resources', 'buildings', 'research', 'researchQueue']), (24, 'resource_credit', 'RoundStart', 161, {'materials': 9468, 'science': 489, 'energyRefreshed': 18862, 'energyBefore': 8113, 'planetMaterialsConsumed': 15595}, [], []), (24, 'round_start', 'PlayerTurn', 162, None, ['schemaVersion', 'bridgeVersion', 'observedAtUtc', 'availability', 'sessionId', 'scope', 'phase', 'online', 'turn', 'player'], ['playerId', 'planetIndex', 'technologiesUnlocked', 'localHuman', 'status', 'turnStatus', 'resources', 'buildings', 'research', 'researchQueue']), (24, 'turn_end', 'WaitingPlayerData', 172, None, ['schemaVersion', 'bridgeVersion', 'observedAtUtc', 'availability', 'sessionId', 'scope', 'phase', 'online', 'turn', 'player'], ['playerId', 'planetIndex', 'technologiesUnlocked', 'localHuman', 'status', 'turnStatus', 'resources', 'buildings', 'research', 'researchQueue'])]
+[0m
+[0m→ [0mRead decompiled/Interplanetary.GameEngine/ActionphaseManager.cs[90m [offset=700, limit=43][0m
+[0m→ [0mRead decompiled/Interplanetary.GameEngine/PlayerManager.cs[90m [offset=120, limit=100][0m
+[0m
+[0m$ [0mpython -B -c "import json; a=[json.loads(s) for s in open('docs/playtests/data/v019m26-human-telemetry.jsonl',encoding='utf-8') if s.strip()]; print([(r['turn'],r['eventType'],r['state']['player']['resources']) for r in a if r.get('eventType')=='turn_end' and r.get('turn') in (22,23,24)])"
+[(22, 'turn_end', {'energy': 2595, 'energyCapacity': 9245, 'energyPerTurn': 15513, 'materials': 7542, 'materialsCapacity': 23757, 'materialsPerTurn': 9468, 'planetMaterials': 279724, 'planetMaterialsInitial': 400000, 'populationMillions': 3009, 'populationGrowthMillionsPerTurn': 192, 'science': 0, 'sciencePerTurn': 799, 'intel': 40, 'counterintelMultiplier': 6.5125}), (23, 'turn_end', {'energy': 10913, 'energyCapacity': 15513, 'energyPerTurn': 18862, 'materials': 8285, 'materialsCapacity': 23757, 'materialsPerTurn': 9468, 'planetMaterials': 264129, 'planetMaterialsInitial': 400000, 'populationMillions': 2601, 'populationGrowthMillionsPerTurn': 115, 'science': 0, 'sciencePerTurn': 712, 'intel': 51, 'counterintelMultiplier': 20.49063}), (24, 'turn_end', {'energy': 12062, 'energyCapacity': 18862, 'energyPerTurn': 18279, 'materials': 2928, 'materialsCapacity': 23757, 'materialsPerTurn': 9468, 'planetMaterials': 248534, 'planetMaterialsInitial': 400000, 'populationMillions': 1966, 'populationGrowthMillionsPerTurn': 117, 'science': 0, 'sciencePerTurn': 353, 'intel': 97, 'counterintelMultiplier': 23.44375})]
+[0m
+[0m→ [0mRead decompiled/Interplanetary.GameEngine/ActionphaseManager.cs[90m [offset=186, limit=100][0m
+[0m✱ [0mGrep "StartActionphaseSimulation\("[90m in decompiled · 3 matches[0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/brief.md[90m [limit=180][0m
+[0m
+[0m$ [0mpython -B -c "import json; a=[json.loads(s) for s in open('docs/playtests/data/v019m25-human-telemetry.jsonl',encoding='utf-8') if s.strip()]; print([(r['turn'],r['eventType'],r['credit'] if r['eventType']=='resource_credit' else {k:r['state']['player']['resources'][k] for k in ('energy','populationMillions','populationGrowthMillionsPerTurn')}) for r in a if r.get('eventType') in ('turn_end','resource_credit') and r.get('turn') in (30,31,32,33,34)])"
+[(30, 'resource_credit', {'materials': 18299, 'science': 636, 'energyRefreshed': 19584, 'energyBefore': 8569, 'planetMaterialsConsumed': 27113}), (30, 'turn_end', {'energy': 6184, 'populationMillions': 2257, 'populationGrowthMillionsPerTurn': 116}), (31, 'resource_credit', {'materials': 19776, 'science': 600, 'energyRefreshed': 16994, 'energyBefore': 184, 'planetMaterialsConsumed': 29300}), (31, 'turn_end', {'energy': 6194, 'populationMillions': 2132, 'populationGrowthMillionsPerTurn': 116}), (32, 'resource_credit', {'materials': 10843, 'science': 314, 'energyRefreshed': 10568, 'energyBefore': 6454, 'planetMaterialsConsumed': 16048}), (32, 'turn_end', {'energy': 3018, 'populationMillions': 1392, 'populationGrowthMillionsPerTurn': 71}), (33, 'resource_credit', {'materials': 7039, 'science': 152, 'energyRefreshed': 9163, 'energyBefore': 18, 'planetMaterialsConsumed': 11607}), (33, 'turn_end', {'energy': 4063, 'populationMillions': 677, 'populationGrowthMillionsPerTurn': 58}), (34, 'resource_credit', {'materials': 5378, 'science': 116, 'energyRefreshed': 9154, 'energyBefore': 3023, 'planetMaterialsConsumed': 7978}), (34, 'turn_end', {'energy': 5454, 'populationMillions': 519, 'populationGrowthMillionsPerTurn': 58})]
+[0m
+[0m✱ [0mGrep "class Actionphase.*DamageEvent|CurrentPopulation|population_damage"[90m in decompiled · 89 matches[0m
+[0m
+[0m$ [0mgit status --short
+?? context-log_261107-205429-codex-68ad.md
+?? docs/original-mechanics.md
+?? docs/public-readiness-audit.md
+?? docs/reviews/2026-11-01-council-v016/laneA.err
+?? docs/reviews/2026-11-01-council-v016/laneB.err
+?? docs/reviews/2026-11-01-council-v016/laneC.err
+?? docs/reviews/2026-11-01-council-v016/laneC.md
+?? docs/reviews/2026-11-01-council-v016/signoff2A.err
+?? docs/reviews/2026-11-01-council-v016/signoff2B.err
+?? docs/reviews/2026-11-01-council-v016/signoffA.err
+?? docs/reviews/2026-11-01-council-v016/signoffB.err
+?? docs/reviews/2026-11-01-council-v016/xreviewA.err
+?? docs/reviews/2026-11-01-council-v016/xreviewB.err
+?? docs/reviews/2026-11-08-council-v020/
+?? docs/reviews/terra-ai-v0.10.attempt1.md
+?? docs/reviews/terra-ai-v0.16.1.attempt1.md
+?? docs/reviews/terra-ai-v0.17-final.diff
+?? docs/reviews/terra-ai-v0.6-diagnosis.attempt2.md
+?? docs/ruleset/
+[0m
+[0m$ [0mpython -B -c "import json,collections; a=[json.loads(s) for s in open('docs/playtests/data/v019m26-human-telemetry.jsonl',encoding='utf-8') if s.strip()]; print([(r['sequence'],r['turn'],r['phase'],r['eventType'],r.get('damage')) for r in a if r.get('eventType')=='damage' and r.get('turn')==23][:5]); print(collections.Counter((r.get('turn'),r.get('phase')) for r in a if r.get('eventType')=='damage' and r.get('turn') in (22,23,24)))"
+[]
+Counter()
+[0m
+[0m✱ [0mGrep "WarTurn|WarStartTurn|WarFromTurn|RetaliationUpkeepShare"[90m in AI · 32 matches[0m
+[0m✱ [0mGrep "Energy|SpendEnergy|AddEnergy|ResourceHandler|Damage"[90m in decompiled/Interplanetary.GameEngine.Actionphase · 24 matches[0m
+[0m
+[0m$ [0mpython -B -c "import json; fs=['v018m22','v018m23','v018m24','v019m25','v019m26']; rows=[(m,[json.loads(s) for s in open('docs/playtests/data/'+m+'-ai-decisions.jsonl',encoding='utf-8') if s.strip()]) for m in fs]; print([(m,n,len(ds),sum(1 for x in ds if not war.get(x['t'],False)),sum(1 for x in ds if x['energyLeft']>=10000),sum(1 for x in ds if x['energyLeft']>=10000 and x['materialLeft']<2000)) for m,a in rows for n in sorted({r['ai'] for r in a if r.get('e')=='init' and r.get('smart')}) for war in [{r['t']:r['war'] for r in a if r.get('ai')==n and r.get('e')=='strategy'}] if any(war.values()) for start in [min(t for t,v in war.items() if v)] for ds in [[r for r in a if r.get('ai')==n and r.get('e')=='director' and r['t']>=start]]])"
+[('v018m22', 'Eiai', 24, 2, 2, 2), ('v018m23', 'Arc', 20, 0, 3, 3), ('v018m23', 'Beastie', 15, 0, 7, 7), ('v018m24', 'Doc', 17, 0, 2, 2), ('v018m24', 'Eddie', 20, 4, 2, 2), ('v019m25', 'Donnels', 18, 0, 10, 6), ('v019m25', 'Sarai', 18, 0, 6, 5), ('v019m25', 'Zenon', 18, 0, 4, 0), ('v019m26', 'Ash', 27, 1, 10, 6), ('v019m26', 'Hawking', 16, 0, 6, 6)]
+[0m
+[0m✱ [0mGrep ""eventType":"damage""[90m in docs/playtests/data · 100 matches[0m
+[0m✱ [0mGrep ""turn":23.*"eventType":"damage"|"eventType":"damage".*"turn":23"[90m in docs/playtests/data · 0 matches[0m
+[0m→ [0mRead decompiled/Interplanetary.PlayerDataManagement/PlayerBuildingHandler.cs[90m [limit=40, offset=140][0m
+[0m→ [0mRead decompiled/Interplanetary.GameEngine.Actionphase/ActionphaseDefenseActivationEvent.cs[90m [limit=38, offset=55][0m
+[0m
+[0m$ [0mpython -B -c "import json; fs=['v018m22','v018m23','v018m24','v019m25','v019m26']; rows=[(m,[json.loads(s) for s in open('docs/playtests/data/'+m+'-ai-decisions.jsonl',encoding='utf-8') if s.strip()]) for m in fs]; print([(m,n,[(d['t'],d['energyLeft']) for d in ds if not war.get(d['t'],False)]) for m,a in rows for n in sorted({r['ai'] for r in a if r.get('e')=='init' and r.get('smart')}) for war in [{r['t']:r['war'] for r in a if r.get('ai')==n and r.get('e')=='strategy'}] if any(war.values()) for start in [min(t for t,v in war.items() if v)] for ds in [[r for r in a if r.get('ai')==n and r.get('e')=='director' and r['t']>=start]] if any(not war.get(d['t'],False) for d in ds)])"
+[('v018m22', 'Eiai', [(18, 8), (19, 6)]), ('v018m24', 'Eddie', [(15, 350), (16, 0), (18, 14), (19, 1964)]), ('v019m26', 'Ash', [(19, 27)])]
+[0m
+[0m$ [0mpython -B -c "import json,collections; a=[json.loads(s) for s in open('docs/playtests/data/v019m25-human-telemetry.jsonl',encoding='utf-8') if s.strip()]; print(collections.Counter((r.get('turn'),r.get('phase'),(r.get('damage') or {}).get('kind')) for r in a if r.get('eventType')=='damage' and r.get('turn') in (30,31,32,33)))"
+Counter({(31, 'DisplayActionphase', 'building_hp'): 20, (32, 'DisplayActionphase', 'building_hp'): 1, (33, 'DisplayActionphase', 'building_hp'): 1})
+[0m
+[0m$ [0mpython -B -c "import json; fs=['v018m22','v018m23','v018m24','v019m25','v019m26']; rows=[(m,[json.loads(s) for s in open('docs/playtests/data/'+m+'-ai-decisions.jsonl',encoding='utf-8') if s.strip()]) for m in fs]; idle=[(m,n,d['t'],d['materialLeft'],d['aimedWeapons']) for m,a in rows for n in {r['ai'] for r in a if r.get('e')=='init' and r.get('smart')} for war in [{r['t']:r['war'] for r in a if r.get('ai')==n and r.get('e')=='strategy'}] if any(war.values()) for start in [min(t for t,v in war.items() if v)] for d in a if d.get('ai')==n and d.get('e')=='director' and d['t']>=start and d['energyLeft']>=10000]; print('n, material<2000, with >=200, at cap >=2000, below cap >=2000:',len(idle),sum(x[3]<2000 for x in idle),sum(200<=x[3]<2000 for x in idle),sum(x[3]>=2000 and x[4]>=30 for x in idle),sum(x[3]>=2000 and x[4]<30 for x in idle)); print('below-cap examples with 200<=material<2000:',[x for x in idle if 200<=x[3]<2000 and x[4]<30][:8])"
+n, material<2000, with >=200, at cap >=2000, below cap >=2000: 52 39 7 12 1
+below-cap examples with 200<=material<2000: [('v019m26', 'Ash', 24, 211, 21), ('v019m26', 'Ash', 25, 215, 22), ('v019m26', 'Ash', 28, 558, 23), ('v019m26', 'Ash', 29, 1719, 23)]
+[0m
+[0m✱ [0mGrep "void EndTurn\(|public void EndTurn\("[90m in decompiled/Interplanetary.PlayerDataManagement · 1 match[0m
+[0m→ [0mRead decompiled/Interplanetary.PlayerDataManagement/PlayerWeaponHandler.cs[90m [limit=75, offset=200][0m
+[0m→ [0mRead decompiled/Interplanetary.GameEngine/ActionphaseManager.cs[90m [limit=75, offset=280][0m
+[0m✱ [0mGrep "\.AddEnergy\(|\.SetEnergy\(|\.SpendEnergy\("[90m in decompiled/Interplanetary.GameEngine.Actionphase · 1 match[0m
+[0m→ [0mRead decompiled/Interplanetary.GameEngine.Actionphase/ActionphaseBuildingDamageEvent.cs[90m [limit=45, offset=20][0m

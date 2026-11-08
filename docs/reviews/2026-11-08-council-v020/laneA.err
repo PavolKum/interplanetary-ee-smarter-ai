@@ -1,0 +1,369 @@
+[0m
+> plan · openai/gpt-6.1-terra
+[0m
+[0m✱ [0mGlob "docs/reviews/*v0.19*.md"[90m 4 matches[0m
+[0m✱ [0mGlob "docs/playtests/*v0.19.0*"[90m 2 matches[0m
+[0m✱ [0mGlob "docs/playtests/data/v0{18,19}m2*"[90m 0 matches[0m
+[0m✱ [0mGlob "AI/Brain/*.cs"[90m 11 matches[0m
+[0m→ [0mRead AI/README.md
+[0m→ [0mRead docs/PROGRESS.md
+[0m
+[0m$ [0mgit --no-optional-locks rev-parse HEAD
+4d7c160161e0ea0037ef44474077bd0ff9666a31
+[0m
+[0m$ [0mgit --no-optional-locks status --short
+?? context-log_261107-205429-codex-68ad.md
+?? docs/original-mechanics.md
+?? docs/public-readiness-audit.md
+?? docs/reviews/2026-11-01-council-v016/laneA.err
+?? docs/reviews/2026-11-01-council-v016/laneB.err
+?? docs/reviews/2026-11-01-council-v016/laneC.err
+?? docs/reviews/2026-11-01-council-v016/laneC.md
+?? docs/reviews/2026-11-01-council-v016/signoff2A.err
+?? docs/reviews/2026-11-01-council-v016/signoff2B.err
+?? docs/reviews/2026-11-01-council-v016/signoffA.err
+?? docs/reviews/2026-11-01-council-v016/signoffB.err
+?? docs/reviews/2026-11-01-council-v016/xreviewA.err
+?? docs/reviews/2026-11-01-council-v016/xreviewB.err
+?? docs/reviews/2026-11-08-council-v020/
+?? docs/reviews/terra-ai-v0.10.attempt1.md
+?? docs/reviews/terra-ai-v0.16.1.attempt1.md
+?? docs/reviews/terra-ai-v0.17-final.diff
+?? docs/reviews/terra-ai-v0.6-diagnosis.attempt2.md
+?? docs/ruleset/
+[0m
+[0m→ [0mRead docs/playtests/2026-11-07-v0.18.0-match22.md
+[0m→ [0mRead docs/playtests/2026-11-07-v0.18.0-match23.md
+[0m→ [0mRead docs/playtests/2026-11-08-v0.18.0-match24.md
+[0m→ [0mRead docs/playtests/2026-11-08-v0.19.0-match25.md
+[0m→ [0mRead docs/playtests/2026-11-08-v0.19.0-match26.md
+[0m→ [0mRead docs/reviews/terra-ai-v0.19-disposition.md
+[0m→ [0mRead docs/reviews/terra-ai-v0.19.md
+[0m→ [0mRead docs/reviews/terra-ai-v0.19b.md
+[0m→ [0mRead docs/reviews/terra-ai-v0.19c.md
+[0m✱ [0mGlob "docs/playtests/data/v019m26-*"[90m 0 matches[0m
+[0m✱ [0mGrep "unfoundFacingDeg|PlacementFailures|placementFailures|abandoned|cover-search|shelter|PlacementStepCap|WeaponCap|MaxWeapons|WarFromTurn"[90m in AI · 81 matches[0m
+[0m→ [0mRead docs/playtests/data
+[0m✱ [0mGlob "decompiled/**/AIBuildingPlacement*.cs"[90m 4 matches[0m
+[0m✱ [0mGlob "decompiled/**/AIWeapon*.cs"[90m 8 matches[0m
+[0m✱ [0mGrep "warTurn|WarPhase|WarStart|peace|Facing|facing|Direction|TargetEnemy|ShelterStep|CoverStep|PlacementFinder"[90m in AI · 53 matches[0m
+[0m✱ [0mGlob "docs/ruleset/**/*"[90m 37 matches[0m
+[0m
+[0m$ [0mgit --no-optional-locks ls-files docs/playtests/data docs/ruleset
+(no output)
+[0m
+[0m→ [0mRead AI/DirectorPatches.cs[90m [offset=1, limit=430][0m
+[0m→ [0mRead AI/StrategyPatches.cs[90m [offset=1, limit=345][0m
+[0m→ [0mRead AI/DirectorPatches.cs[90m [offset=820, limit=145][0m
+[0m→ [0mRead AI/DirectorPatches.cs[90m [offset=1900, limit=100][0m
+[0m→ [0mRead AI/DirectorPatches.cs[90m [offset=1240, limit=155][0m
+[0m→ [0mRead AI/DirectorPatches.cs[90m [offset=2300, limit=410][0m
+[0m→ [0mRead AI/DirectorPatches.cs[90m [offset=2700, limit=345][0m
+[0m→ [0mRead AI/AimWatch.cs[90m [offset=120, limit=145][0m
+[0m→ [0mRead AI/Brain/Director.cs[90m [offset=1, limit=340][0m
+[0m→ [0mRead AI/Brain/Tempo.cs
+[0m→ [0mRead AI/Brain/Strategy.cs[90m [offset=320, limit=170][0m
+[0m→ [0mRead AI/Plugin.cs[90m [offset=450, limit=225][0m
+[0m→ [0mRead decompiled/Interplanetary.AI.Construction/AIBuildingPlacementFinder.cs
+[0m→ [0mRead decompiled/Interplanetary.AI.Construction/AIBuildingPlacementSearch.cs
+[0m→ [0mRead decompiled/Interplanetary.AI.Construction/AIBuildingPlacementResult.cs
+[0m→ [0mRead AI/DirectorPatches.cs[90m [offset=3034, limit=140][0m
+[0m→ [0mRead AI/Brain/Coverage.cs[90m [offset=320, limit=105][0m
+[0m✱ [0mGrep "class BuildingPlacementResult|TryPlaceBuilding\(|IsBuildingPlacementValid\(|WeaponShootingPosition|class AITrajectoryWeapon|Raycast.*Planet|BuildingWorldPosition"[90m in decompiled · 59 matches[0m
+[0m→ [0mRead docs/playtests/data/v018m23-codex-handoff.md[90m [limit=200][0m
+[0m✱ [0mGrep "ShelterCoveredSteps =|ShelterCityKeepOut =|AnchorRingShare =|AccuracyByLevel =|AimTargetShare|AiProcessorResources"[90m in AI · 13 matches[0m
+[0m→ [0mRead decompiled/Interplanetary.PlayerDataManagement/PlayerWeaponHandler.cs[90m [limit=75, offset=400][0m
+[0m→ [0mRead decompiled/Interplanetary.PlayerDataManagement/PlayerBuildingHandler.cs[90m [limit=70, offset=80][0m
+[0m→ [0mRead decompiled/Interplanetary.PlayerDataManagement/PlayerBuildingHandler.cs[90m [limit=125, offset=795][0m
+[0m→ [0mRead decompiled/Interplanetary.AI/AIConstruction.cs[90m [limit=55, offset=345][0m
+[0m→ [0mRead decompiled/Interplanetary.AI/AIWeaponTargeting.cs[90m [limit=180, offset=110][0m
+[0m→ [0mRead decompiled/Interplanetary.AI.Trajectories/AIGravityTrajectoryWeapon.cs
+[0m→ [0mRead decompiled/Interplanetary.AI.Trajectories/AITrajectoryWeapon.cs
+[0m→ [0mRead AI/Patches.cs[90m [limit=160, offset=100][0m
+[0m→ [0mRead AI/Plugin.cs[90m [limit=30, offset=680][0m
+[0m✱ [0mGrep "GetPointInWorldSpace|GetPointOnEquator|IsPositionFree|HasSpace|buildable_on|IsBuildableOn|Fallout|IsPositionOccupied|overlap|OnEquator|Equator|ClosestPointOn"[90m in decompiled · 100 matches[0m
+[0m→ [0mRead docs/playtests/data/v019m26-ai-decisions.jsonl[90m [limit=12][0m
+[0m✱ [0mGrep "^.*T1[6-9].*(Ash|Hawking)|^.*Ash.*T1[6-9]"[90m in docs/playtests/data · 18 matches[0m
+[0m✱ [0mGrep "^.*T1[4-9].*(Eddie|Doc)|^.*Eddie.*T1[4-9]"[90m in docs/playtests/data · 36 matches[0m
+[0m✱ [0mGrep ""e":"strategy","t":1[6-9],"ai":"Ash"|"e":"director","t":1[6-9],"ai":"Ash""[90m in docs/playtests/data · 8 matches[0m
+[0m✱ [0mGrep ""e":"strategy","t":1[4-9],"ai":"Eddie"|"e":"director","t":1[4-9],"ai":"Eddie""[90m in docs/playtests/data · 12 matches[0m
+[0m
+[0m$ [0mpython -c "import json,collections; p='docs/playtests/data/v019m26-ai-decisions.jsonl'; a=[json.loads(x) for x in open(p,encoding='utf-8')]; print(len(a),collections.Counter(x.get('e') for x in a)); print('AIs',collections.Counter(x.get('ai') for x in a))"
+1338 Counter({'fire-paid': 479, 'strategy': 78, 'economy': 78, 'aim-search': 78, 'director': 78, 'build': 78, 'research': 66, 'aim-budget': 62, 'cover-search': 55, 'strike': 52, 'project': 41, 'accuracy': 40, 'target': 40, 'fire': 40, 'original': 37, 'fire-plan': 30, 'init': 3, 'late-free-fire': 3})
+AIs Counter({'Ash': 743, 'Hawking': 557, 'Armiger': 38})
+[0m
+[0m→ [0mRead docs/playtests/data/v019m26-human-telemetry.jsonl[90m [limit=4][0m
+[0m
+[0m$ [0mpython -c "import json; p='docs/playtests/data/v019m26-ai-decisions.jsonl'; a=[json.loads(x) for x in open(p,encoding='utf8')]; print([(x['t'],x['recentDamage']) for x in a if x.get('e')=='economy' and x.get('ai')=='Ash' and 16<=x.get('t',0)<=20])"
+[(16, 342.105), (17, 865.274), (18, 605.691), (19, 528.984), (20, 641.189)]
+[0m
+[0m$ [0mpython -c "import json; p='docs/playtests/data/v018m24-ai-decisions.jsonl'; a=[json.loads(x) for x in open(p,encoding='utf8')]; print([(x['t'],x['recentDamage']) for x in a if x.get('e')=='economy' and x.get('ai')=='Eddie' and 13<=x.get('t',0)<=20])"
+[(13, 0), (14, 608.3), (15, 425.81), (16, 417.767), (17, 679.537), (18, 475.676), (19, 332.973), (20, 233.081)]
+[0m
+[0m$ [0mpython -c "import json; p='docs/playtests/data/v019m26-ai-decisions.jsonl'; a=[json.loads(x) for x in open(p,encoding='utf8')]; print(*[(x['t'],x['ai'],x['outcome'],x['steps'],x['tries'],x['invalid'],x['unplaced'],x['notClosing'],x['noAnchor'],x['deficient'],x['anchors']) for x in a if x.get('e')=='cover-search'][:15],sep='\n')"
+(17, 'Ash', 'placed', 1, 12, 0, 8, 0, 3, 5, 52)
+(17, 'Hawking', 'placed', 1, 12, 0, 7, 1, 2, 5, 52)
+(17, 'Ash', 'placed', 3, 36, 2, 23, 2, 8, 5, 51)
+(17, 'Hawking', 'placed', 2, 24, 2, 15, 3, 2, 5, 51)
+(17, 'Ash', 'placed', 1, 12, 0, 5, 0, 6, 4, 50)
+(17, 'Hawking', 'placed', 1, 12, 1, 9, 1, 0, 5, 50)
+(17, 'Ash', 'placed', 3, 36, 2, 11, 3, 19, 4, 49)
+(17, 'Hawking', 'placed', 1, 12, 0, 8, 2, 1, 5, 50)
+(17, 'Ash', 'placed', 5, 60, 5, 32, 1, 21, 4, 49)
+(17, 'Hawking', 'placed', 1, 12, 0, 11, 0, 0, 4, 50)
+(17, 'Ash', 'placed', 30, 360, 29, 189, 7, 134, 4, 48)
+(17, 'Ash', 'gave-up', 151, 1800, 191, 861, 6, 742, 3, 47)
+(17, 'Ash', 'gave-up', 151, 1800, 179, 849, 8, 764, 3, 47)
+(17, 'Ash', 'gave-up', 151, 1800, 186, 873, 8, 733, 3, 47)
+(17, 'Ash', 'gave-up', 151, 1800, 189, 834, 3, 774, 3, 47)
+[0m
+[0m✱ [0mGrep ""e":"init""[90m in docs/playtests/data · 8 matches[0m
+[0m✱ [0mGrep ""e":"director","t":3[345],"ai":"Ash"|"e":"director","t":2[345],"ai":"Hawking""[90m in docs/playtests/data · 6 matches[0m
+[0m
+[0m$ [0mpython -c "import json; p='docs/playtests/data/v019m26-ai-decisions.jsonl'; a=[json.loads(x) for x in open(p,encoding='utf8')]; print(*[(x['t'],x['ai'],x['aimedWeapons'],x['slotsAtStart'],x['slotsLeft'],x['energyLeft'],x['materialStart'],x['materialLeft'],x['placementFailures'],{k:v for k,v in x['queued'].items() if 'weapon' in k or 'abandoned' in k}) for x in a if x.get('e')=='director' and x.get('ai') in ('Ash','Hawking') and x.get('t') in (21,22,23,26,30,33,34,35,36,37,38,39)],sep='\n')"
+(21, 'Ash', 14, 80, 64, 201, 6942, 42, {'bui_IonDefense': 2, 'bui_KineticDefense': 2, 'bui_Railgun': 2}, {'abandoned:bui_IonDefense': 2, 'weapon:bui_Railgun': 8, 'weapon:bui_Missile': 3, 'abandoned:bui_KineticDefense': 2, 'abandoned:bui_Railgun': 2})
+(21, 'Hawking', 29, 88, 65, 14503, 11026, 26, {'bui_Railgun': 1}, {'weapon:bui_Railgun': 20, 'weaponupgrade:upg_RailgunBuildingDamage1': 1, 'abandoned:bui_Railgun': 1})
+(22, 'Ash', 19, 75, 64, 41, 7735, 3285, {'bui_IonDefense': 1}, {'weapon:bui_Railgun': 2, 'weapon:bui_Missile': 3, 'weaponupgrade:upg_RailgunEnergyCostDown1': 1, 'abandoned:bui_IonDefense': 1})
+(22, 'Hawking', 30, 85, 80, 39586, 3715, 15, {}, {'weapon:bui_Missile': 1})
+(23, 'Ash', 20, 67, 64, 1026, 10978, 3, {'bui_IonDefense': 1, 'bui_KineticDefense': 3, 'bui_Railgun': 3}, {'weapon:bui_Railgun': 4, 'weaponupgrade:upg_RailgunEnergyCostDown1': 6, 'abandoned:bui_IonDefense': 1, 'abandoned:bui_KineticDefense': 3, 'abandoned:bui_Railgun': 3})
+(23, 'Hawking', 30, 83, 76, 38344, 4203, 53, {}, {'weaponupgrade:upg_RailgunProjectileAmount2': 3})
+(26, 'Ash', 22, 66, 55, 14716, 7566, 66, {'bui_IonDefense': 2, 'bui_KineticDefense': 2, 'bui_TelescopeArray': 1, 'bui_Mine': 1, 'bui_DataSecurityHub': 1}, {'abandoned:bui_IonDefense': 2, 'abandoned:bui_KineticDefense': 2, 'abandoned:bui_TelescopeArray': 1, 'abandoned:bui_Mine': 1, 'abandoned:bui_DataSecurityHub': 1})
+(26, 'Hawking', 30, 74, 68, 34312, 2679, 54, {'bui_TelescopeArray': 1}, {'abandoned:bui_TelescopeArray': 1})
+(30, 'Ash', 23, 62, 60, 1079, 15449, 10624, {'bui_IonDefense': 1, 'bui_DataSecurityHub': 1, 'bui_Railgun': 2}, {'weapon:bui_Railgun': 2, 'abandoned:bui_IonDefense': 1, 'abandoned:bui_DataSecurityHub': 1, 'abandoned:bui_Railgun': 2})
+(30, 'Hawking', 25, 98, 82, 1135, 8877, 27, {'bui_IonDefense': 3}, {'abandoned:bui_IonDefense': 3, 'weapon:bui_Coilcannon': 6, 'weapon:bui_Railgun': 1})
+(33, 'Hawking', 16, 62, 62, 315, 1512, 37, {'bui_SolarPlant': 2}, {'abandoned:bui_SolarPlant': 2})
+(33, 'Ash', 30, 125, 118, 197, 25714, 16714, {'bui_NuclearPlant': 2}, {'weapon:bui_Coilcannon': 1, 'weaponupgrade:upg_CoilcannonPopulationDamage1': 6, 'abandoned:bui_NuclearPlant': 2})
+(34, 'Ash', 30, 143, 97, 2599, 25546, 2146, {'bui_OffshoreMine': 8, 'bui_Mine': 8, 'bui_SolarPlant': 3, 'bui_NuclearPlant': 2}, {'weaponupgrade:upg_CoilcannonPopulationDamage1': 1, 'weaponupgrade:upg_CoilcannonAllDamage1': 5, 'abandoned:bui_OffshoreMine': 8, 'abandoned:bui_Mine': 8, 'abandoned:bui_SolarPlant': 3, 'abandoned:bui_NuclearPlant': 2})
+(34, 'Hawking', 16, 67, 65, 1545, 1339, 14, {}, {})
+(35, 'Ash', 30, 143, 139, 36800, 15123, 13423, {}, {'weaponupgrade:upg_CoilcannonAllDamage1': 2})
+(35, 'Hawking', 16, 60, 60, 2626, 1718, 43, {}, {})
+(36, 'Ash', 30, 140, 136, 33395, 28025, 15000, {}, {})
+(37, 'Ash', 30, 137, 135, 32059, 25364, 20014, {'bui_DataSecurityHub': 1, 'bui_Mine': 2}, {'abandoned:bui_DataSecurityHub': 1, 'abandoned:bui_Mine': 2})
+(38, 'Ash', 27, 134, 132, 13250, 32321, 30271, {'bui_ShieldDefense': 1, 'bui_SolarPlant': 2, 'bui_NuclearPlant': 3, 'bui_DataSecurityHub': 1, 'bui_Coilcannon': 3, 'bui_Railgun': 3}, {'weapon:bui_Coilcannon': 3, 'abandoned:bui_ShieldDefense': 1, 'abandoned:bui_SolarPlant': 2, 'abandoned:bui_NuclearPlant': 3, 'abandoned:bui_DataSecurityHub': 1, 'abandoned:bui_Coilcannon': 3, 'weapon:bui_Railgun': 3, 'abandoned:bui_Railgun': 3})
+(39, 'Ash', 28, 115, 110, 9341, 38151, 34201, {'bui_IonDefense': 1, 'bui_NuclearPlant': 1, 'bui_Coilcannon': 1, 'bui_Railgun': 2}, {'weapon:bui_Coilcannon': 2, 'weapon:bui_Railgun': 2, 'abandoned:bui_IonDefense': 1, 'abandoned:bui_NuclearPlant': 1, 'abandoned:bui_Coilcannon': 1, 'abandoned:bui_Railgun': 2})
+[0m
+[0m✱ [0mGrep ""e":"cover-search","t":17,"ai":"Ash".*"outcome":"gave-up"|"e":"economy","t":1[789],"ai":"Ash""[90m in docs/playtests/data · 7 matches[0m
+[0m✱ [0mGrep ""e":"economy","t":1[45789],"ai":"Eddie""[90m in docs/playtests/data · 5 matches[0m
+[0m
+[0m$ [0mpython -c "import json,collections; ps=['v018m22','v018m23','v018m24','v019m25','v019m26']; allowed={'v018m22':{'Eiai'},'v018m23':{'Beastie','Arc'},'v018m24':{'Eddie','Doc'},'v019m25':{'Zenon','Donnels','Sarai'},'v019m26':{'Ash','Hawking'}}; data={p:[x for x in map(json.loads,open('docs/playtests/data/'+p+'-ai-decisions.jsonl',encoding='utf8')) if x.get('ai') in allowed[p] and x.get('e')=='cover-search'] for p in ps}; print(*[(p,len(data[p]),dict(collections.Counter(x['outcome'] for x in data[p])),dict(sum((collections.Counter({k:x.get(k,0) for k in ('tries','invalid','unplaced','notClosing','noAnchor')}) for x in data[p] if x['outcome']=='gave-up'),collections.Counter()))) for p in ps],sep='\n')"
+('v018m22', 27, {'placed': 12, 'gave-up': 15}, {'tries': 27000, 'unplaced': 20142, 'notClosing': 2955, 'noAnchor': 2481, 'invalid': 1422})
+('v018m23', 51, {'placed': 19, 'gave-up': 30, 'no-deficit': 2}, {'tries': 54000, 'unplaced': 51845, 'noAnchor': 1770, 'notClosing': 247, 'invalid': 138})
+('v018m24', 46, {'placed': 20, 'gave-up': 26}, {'tries': 46800, 'unplaced': 27228, 'noAnchor': 19543, 'notClosing': 21, 'invalid': 8})
+('v019m25', 56, {'placed': 34, 'no-deficit': 4, 'gave-up': 18}, {'tries': 32400, 'invalid': 110, 'unplaced': 32103, 'notClosing': 148, 'noAnchor': 39})
+('v019m26', 55, {'placed': 23, 'gave-up': 28, 'no-deficit': 4}, {'tries': 50400, 'invalid': 1391, 'unplaced': 23645, 'notClosing': 48, 'noAnchor': 25316})
+[0m
+[0m$ [0mpython -c "import json,collections; ps=['v018m22','v018m23','v018m24','v019m25','v019m26']; allowed={'v018m22':{'Eiai'},'v018m23':{'Beastie','Arc'},'v018m24':{'Eddie','Doc'},'v019m25':{'Zenon','Donnels','Sarai'},'v019m26':{'Ash','Hawking'}}; data={p:[x for x in map(json.loads,open('docs/playtests/data/'+p+'-ai-decisions.jsonl',encoding='utf8')) if x.get('ai') in allowed[p] and x.get('e')=='director'] for p in ps}; print(*[(p,len(data[p]),sum(sum(x.get('placementFailures',{}).values()) for x in data[p]),dict(sum((collections.Counter(x.get('placementFailures',{})) for x in data[p]),collections.Counter()))) for p in ps],sep='\n')"
+('v018m22', 36, 24, {'bui_IonDefense': 15, 'bui_Missile': 1, 'bui_Railgun': 5, 'bui_DataSecurityHub': 1, 'bui_SolarPlant': 1, 'bui_NuclearPlant': 1})
+('v018m23', 69, 64, {'bui_IonDefense': 32, 'bui_TelescopeArray': 5, 'bui_SolarPlant': 14, 'bui_NuclearPlant': 13})
+('v018m24', 67, 78, {'bui_IonDefense': 26, 'bui_KineticDefense': 6, 'bui_Railgun': 8, 'bui_Mine': 1, 'bui_TelescopeArray': 6, 'bui_SolarPlant': 17, 'bui_NuclearPlant': 14})
+('v019m25', 111, 107, {'bui_IonDefense': 22, 'bui_NuclearPlant': 52, 'bui_SolarPlant': 32, 'bui_Coilcannon': 1})
+('v019m26', 78, 229, {'bui_IonDefense': 41, 'bui_KineticDefense': 25, 'bui_Railgun': 31, 'bui_Mine': 16, 'bui_Missile': 7, 'bui_TelescopeArray': 3, 'bui_DataSecurityHub': 8, 'bui_SolarPlant': 27, 'bui_NuclearPlant': 45, 'bui_OffshoreMine': 11, 'bui_Coilcannon': 11, 'bui_ShieldDefense': 4})
+[0m
+[0m→ [0mRead decompiled/Interplanetary.PlayerDataManagement/BuildingPlacementResult.cs
+[0m
+[0m$ [0mpython -c "import json,collections; p='docs/playtests/data/v019m26-ai-decisions.jsonl'; a=[x for x in map(json.loads,open(p,encoding='utf8')) if x.get('e')=='economy' and x.get('ai')=='Ash' and x.get('t') in range(32,40)]; print(*[(x['t'],x['energyPerTurn'],x['materialPerTurn'],x['material'],x['buildings']) for x in a],sep='\n')"
+(32, 13853, 14530, 29284, {'city': 4, 'SolarPlant': 4, 'Mine': 13, 'FloatingPlant': 50, 'OffshoreMine': 55, 'KineticDefense': 31, 'TelescopeArray': 21, 'IonDefense': 10, 'Railgun': 15, 'Missile': 8, 'DataSecurityHub': 5})
+(33, 19378, 14730, 28189, {'city': 4, 'SolarPlant': 4, 'Mine': 13, 'FloatingPlant': 56, 'OffshoreMine': 55, 'KineticDefense': 33, 'TelescopeArray': 21, 'IonDefense': 12, 'Railgun': 15, 'Missile': 8, 'DataSecurityHub': 6, 'Coilcannon': 6})
+(34, 28149, 13257, 29971, {'city': 4, 'SolarPlant': 4, 'Mine': 13, 'FloatingPlant': 64, 'OffshoreMine': 55, 'KineticDefense': 38, 'TelescopeArray': 21, 'IonDefense': 12, 'Railgun': 15, 'Missile': 8, 'DataSecurityHub': 7, 'Coilcannon': 7})
+(35, 52130, 14602, 16748, {'city': 4, 'SolarPlant': 5, 'Mine': 14, 'FloatingPlant': 64, 'OffshoreMine': 95, 'KineticDefense': 38, 'TelescopeArray': 21, 'IonDefense': 12, 'Railgun': 15, 'Missile': 8, 'DataSecurityHub': 8, 'Coilcannon': 7, 'ShieldDefense': 4})
+(36, 52075, 14602, 28025, {'city': 4, 'SolarPlant': 5, 'Mine': 14, 'FloatingPlant': 64, 'OffshoreMine': 95, 'KineticDefense': 38, 'TelescopeArray': 21, 'IonDefense': 12, 'Railgun': 15, 'Missile': 8, 'DataSecurityHub': 9, 'Coilcannon': 7, 'ShieldDefense': 7})
+(37, 40016, 18654, 31789, {'city': 4, 'SolarPlant': 5, 'Mine': 14, 'FloatingPlant': 64, 'OffshoreMine': 95, 'KineticDefense': 40, 'TelescopeArray': 21, 'IonDefense': 12, 'Railgun': 15, 'Missile': 8, 'DataSecurityHub': 10, 'Coilcannon': 7, 'ShieldDefense': 8})
+(38, 38833, 17757, 37771, {'city': 4, 'SolarPlant': 5, 'Mine': 13, 'FloatingPlant': 62, 'OffshoreMine': 85, 'KineticDefense': 39, 'TelescopeArray': 21, 'IonDefense': 12, 'Railgun': 14, 'Missile': 7, 'DataSecurityHub': 10, 'Coilcannon': 6, 'ShieldDefense': 7})
+(39, 33901, 13305, 43576, {'city': 2, 'SolarPlant': 4, 'Mine': 12, 'FloatingPlant': 57, 'OffshoreMine': 67, 'KineticDefense': 38, 'TelescopeArray': 21, 'IonDefense': 12, 'Railgun': 14, 'Missile': 7, 'DataSecurityHub': 10, 'Coilcannon': 6, 'ShieldDefense': 8})
+[0m
+[0m$ [0mpython -c "import json,collections; ps=['v018m22','v018m23','v018m24','v019m25','v019m26']; allowed={'v018m22':{'Eiai'},'v018m23':{'Beastie','Arc'},'v018m24':{'Eddie','Doc'},'v019m25':{'Zenon','Donnels','Sarai'},'v019m26':{'Ash','Hawking'}}; data={p:[x for x in map(json.loads,open('docs/playtests/data/'+p+'-ai-decisions.jsonl',encoding='utf8')) if x.get('ai') in allowed[p] and x.get('e')=='cover-search' and x['outcome']=='gave-up'] for p in ps}; print(*[(p,[(ai,len([x for x in data[p] if x['ai']==ai]),sum(x['tries'] for x in data[p] if x['ai']==ai),sum(x['noAnchor'] for x in data[p] if x['ai']==ai),sum(x['unplaced'] for x in data[p] if x['ai']==ai)) for ai in sorted(allowed[p])]) for p in ps],sep='\n')"
+('v018m22', [('Eiai', 15, 27000, 2481, 20142)])
+('v018m23', [('Arc', 25, 45000, 0, 44697), ('Beastie', 5, 9000, 1770, 7148)])
+('v018m24', [('Doc', 14, 25200, 780, 24391), ('Eddie', 12, 21600, 18763, 2837)])
+('v019m25', [('Donnels', 7, 12600, 0, 12533), ('Sarai', 0, 0, 0, 0), ('Zenon', 11, 19800, 39, 19570)])
+('v019m26', [('Ash', 25, 45000, 25316, 18412), ('Hawking', 3, 5400, 0, 5233)])
+[0m
+[0m✱ [0mGrep "class CelestialBody|Orbit|Rotate|rotation|Rotation|RotateAround|transform.position"[90m in decompiled/Interplanetary.Prefabs · 27 matches[0m
+[0m✱ [0mGrep ""e":"aim-search","t":2[12],"ai":"Hawking"|"e":"aim-search","t":2[34],"ai":"Ash""[90m in docs/playtests/data · 4 matches[0m
+[0m✱ [0mGrep "Planet.*Rotate|transform.Rotate|Planet.*Orbit|UpdateOrbit|OrbitMovement|SolarSystem.*Turn|Celestial.*Update"[90m in decompiled/Interplanetary.GameEngine · 3 matches[0m
+[0m
+[0m$ [0mpython -c "import json,collections; p='docs/playtests/data/v019m26-ai-decisions.jsonl'; a=[x for x in map(json.loads,open(p,encoding='utf8')) if x.get('e')=='director']; print([(ai,sum(sum(x['placementFailures'].values()) for x in a if x['ai']==ai),sum(x['refunds'] for x in a if x['ai']==ai),sum(1 for x in a if x['ai']==ai)) for ai in ('Ash','Hawking')])"
+[('Ash', 203, 203, 43), ('Hawking', 26, 26, 35)]
+[0m
+[0m$ [0mpython -c "import json,collections; p='docs/playtests/data/v019m26-ai-decisions.jsonl'; a=[x for x in map(json.loads,open(p,encoding='utf8')) if x.get('e')=='build']; print(*[(x['t'],x['ai'],x) for x in a if x['t']==34 and x['ai']=='Ash'],sep='\n')"
+(34, 'Ash', {'e': 'build', 't': 34, 'ai': 'Ash', 'growth': False, 'picks': [0, 0, 0, 0, 0], 'queued': [0, 0, 0, 0, 0], 'superweaponBought': False, 'enemyWeapons': {'wea_Railgun': 37, 'wea_Coilcannon': 7, 'wea_Missile': 5, 'wea_MIRV': 3}, 'visibleWeapons': {'wea_Missile': 2, 'wea_Railgun': 11, 'wea_Coilcannon': 4}, 'ownDefenses': {'bui_KineticDefense': 38, 'bui_IonDefense': 12}, 'defensesQueued': {'bui_ShieldDefense': 4}})
+[0m
+[0m$ [0mpython -c "import json,collections; p='docs/playtests/data/v019m26-ai-decisions.jsonl'; a=[x for x in map(json.loads,open(p,encoding='utf8')) if x.get('e')=='cover-search']; print(*[(ai,dict(collections.Counter(x['outcome'] for x in a if x['ai']==ai))) for ai in ('Ash','Hawking')],sep='\n')"
+('Ash', {'placed': 10, 'gave-up': 25, 'no-deficit': 1})
+('Hawking', {'placed': 13, 'gave-up': 3, 'no-deficit': 3})
+[0m
+[0m✱ [0mGrep "class Orbit|SetOrbit|AdvanceOrbit|orbit\.Update|RotatePlanet|RotationSpeed|rotationSpeed|RotationPerTurn"[90m in decompiled · 30 matches[0m
+[0m→ [0mRead AI/Brain/TargetPlanner.cs[90m [limit=215, offset=1][0m
+[0m→ [0mRead AI/Brain/Strategy.cs[90m [limit=125, offset=210][0m
+[0m✱ [0mGrep "OrbitalRotation|Rotation =|\.Rotation|\.Position|FixedDeltaTime|simulate|Simulate"[90m in decompiled/Interplanetary.Solarsystem · 33 matches[0m
+[0m✱ [0mGrep ""e":"economy","t":3[356],"ai":"Ash"|"e":"economy","t":2[234],"ai":"Hawking""[90m in docs/playtests/data · 6 matches[0m
+[0m→ [0mRead decompiled/Interplanetary.Solarsystem/SolarSystemSimulator.cs[90m [limit=100, offset=70][0m
+[0m✱ [0mGrep "TurnStartInit|Energy = EnergyProduction|EnergyProductionPerTurn"[90m in decompiled/Interplanetary.PlayerDataManagement · 23 matches[0m
+[0m
+[0m$ [0mpython -c "import json; p='docs/playtests/data/v019m26-ai-decisions.jsonl'; a=[(i,x) for i,x in enumerate(map(json.loads,open(p,encoding='utf8')),1) if x.get('ai')=='Ash' and x.get('e')=='director' and x.get('t') in (34,35,36,37,38)]; print(*[(i,x['t'],x['queued'],x['placementFailures']) for i,x in a],sep='\n')"
+(1078, 34, {'defense:bui_ShieldDefense': 4, 'upgrade:upg_KineticEnergyCostDown1': 4, 'counterintel:bui_DataSecurityHub': 1, 'upgrade:upg_CoilcannonPopulationDamage1': 1, 'weaponupgrade:upg_CoilcannonPopulationDamage1': 1, 'upgrade:upg_CoilcannonAllDamage1': 5, 'weaponupgrade:upg_CoilcannonAllDamage1': 5, 'project:pro_EnergyYieldLongGlobal1': 2, 'upgrade:upg_MineMaterialYield2': 2, 'upgrade:upg_FloatingEnergyYield2': 8, 'upgrade:upg_FloatingEnergyYield1': 8, 'project:pro_ScienceYieldShortGlobal1': 1, 'material:bui_OffshoreMine': 48, 'abandoned:bui_OffshoreMine': 8, 'material:bui_Mine': 9, 'abandoned:bui_Mine': 8, 'power:bui_SolarPlant': 4, 'power:bui_NuclearPlant': 2, 'abandoned:bui_SolarPlant': 3, 'abandoned:bui_NuclearPlant': 2}, {'bui_OffshoreMine': 8, 'bui_Mine': 8, 'bui_SolarPlant': 3, 'bui_NuclearPlant': 2})
+(1116, 35, {'defense:bui_ShieldDefense': 3, 'counterintel:bui_DataSecurityHub': 1, 'upgrade:upg_CoilcannonAllDamage1': 2, 'weaponupgrade:upg_CoilcannonAllDamage1': 2}, {})
+(1153, 36, {'defense:bui_ShieldDefense': 1, 'defense:bui_KineticDefense': 2, 'upgrade:upg_KineticEnergyCostDown1': 1, 'upgrade:upg_KineticRange1': 3, 'counterintel:bui_DataSecurityHub': 1, 'upgrade:upg_OffshoreEfficiency1': 40, 'upgrade:upg_OffshoreMaterialYield2': 24, 'upgrade:upg_DataScienceYield1': 9, 'project:pro_ScienceYieldShortGlobal1': 1, 'upgrade:upg_MineEfficiency1': 1}, {})
+(1190, 37, {'upgrade:upg_KineticEnergyCostDown1': 2, 'upgrade:upg_KineticRange1': 2, 'counterintel:bui_DataSecurityHub': 1, 'upgrade:upg_DataScienceYield1': 1, 'upgrade:upg_OffshoreMaterialYield2': 16, 'abandoned:bui_DataSecurityHub': 1, 'upgrade:upg_MineMaterialYield2': 1, 'material:bui_OffshoreMine': 2, 'material:bui_Mine': 2, 'abandoned:bui_Mine': 2}, {'bui_DataSecurityHub': 1, 'bui_Mine': 2})
+(1223, 38, {'power:bui_SolarPlant': 2, 'power:bui_NuclearPlant': 3, 'defense:bui_ShieldDefense': 2, 'upgrade:upg_KineticRange1': 2, 'counterintel:bui_DataSecurityHub': 1, 'weapon:bui_Coilcannon': 3, 'upgrade:upg_OffshoreEfficiency1': 2, 'abandoned:bui_ShieldDefense': 1, 'defense:bui_KineticDefense': 1, 'abandoned:bui_SolarPlant': 2, 'abandoned:bui_NuclearPlant': 3, 'power:bui_FloatingPlant': 3, 'abandoned:bui_DataSecurityHub': 1, 'abandoned:bui_Coilcannon': 3, 'weapon:bui_Railgun': 3, 'abandoned:bui_Railgun': 3}, {'bui_ShieldDefense': 1, 'bui_SolarPlant': 2, 'bui_NuclearPlant': 3, 'bui_DataSecurityHub': 1, 'bui_Coilcannon': 3, 'bui_Railgun': 3})
+[0m
+[0m→ [0mRead AI/Brain/Memory.cs[90m [limit=95, offset=245][0m
+[0m
+[0m$ [0mpython -c "import json,collections; ps=['v018m22','v018m23','v018m24','v019m25','v019m26']; allowed={'v018m22':{'Eiai'},'v018m23':{'Beastie','Arc'},'v018m24':{'Eddie','Doc'},'v019m25':{'Zenon','Donnels','Sarai'},'v019m26':{'Ash','Hawking'}}; data={p:[x for x in map(json.loads,open('docs/playtests/data/'+p+'-ai-decisions.jsonl',encoding='utf8')) if x.get('ai') in allowed[p] and x.get('e')=='director'] for p in ps}; print(*[(p,dict(sum((collections.Counter({k:v for k,v in x['queued'].items() if k.startswith(('weapon:bui_Railgun','weapon:bui_Coilcannon','power:bui_SolarPlant','power:bui_NuclearPlant','power:bui_FloatingPlant','defense:bui_IonDefense','abandoned:bui_Railgun','abandoned:bui_Coilcannon','abandoned:bui_SolarPlant','abandoned:bui_NuclearPlant','abandoned:bui_IonDefense'))}) for x in data[p]),collections.Counter()))) for p in ps],sep='\n')"
+('v018m22', {'power:bui_SolarPlant': 30, 'power:bui_FloatingPlant': 20, 'weapon:bui_Railgun': 28, 'abandoned:bui_IonDefense': 15, 'abandoned:bui_Railgun': 5, 'defense:bui_IonDefense': 1, 'abandoned:bui_SolarPlant': 1, 'power:bui_NuclearPlant': 1, 'abandoned:bui_NuclearPlant': 1})
+('v018m23', {'power:bui_SolarPlant': 51, 'power:bui_FloatingPlant': 72, 'weapon:bui_Railgun': 53, 'abandoned:bui_IonDefense': 32, 'defense:bui_IonDefense': 8, 'power:bui_NuclearPlant': 36, 'abandoned:bui_SolarPlant': 14, 'abandoned:bui_NuclearPlant': 13})
+('v018m24', {'power:bui_SolarPlant': 53, 'power:bui_FloatingPlant': 75, 'weapon:bui_Railgun': 61, 'abandoned:bui_IonDefense': 26, 'abandoned:bui_Railgun': 8, 'abandoned:bui_SolarPlant': 17, 'power:bui_NuclearPlant': 19, 'abandoned:bui_NuclearPlant': 14, 'weapon:bui_Coilcannon': 6})
+('v019m25', {'power:bui_SolarPlant': 74, 'power:bui_FloatingPlant': 168, 'defense:bui_IonDefense': 38, 'abandoned:bui_IonDefense': 22, 'power:bui_NuclearPlant': 108, 'weapon:bui_Railgun': 93, 'abandoned:bui_NuclearPlant': 52, 'abandoned:bui_SolarPlant': 32, 'weapon:bui_Coilcannon': 14, 'abandoned:bui_Coilcannon': 1})
+('v019m26', {'power:bui_SolarPlant': 57, 'power:bui_FloatingPlant': 132, 'abandoned:bui_IonDefense': 41, 'weapon:bui_Railgun': 71, 'abandoned:bui_Railgun': 31, 'defense:bui_IonDefense': 18, 'abandoned:bui_SolarPlant': 27, 'power:bui_NuclearPlant': 50, 'abandoned:bui_NuclearPlant': 45, 'weapon:bui_Coilcannon': 25, 'abandoned:bui_Coilcannon': 11})
+[0m
+[0m✱ [0mGrep "IsAimedWeapon\(|TryPower|PickLandPlant|PickWaterPlant|PlantsForUnpowered|power:bui|d.PlantsQueued|Affordable\("[90m in AI · 24 matches[0m
+[0m→ [0mRead AI/DirectorPatches.cs[90m [limit=180, offset=700][0m
+[0m
+[0m$ [0mpython -c "import json,collections; p='docs/playtests/data/v019m26-ai-decisions.jsonl'; a=[x for x in map(json.loads,open(p,encoding='utf8')) if x.get('e')=='director' and x.get('ai') in ('Ash','Hawking')]; print(*[(ai,dict(sum((collections.Counter({k:v for k,v in x['queued'].items() if k.startswith(('weapon:bui_Railgun','weapon:bui_Coilcannon','power:bui_SolarPlant','power:bui_NuclearPlant','power:bui_FloatingPlant','defense:bui_IonDefense','abandoned:bui_Railgun','abandoned:bui_Coilcannon','abandoned:bui_SolarPlant','abandoned:bui_NuclearPlant','abandoned:bui_IonDefense'))}) for x in a if x['ai']==ai),collections.Counter()))) for ai in ('Ash','Hawking')],sep='\n')"
+('Ash', {'power:bui_SolarPlant': 26, 'power:bui_FloatingPlant': 84, 'abandoned:bui_IonDefense': 35, 'weapon:bui_Railgun': 45, 'abandoned:bui_Railgun': 30, 'defense:bui_IonDefense': 13, 'weapon:bui_Coilcannon': 19, 'power:bui_NuclearPlant': 41, 'abandoned:bui_Coilcannon': 11, 'abandoned:bui_NuclearPlant': 38, 'abandoned:bui_SolarPlant': 16})
+('Hawking', {'power:bui_SolarPlant': 31, 'power:bui_FloatingPlant': 48, 'weapon:bui_Railgun': 26, 'abandoned:bui_Railgun': 1, 'defense:bui_IonDefense': 5, 'abandoned:bui_IonDefense': 6, 'abandoned:bui_SolarPlant': 11, 'power:bui_NuclearPlant': 9, 'abandoned:bui_NuclearPlant': 7, 'weapon:bui_Coilcannon': 6})
+[0m
+[0m✱ [0mGrep "Allotted|OnBuildingPlacement|StopAllSearches|AddBuildingToQueue|EndTurn"[90m in decompiled · 11 matches[0m
+[0m→ [0mRead decompiled/Interplanetary.AI/AIConstructionQueue.cs[90m [limit=200][0m
+[0m✱ [0mGrep "ConnectorRange|Max\(|Radius|TryConnect|Distance"[90m in decompiled · 3 matches[0m
+[0m→ [0mRead docs/ruleset/embedded/enhanced/BuildingsData.csv[90m [limit=8][0m
+[0m→ [0mRead docs/ruleset/embedded/enhanced/WeaponsData.csv[90m [limit=12][0m
+[0m✱ [0mGrep "bui_(Railgun|Coilcannon|IonDefense|SolarPlant|NuclearPlant|FloatingPlant)"[90m in docs/ruleset/embedded/enhanced · 3 matches[0m
+[0m→ [0mRead decompiled/Interplanetary.PlayerDataManagement/PlayerPowerGridHandler.cs[90m [limit=50, offset=40][0m
+[0m✱ [0mGrep ""e":"strategy","t":2[1-6],"ai":"Ash""[90m in docs/playtests/data · 6 matches[0m
+[0m→ [0mRead AI/DirectorPatches.cs[90m [limit=38, offset=1105][0m
+[0m→ [0mRead decompiled/Interplanetary.PlayerDataManagement/PlayerResourceHandler.cs[90m [limit=35, offset=145][0m
+[0m✱ [0mGrep ""e":"aim-search","t":23,"ai":"(Zenon|Sarai)""[90m in docs/playtests/data · 2 matches[0m
+[0m→ [0mRead AI/DirectorPatches.cs[90m [limit=230, offset=545][0m
+[0m→ [0mRead AI/DirectorPatches.cs[90m [limit=90, offset=1360][0m
+[0m→ [0mRead AI/DirectorPatches.cs[90m [limit=30, offset=2240][0m
+[0m→ [0mRead docs/ruleset/embedded/enhanced/BuildingsData.csv[90m [limit=30, offset=9][0m
+[0m✱ [0mGrep "unpowered-plant|Reopened|FailedThisTurn\.Clear|FailedThisTurn\.Remove|FailedThisTurn\.Add"[90m in AI · 29 matches[0m
+[0m✱ [0mGrep "ResetMatchMemory|LastTurnSeen|DirectorPatches.Reset"[90m in AI · 7 matches[0m
+[0m✱ [0mGrep "FreeFireMinPassing|HumanFirstShare|HumanFirstReach|GuidedAccuracy|Research.*Plan =|ResearchPlan =|AimingWindowMax"[90m in AI · 30 matches[0m
+[0m✱ [0mGrep "FreeFireMinPassing|ResearchPlan|ResearchOrder|tec_OrbitalAssembly"[90m in AI · 63 matches[0m
+[0m✱ [0mGrep ""e":"aim-budget","t":2[234],"ai":"Hawking"|"e":"aim-budget","t":3[345],"ai":"Ash""[90m in docs/playtests/data · 6 matches[0m
+[0m✱ [0mGrep ""e":"research","t":1[6-9],"ai":"(Ash|Hawking)""[90m in docs/playtests/data · 9 matches[0m
+[0m→ [0mRead decompiled/Interplanetary.AI/AIResources.cs[90m [limit=100][0m
+[0m✱ [0mGrep "EnergyUpkeep|MaterialUpkeep|BeginTurn|Weapons"[90m in decompiled · 7 matches[0m
+[0m→ [0mRead AI/Plugin.cs[90m [limit=20, offset=180][0m
+[0m→ [0mRead docs/playtests/data/v019m26-ai-decisions.jsonl[90m [limit=30, offset=375][0m
+[0m✱ [0mGrep ""e":"fire","t":2[23456],"ai":"Ash"|"e":"fire","t":2[23456],"ai":"Hawking""[90m in docs/playtests/data · 10 matches[0m
+[0m✱ [0mGrep ""e":"strategy","t":2[12],"ai":"(Zenon|Donnels|Sarai)""[90m in docs/playtests/data · 6 matches[0m
+[0m✱ [0mGrep "fire-paid|fire-refused|Int\("hit"|e", "fire"|firingHits"[90m in AI · 8 matches[0m
+[0m
+[0m$ [0mpython -c "import json,collections; p='docs/playtests/data/v019m26-ai-decisions.jsonl'; a=[x for x in map(json.loads,open(p,encoding='utf8')) if x.get('e')=='fire-paid']; print(a[0]); print(collections.Counter(tuple(sorted(x)) for x in a))"
+{'e': 'fire-paid', 't': 21, 'ai': 'Hawking', 'wid': 'wea_Railgun', 'guided': False, 'destination': 'jogi', 'candidates': 0, 'energyPaid': 100}
+Counter({('ai', 'candidates', 'destination', 'e', 'energyPaid', 'guided', 't', 'wid'): 479})
+[0m
+[0m→ [0mRead AI/Patches.cs[90m [limit=145, offset=860][0m
+[0m✱ [0mGrep "IsSmart\(|GameSessionManager.*Online|CurrentGameSettings.*Intelligence|ShadowTargets"[90m in AI · 25 matches[0m
+[0m
+[0m$ [0mpython -c "import json,collections; p='docs/playtests/data/v019m25-ai-decisions.jsonl'; a=[x for x in map(json.loads,open(p,encoding='utf8')) if x.get('e')=='strike' and x.get('ai') in ('Zenon','Donnels','Sarai')]; print(len(a),collections.Counter(x.get('seen') for x in a))"
+17 Counter({'visible': 17})
+[0m
+[0m$ [0mpython -c "import json,collections; ps=['v018m22','v018m23','v018m24','v019m25','v019m26']; allow={'v018m22':{'Eiai'},'v018m23':{'Beastie','Arc'},'v018m24':{'Eddie','Doc'},'v019m25':{'Zenon','Donnels','Sarai'},'v019m26':{'Ash','Hawking'}}; print(*[(p,collections.Counter(x.get('seen') for x in map(json.loads,open('docs/playtests/data/'+p+'-ai-decisions.jsonl',encoding='utf8')) if x.get('e')=='strike' and x.get('ai') in allow[p])) for p in ps],sep='\n')"
+('v018m22', Counter({'visible': 7}))
+('v018m23', Counter({'visible': 21}))
+('v018m24', Counter({'visible': 6}))
+('v019m25', Counter({'visible': 17}))
+('v019m26', Counter({'visible': 52}))
+[0m
+[0m✱ [0mGrep "IsBuildingAvailable\(|Unlock.*Building|Building.*Unlock|unlocks_building"[90m in decompiled/Interplanetary.PlayerDataManagement · 4 matches[0m
+[0m✱ [0mGrep "bui_Railgun|tec_OrbitalAssembly|tec_PlasmaChannelInduction"[90m in docs/ruleset/embedded/enhanced · 4 matches[0m
+[0m✱ [0mGrep ""e":"director","t":20,"ai":"Hawking"|"e":"economy","t":20,"ai":"Hawking"|"e":"economy","t":18,"ai":"Ash""[90m in docs/playtests/data · 3 matches[0m
+[0m→ [0mRead decompiled/Interplanetary.PlayerDataManagement/PlayerAvailableBuildings.cs[90m [limit=210][0m
+[0m→ [0mRead AI/Patches.cs[90m [limit=118, offset=295][0m
+[0m→ [0mRead AI/Plugin.cs[90m [limit=33, offset=890][0m
+[0m→ [0mRead docs/ruleset/embedded/enhanced/TechTreeData.csv[90m [limit=35][0m
+[0m✱ [0mGrep ""e":"director","t":19,"ai":"(Zenon|Donnels|Sarai)"|"e":"economy","t":19,"ai":"(Zenon|Donnels|Sarai)""[90m in docs/playtests/data · 6 matches[0m
+[0m
+[0m$ [0mpython -c "import json; p='docs/playtests/data/v019m25-ai-decisions.jsonl'; a=[x for x in map(json.loads,open(p,encoding='utf8')) if x.get('ai') in ('Zenon','Sarai','Donnels') and x.get('t') in (19,20) and x.get('e') in ('economy','director')]; print(*[(x['e'],x['t'],x['ai'],x.get('energyPerTurn'),x.get('war'),x.get('warTurn'),x.get('keyTechs'),x.get('aimedWeapons')) for x in a],sep='\n')"
+('economy', 19, 'Zenon', 6444, None, None, None, None)
+('economy', 19, 'Donnels', 11694, None, None, None, None)
+('economy', 19, 'Sarai', 7344, None, None, None, None)
+('director', 19, 'Zenon', None, False, 20, 'ExperimentalMatterControl,MicrowaveEnergyTranmission,MaglevServos,PlasmaChannelInduction', 0)
+('director', 19, 'Donnels', None, False, 20, 'ExperimentalMatterControl,MicrowaveEnergyTranmission,LosslessEnergyTransfer,MaglevServos,PlasmaChannelInduction,OrbitalAssembly', 0)
+('director', 19, 'Sarai', None, False, 20, 'ExperimentalMatterControl,MicrowaveEnergyTranmission,MaglevServos,PlasmaChannelInduction', 0)
+('economy', 20, 'Zenon', 12994, None, None, None, None)
+('economy', 20, 'Donnels', 11694, None, None, None, None)
+('economy', 20, 'Sarai', 13144, None, None, None, None)
+('director', 20, 'Zenon', None, True, 20, 'ExperimentalMatterControl,MicrowaveEnergyTranmission,LosslessEnergyTransfer,MaglevServos,PlasmaChannelInduction', 18)
+('director', 20, 'Donnels', None, True, 20, 'ExperimentalMatterControl,MicrowaveEnergyTranmission,LosslessEnergyTransfer,MaglevServos,PlasmaChannelInduction,OrbitalAssembly,EarlyWarningAI', 15)
+('director', 20, 'Sarai', None, True, 20, 'ExperimentalMatterControl,MicrowaveEnergyTranmission,LosslessEnergyTransfer,MaglevServos,PlasmaChannelInduction', 19)
+[0m
+[0m$ [0mpython -c "import csv; p='docs/ruleset/embedded/enhanced/TechTreeData.csv'; d={row[0]:row for row in csv.reader(open(p,encoding='utf8',newline=''))}; ids=d['id']; print('building_unlock containing Railgun:',[(ids[i],v) for i,v in enumerate(d['building_unlock']) if 'bui_Railgun' in v]); print('OrbitalAssembly unlock:',d['building_unlock'][ids.index('tec_OrbitalAssembly')]); print('IonDefense unlock:',[(ids[i],v) for i,v in enumerate(d['building_unlock']) if 'bui_IonDefense' in v])"
+building_unlock containing Railgun: []
+OrbitalAssembly unlock: bui_Missile
+IonDefense unlock: [('tec_PlasmaChannelInduction', 'bui_IonDefense')]
+[0m
+[0m$ [0mpython -c "import json,collections; p='docs/playtests/data/v019m25-ai-decisions.jsonl'; a=[x for x in map(json.loads,open(p,encoding='utf8')) if x.get('e')=='strike' and x.get('ai') in ('Zenon','Donnels','Sarai')]; print(len(a),dict(collections.Counter(x.get('seen','fallback:'+str(x.get('fallback'))) for x in a)))"
+17 {'visible': 17}
+[0m
+[0m$ [0mpython -c "import json,collections; p='docs/playtests/data/v019m26-ai-decisions.jsonl'; a=[x for x in map(json.loads,open(p,encoding='utf8')) if x.get('e')=='director' and x.get('ai')=='Ash']; print(dict(sum((collections.Counter({k:v for k,v in x['queued'].items() if 'bui_IonDefense' in k or 'bui_Railgun' in k or 'bui_NuclearPlant' in k}) for x in a),collections.Counter())))"
+{'antinuke:bui_IonDefense': 35, 'abandoned:bui_IonDefense': 35, 'weapon:bui_Railgun': 45, 'abandoned:bui_Railgun': 30, 'defense:bui_IonDefense': 13, 'power:bui_NuclearPlant': 41, 'abandoned:bui_NuclearPlant': 38}
+[0m
+[0m$ [0mpython -c "import json,collections; a=[x for x in map(json.loads,open('docs/playtests/data/v019m26-ai-decisions.jsonl',encoding='utf8')) if x.get('e')=='director']; print([(n,sum(sum(x['placementFailures'].values()) for x in a if x['ai']==n),len([x for x in a if x['ai']==n])) for n in ('Ash','Hawking')])"
+[('Ash', 203, 43), ('Hawking', 26, 35)]
+[0m
+[0m$ [0mpython -c "import json,collections; a=[x for x in map(json.loads,open('docs/playtests/data/v019m26-ai-decisions.jsonl',encoding='utf8')) if x.get('e')=='cover-search' and x.get('ai')=='Ash']; b=[x for x in a if x['outcome']=='gave-up']; print(len(a),dict(collections.Counter(x['outcome'] for x in a)),sum(x['tries'] for x in b),sum(x['unplaced'] for x in b),sum(x['noAnchor'] for x in b))"
+36 {'placed': 10, 'gave-up': 25, 'no-deficit': 1} 45000 18412 25316
+[0m
+[0m$ [0mpython -c "import json; a=list(map(json.loads,open('docs/playtests/data/v019m26-ai-decisions.jsonl',encoding='utf8'))); print([(x['t'],x['energyLeft'],x['materialLeft'],x['aimedWeapons'],x['slotsLeft']) for x in a if x.get('e')=='director' and x.get('ai')=='Ash' and x.get('t') in (33,35,36,37)])"
+[(33, 197, 16714, 30, 118), (35, 36800, 13423, 30, 139), (36, 33395, 15000, 30, 136), (37, 32059, 20014, 30, 135)]
+[0m
+[0m$ [0mpython -c "import json,collections; a=[x for x in map(json.loads,open('docs/playtests/data/v019m26-ai-decisions.jsonl',encoding='utf8')) if x.get('e')=='director' and x.get('ai')=='Ash']; print(dict(sum((collections.Counter({k:v for k,v in x['queued'].items() if 'bui_IonDefense' in k or 'bui_Railgun' in k or 'bui_NuclearPlant' in k}) for x in a),collections.Counter())))"
+{'antinuke:bui_IonDefense': 35, 'abandoned:bui_IonDefense': 35, 'weapon:bui_Railgun': 45, 'abandoned:bui_Railgun': 30, 'defense:bui_IonDefense': 13, 'power:bui_NuclearPlant': 41, 'abandoned:bui_NuclearPlant': 38}
+[0m
+[0m$ [0mpython -c "import json; a=list(map(json.loads,open('docs/playtests/data/v019m25-ai-decisions.jsonl',encoding='utf8'))); print([(x['ai'],x['energyPerTurn']) for x in a if x.get('e')=='economy' and x.get('t')==19 and x.get('ai') in ('Zenon','Donnels','Sarai')])"
+[('Zenon', 6444), ('Donnels', 11694), ('Sarai', 7344)]
+[0m
+[0m$ [0mpython -c "import json; a=list(map(json.loads,open('docs/playtests/data/v019m26-ai-decisions.jsonl',encoding='utf8'))); print([(x['t'],x['recentDamage']) for x in a if x.get('e')=='economy' and x.get('ai')=='Ash' and x.get('t') in (17,18,19,20)])"
+[(17, 865.274), (18, 605.691), (19, 528.984), (20, 641.189)]
+[0m
+[0m✱ [0mGrep ""e":"strategy","t":23,"ai":"(Zenon|Donnels|Sarai)"|"e":"fire","t":23,"ai":"(Zenon|Donnels|Sarai)""[90m in docs/playtests/data · 6 matches[0m
+[0m
+[0m$ [0mpython -c "import json,collections; p='docs/playtests/data/v019m25-ai-decisions.jsonl'; a=[x for x in map(json.loads,open(p,encoding='utf8')) if x.get('e')=='strategy' and x.get('ai') in ('Zenon','Donnels','Sarai') and 21<=x.get('t',0)<=37]; print(*[(n,len([x for x in a if x['ai']==n]),dict(collections.Counter(x.get('commit') for x in a if x['ai']==n)),sum(x.get('humanFirst',False) for x in a if x['ai']==n)) for n in ('Zenon','Donnels','Sarai')],sep='\n')"
+('Zenon', 17, {'jogi': 16, 'Beastie': 1}, 16)
+('Donnels', 17, {'jogi': 17}, 17)
+('Sarai', 17, {'jogi': 16, 'Beastie': 1}, 16)
+[0m
+[0m$ [0mpython -c "import json,collections; p='docs/playtests/data/v019m26-ai-decisions.jsonl'; a=[x for x in map(json.loads,open(p,encoding='utf8')) if x.get('e')=='fire-paid' and x.get('ai') in ('Ash','Hawking')]; print(*[(n,len([x for x in a if x['ai']==n]),dict(collections.Counter(x['destination'] for x in a if x['ai']==n))) for n in ('Ash','Hawking')],sep='\n')"
+('Ash', 265, {'Armiger': 35, 'none': 31, 'jogi': 149, 'Hawking': 39, 'own': 11})
+('Hawking', 214, {'jogi': 153, 'none': 18, 'own': 22, 'Ash': 14, 'Armiger': 7})
+[0m
+[0m$ [0mpython -c "import json,collections; p='docs/playtests/data/v019m25-ai-decisions.jsonl'; a=[x for x in map(json.loads,open(p,encoding='utf8')) if x.get('e')=='fire-paid' and x.get('ai') in ('Zenon','Donnels','Sarai')]; print(*[(n,len([x for x in a if x['ai']==n]),dict(collections.Counter(x['destination'] for x in a if x['ai']==n))) for n in ('Zenon','Donnels','Sarai')],sep='\n')"
+('Zenon', 342, {'jogi': 224, 'own': 41, 'none': 18, 'Donnels': 24, 'Beastie': 6, 'Sarai': 29})
+('Donnels', 313, {'jogi': 208, 'Zenon': 36, 'Sarai': 6, 'none': 33, 'own': 26, 'Beastie': 4})
+('Sarai', 340, {'jogi': 218, 'own': 31, 'none': 27, 'Donnels': 29, 'Beastie': 13, 'Zenon': 22})
+[0m
+[0m→ [0mRead AI/Patches.cs[90m [limit=220, offset=404][0m
+[0m✱ [0mGrep ""e":"fire-paid","t":23,"ai":"(Zenon|Sarai)""[90m in docs/playtests/data · 42 matches[0m
+[0m✱ [0mGrep "Miss.*own|own.*Miss|SafeMiss|Destination\(|destination"[90m in AI · 14 matches[0m
+[0m→ [0mRead AI/Patches.cs[90m [limit=165, offset=624][0m
+[0m
+[0m$ [0mgit --no-optional-locks hash-object docs/playtests/data/v018m22-ai-decisions.jsonl docs/playtests/data/v018m23-ai-decisions.jsonl docs/playtests/data/v018m24-ai-decisions.jsonl docs/playtests/data/v019m25-ai-decisions.jsonl docs/playtests/data/v019m26-ai-decisions.jsonl docs/ruleset/embedded/enhanced/BuildingsData.csv docs/ruleset/embedded/enhanced/TechTreeData.csv docs/ruleset/embedded/enhanced/WeaponsData.csv
+ba154134ce549a1d6063985d95d236003cfc980b
+16e711e9342d91940336342bc80217cc37d34a63
+e277a546e5f08264b91b1eafe607499da6105b8e
+43301e79703c53af95825a81c1711fe19507bb7e
+104343ae2a7e6516ab5fc158d1fd40ebd03eb629
+bef880eb4382376925d34d729ae6c4280ff00831
+33f0a4597f353def1f937fe71c01d39816fafd2c
+2d6308573f747f847e51159f2a5ae61ccff97dc7
+[0m
+[0m$ [0mpython -c "import json,collections; a=[x for x in map(json.loads,open('docs/playtests/data/v019m25-ai-decisions.jsonl',encoding='utf8')) if x.get('e')=='strategy' and x.get('ai') in ('Zenon','Donnels','Sarai') and 21<=x.get('t',0)<=37]; print([(n,len([x for x in a if x['ai']==n]),dict(collections.Counter(x['commit'] for x in a if x['ai']==n))) for n in ('Zenon','Donnels','Sarai')])"
+[('Zenon', 17, {'jogi': 16, 'Beastie': 1}), ('Donnels', 17, {'jogi': 17}), ('Sarai', 17, {'jogi': 16, 'Beastie': 1})]
+[0m
+[0m$ [0mpython -c "import json,collections; a=[x for x in map(json.loads,open('docs/playtests/data/v019m25-ai-decisions.jsonl',encoding='utf8')) if x.get('e')=='fire-paid' and x.get('ai') in ('Zenon','Donnels','Sarai')]; print(len(a),dict(collections.Counter(x['destination'] for x in a)))"
+995 {'jogi': 650, 'own': 98, 'none': 78, 'Zenon': 58, 'Sarai': 35, 'Donnels': 53, 'Beastie': 23}
+[0m
+[0m$ [0mpython -c "import json,collections; a=[x for x in map(json.loads,open('docs/playtests/data/v019m25-ai-decisions.jsonl',encoding='utf8')) if x.get('e')=='fire-paid' and x.get('t')==23 and x.get('ai') in ('Zenon','Sarai')]; print(len(a),dict(collections.Counter(x['destination'] for x in a)))"
+42 {'Beastie': 9, 'Donnels': 15, 'jogi': 3, 'Sarai': 7, 'Zenon': 8}
+[0m
+[0m$ [0mpython -c "import json,collections; p='docs/playtests/data/v019m25-ai-decisions.jsonl'; a=[x for x in map(json.loads,open(p,encoding='utf8')) if x.get('e')=='director' and x.get('ai') in ('Zenon','Donnels','Sarai')]; print(len(a),sum(sum(x['placementFailures'].values()) for x in a),dict(sum((collections.Counter(x['placementFailures']) for x in a),collections.Counter())))"
+111 107 {'bui_IonDefense': 22, 'bui_NuclearPlant': 52, 'bui_SolarPlant': 32, 'bui_Coilcannon': 1}
+[0m
+[0m$ [0mpython -c "import json,collections; p='docs/playtests/data/v018m23-ai-decisions.jsonl'; a=[x for x in map(json.loads,open(p,encoding='utf8')) if x.get('e')=='director' and x.get('ai') in ('Arc','Beastie')]; print(len(a),sum(sum(x['placementFailures'].values()) for x in a),dict(sum((collections.Counter(x['placementFailures']) for x in a),collections.Counter())))"
+69 64 {'bui_IonDefense': 32, 'bui_TelescopeArray': 5, 'bui_SolarPlant': 14, 'bui_NuclearPlant': 13}
+[0m

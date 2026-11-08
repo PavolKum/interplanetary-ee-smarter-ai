@@ -1,0 +1,88 @@
+[0m
+> plan · zai/glm-5.3-flash
+[0m
+[0m$ [0msha256sum "docs/reviews/2026-11-08-council-v020/decision-record.md"
+d01bdb5b59637ef3491ac8fd864b6fe9f2efd8d0030615772947ca8946cc8423 *docs/reviews/2026-11-08-council-v020/decision-record.md
+[0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/decision-record.md
+[0m
+[0m$ [0mls -la "docs/reviews/2026-11-08-council-v020/"
+total 1040
+drwxr-xr-x 1 pavol 197609      0 Nov  8 13:44 .
+drwxr-xr-x 1 pavol 197609      0 Nov  8 13:06 ..
+drwxr-xr-x 1 pavol 197609      0 Nov  8 13:24 __pycache__
+-rw-r--r-- 1 pavol 197609   1333 Nov  8 13:37 ballot.prompt.txt
+-rw-r--r-- 1 pavol 197609  20411 Nov  8 13:39 ballotA.err
+-rw-r--r-- 1 pavol 197609  10602 Nov  8 13:40 ballotA.md
+-rw-r--r-- 1 pavol 197609   1333 Nov  8 13:37 ballotA.prompt.txt
+-rw-r--r-- 1 pavol 197609  29323 Nov  8 13:38 ballotB.err
+-rw-r--r-- 1 pavol 197609  12042 Nov  8 13:39 ballotB.md
+-rw-r--r-- 1 pavol 197609   1333 Nov  8 13:37 ballotB.prompt.txt
+-rw-r--r-- 1 pavol 197609   2705 Nov  8 13:41 ballotC.err
+-rw-r--r-- 1 pavol 197609  11857 Nov  8 13:41 ballotC.md
+-rw-r--r-- 1 pavol 197609   1333 Nov  8 13:37 ballotC.prompt.txt
+-rw-r--r-- 1 pavol 197609   9979 Nov  8 13:41 ballotD.md
+-rw-r--r-- 1 pavol 197609   1333 Nov  8 13:37 ballotD.prompt.txt
+-rw-r--r-- 1 pavol 197609  13326 Nov  8 13:42 ballotE.md
+-rw-r--r-- 1 pavol 197609   1333 Nov  8 13:37 ballotE.prompt.txt
+-rw-r--r-- 1 pavol 197609   4085 Nov  8 13:06 brief.md
+-rw-r--r-- 1 pavol 197609   4645 Nov  8 13:06 charter.md
+-rw-r--r-- 1 pavol 197609  14698 Nov  8 13:43 decision-record.md
+-rw-r--r-- 1 pavol 197609   2442 Nov  8 13:06 evidence-manifest.tsv
+-rw-r--r-- 1 pavol 197609  46528 Nov  8 13:12 laneA.err
+-rw-r--r-- 1 pavol 197609  23439 Nov  8 13:13 laneA.md
+-rw-r--r-- 1 pavol 197609   4929 Nov  8 13:07 laneA.prompt.txt
+-rw-r--r-- 1 pavol 197609  75822 Nov  8 13:10 laneB.err
+-rw-r--r-- 1 pavol 197609  16096 Nov  8 13:11 laneB.md
+-rw-r--r-- 1 pavol 197609   4900 Nov  8 13:07 laneB.prompt.txt
+-rw-r--r-- 1 pavol 197609  45406 Nov  8 13:15 laneC.err
+-rw-r--r-- 1 pavol 197609  24913 Nov  8 13:16 laneC.md
+-rw-r--r-- 1 pavol 197609   4874 Nov  8 13:07 laneC.prompt.txt
+-rw-r--r-- 1 pavol 197609  21826 Nov  8 13:20 laneD.md
+-rw-r--r-- 1 pavol 197609   4760 Nov  8 13:07 laneD.prompt.txt
+-rw-r--r-- 1 pavol 197609  29942 Nov  8 13:23 laneE.md
+-rw-r--r-- 1 pavol 197609   4981 Nov  8 13:07 laneE.prompt.txt
+-rw-r--r-- 1 pavol 197609   4589 Nov  8 13:07 make_prompts.py
+-rw-r--r-- 1 pavol 197609   2474 Nov  8 13:24 make_xreview.py
+-rw-r--r-- 1 pavol 197609   8058 Nov  8 13:37 matrix.md
+-rw-r--r-- 1 pavol 197609   1741 Nov  8 13:44 signoff.prompt.txt
+-rw-r--r-- 1 pavol 197609     44 Nov  8 13:44 signoffA.err
+-rw-r--r-- 1 pavol 197609      0 Nov  8 13:44 signoffA.md
+-rw-r--r-- 1 pavol 197609   1741 Nov  8 13:44 signoffA.prompt.txt
+-rw-r--r-- 1 pavol 197609    323 Nov  8 13:44 signoffB.err
+-rw-r--r-- 1 pavol 197609     60 Nov  8 13:44 signoffB.md
+-rw-r--r-- 1 pavol 197609   1741 Nov  8 13:44 signoffB.prompt.txt
+-rw-r--r-- 1 pavol 197609     47 Nov  8 13:44 signoffC.err
+-rw-r--r-- 1 pavol 197609      0 Nov  8 13:44 signoffC.md
+-rw-r--r-- 1 pavol 197609   1741 Nov  8 13:44 signoffC.prompt.txt
+-rw-r--r-- 1 pavol 197609   1741 Nov  8 13:44 signoffD.prompt.txt
+-rw-r--r-- 1 pavol 197609   1741 Nov  8 13:44 signoffE.prompt.txt
+-rw-r--r-- 1 pavol 197609  76879 Nov  8 13:28 xreviewA-on-B.err
+-rw-r--r-- 1 pavol 197609  16239 Nov  8 13:29 xreviewA-on-B.md
+-rw-r--r-- 1 pavol 197609   1846 Nov  8 13:24 xreviewA-on-B.prompt.txt
+-rw-r--r-- 1 pavol 197609  30515 Nov  8 13:27 xreviewB-on-C.err
+-rw-r--r-- 1 pavol 197609  13448 Nov  8 13:28 xreviewB-on-C.md
+-rw-r--r-- 1 pavol 197609   1846 Nov  8 13:24 xreviewB-on-C.prompt.txt
+-rw-r--r-- 1 pavol 197609 158603 Nov  8 13:34 xreviewC-on-D.err
+-rw-r--r-- 1 pavol 197609  21936 Nov  8 13:36 xreviewC-on-D.md
+-rw-r--r-- 1 pavol 197609   1846 Nov  8 13:24 xreviewC-on-D.prompt.txt
+-rw-r--r-- 1 pavol 197609  15616 Nov  8 13:29 xreviewD-on-E.md
+-rw-r--r-- 1 pavol 197609   1846 Nov  8 13:24 xreviewD-on-E.prompt.txt
+-rw-r--r-- 1 pavol 197609  17258 Nov  8 13:28 xreviewE-on-A.md
+-rw-r--r-- 1 pavol 197609   1846 Nov  8 13:24 xreviewE-on-A.prompt.txt
+[0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/xreviewB-on-C.md
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/ballotB.md
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/laneB.md
+[0m→ [0mRead AI/Brain/Strategy.cs[90m [offset=385, limit=25][0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/matrix.md
+[0m✱ [0mGrep "LastStrikeTurn"[90m in AI · 5 matches[0m
+[0m→ [0mRead AI/StrategyPatches.cs[90m [limit=30, offset=115][0m
+[0m✱ [0mGrep "21 of (them|the)|also at the cap"[90m in docs/reviews/2026-11-08-council-v020 · 2 matches[0m
+[0m✱ [0mGrep "\b21\b"[90m in docs/reviews/2026-11-08-council-v020 · 28 matches[0m
+[0m✱ [0mGrep "39 of 52|39 had|material < 2|materialLeft < 2"[90m in docs/reviews/2026-11-08-council-v020 · 16 matches[0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/ballotA.md
+[0m✱ [0mGrep "hysteresis|Before K|before the schedule|pre-schedule"[90m in docs/reviews/2026-11-08-council-v020 · 11 matches[0m
+[0m✱ [0mGrep "^\- \*\*B\d|Blocker|verdict"[90m in docs/reviews/2026-11-08-council-v020/xreviewA-on-B.md · 62 matches[0m
+[0m✱ [0mGrep "upkeep guard|shared by strategy and director|strategy and director"[90m in docs/reviews/2026-11-08-council-v020 · 11 matches[0m
+[0m→ [0mRead docs/reviews/2026-11-08-council-v020/xreviewA-on-B.md[90m [limit=40, offset=145][0m
