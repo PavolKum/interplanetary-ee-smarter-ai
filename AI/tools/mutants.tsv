@@ -17,3 +17,6 @@ medium-no-fallback	Brain/Coverage.cs	return same.Count > 0 ? same : all;	return 
 medium-both-filtered	Brain/Coverage.cs	if (buildingOnLand && !buildingOnWater && water) continue;  // land-only building, water anchor	if (buildingOnLand && water) continue;	a building for both media keeps every anchor
 medium-no-widen	Brain/Coverage.cs	if (triedSteps >= widenAfter) continue;	;	60 steps without a spot
 medium-widen-early	Brain/Coverage.cs	if (triedSteps >= widenAfter) continue;	if (triedSteps + 1 >= widenAfter) continue;	59 of 60 steps tried
+waterfirst-off	Brain/Coverage.cs	return unpoweredWater > 0 && unpoweredLand == 0;	return false;	only offshore mines unpowered
+waterfirst-mixed	Brain/Coverage.cs	return unpoweredWater > 0 && unpoweredLand == 0;	return unpoweredWater > 0;	one unpowered land building
+waterfirst-idle	Brain/Coverage.cs	return unpoweredWater > 0 && unpoweredLand == 0;	return unpoweredLand == 0;	nothing unpowered

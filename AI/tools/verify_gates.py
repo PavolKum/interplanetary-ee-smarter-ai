@@ -18,6 +18,8 @@ STRIKE_EVERY = 2               # StrategySettings.StrikeEvery
 MAX_HOLD_BASELINE = 3 / 186.0  # max-hold share of war strategy records, matches 22-26 (v0.18-v0.19)
 LAND_GIVEUP_BASELINE = 114 / 159.0  # v0.21 I9: land placements given up per director record, matches 27-28 (v0.20)
 WATER_ONLY = {"bui_OffshoreMine", "bui_FloatingPlant"}
+LAND_PLANTS = {"bui_SolarPlant", "bui_NuclearPlant"}
+STRANDED_LIMIT = 0.5 * 7 / 30.0  # v0.22 I9b: half of m29's land plants given up with only water anchors per AI-turn
 
 
 def segments(rows):
@@ -133,6 +135,29 @@ def evaluate(rows, human="jogi", only=None):
              % (len(land), dict(outcome), sum(r.get("skippedAnchors", 0) for r in land), sum(r.get("noSameMedium", 0) for r in land)))
     else:
         gate(res, "I9 land placements given up per AI-turn", "UNTESTED", "before v0.21")
+
+    # v0.22: land plants given up with only water anchors (plants queued for unpowered offshore mines) per AI-turn.
+    # m29 (v0.21): 7 over 30 AI-turns = 0.23; predeclared 2026-11-08 before the first v0.22 match: PASS at <= half of that.
+    v22 = [r for r in dirs if "unpoweredWater" in r]
+    if v22:
+        opportunity = [r for r in v22 if r.get("unpoweredWater", 0) > 0 and r.get("unpoweredLand", 0) == 0]
+        stranded = [r for r in rows if r.get("e") == "place-search" and r.get("ai") in ais and r.get("outcome") == "gave-up"
+                    and r.get("building") in LAND_PLANTS and r.get("filtered", 0) > 0 and r.get("noSameMedium", 0) >= 0.9 * r["filtered"]]
+        rate = len(stranded) / len(v22)
+        if not opportunity and not stranded:
+            gate(res, "I9b land plants stranded at sea per AI-turn", "UNTESTED", "no AI-turn had only water buildings unpowered")
+        else:
+            gate(res, "I9b land plants stranded at sea per AI-turn", "PASS" if rate <= STRANDED_LIMIT else "FAIL",
+                 "%.2f (%d over %d AI-turns; limit %.2f; %d AI-turns with only water unpowered)" % (rate, len(stranded), len(v22), STRANDED_LIMIT, len(opportunity)))
+        links = [r for r in rows if r.get("e") == "place-search" and r.get("ai") in ais and r.get("waterLinkSteps", 0) > 0]
+        outcome = defaultdict(int)
+        for r in links:
+            outcome[r["outcome"]] += 1
+        gate(res, "INFO water plants for unpowered water buildings", "INFO",
+             "%d queued water-first; %d searches tried next to an unpowered water building %s"
+             % (sum(r.get("waterFirstPlants", 0) for r in v22), len(links), dict(outcome)))
+    else:
+        gate(res, "I9b land plants stranded at sea per AI-turn", "UNTESTED", "before v0.22")
 
     # I2 retaliation latch: no war -> peace after a latch, per AI; opportunity = an AI that latched
     latched_ais, flips, drops = 0, [], []
@@ -360,6 +385,14 @@ def selftest():
     i9 = "I9 land placements given up per AI-turn"
     many = [base[0], dict(base[1], placeSearchesStarted=0, placementFailures={"bui_SolarPlant": 3}), base[2], base[3]]
     checks.append(("3 solar given up in 1 AI-turn FAILs I9", status(many, i9) == "FAIL"))
+    i9b = "I9b land plants stranded at sea per AI-turn"
+    strand = lambda i: {"e": "place-search", "ai": "X", "t": 12, "searchId": i, "outcome": "gave-up", "building": "bui_SolarPlant", "filtered": 100, "noSameMedium": 100}
+    wet = dict(base[1], placeSearchesStarted=1, unpoweredWater=3, unpoweredLand=0)
+    checks.append(("a stranded solar plant in 1 AI-turn FAILs I9b", status([base[0], wet, base[2], base[3], strand(1)], i9b) == "FAIL"))
+    checks.append(("water unpowered and nothing stranded PASSes I9b", status([base[0], wet, base[2], base[3]], i9b) == "PASS"))
+    checks.append(("no water-only unpowered turn is UNTESTED", status([base[0], dict(wet, unpoweredWater=0), base[2], base[3]], i9b) == "UNTESTED"))
+    checks.append(("a crowded plant (not only water anchors) does not count for I9b",
+                   status([base[0], wet, base[2], base[3], dict(strand(1), noSameMedium=10)], i9b) == "PASS"))
     checks.append(("water and defense give-ups do not count for I9",
                    status([base[0], dict(base[1], placeSearchesStarted=0, placementFailures={"bui_OffshoreMine": 3, "bui_IonDefense": 4}), base[2], base[3]], i9) == "PASS"))
     failed = [n for n, ok in checks if not ok]

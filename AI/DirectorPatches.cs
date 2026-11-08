@@ -44,6 +44,8 @@ namespace InterplanetaryAI
             public int UnpoweredWeapons = -1;   // v0.20 (council I1a): weapons without power at end of turn
             public int SearchesOpenAtEnd = -1;  // v0.20 (council I1a): placement searches cut by the end turn
             public int PlaceSearchesStarted;    // v0.21 (council I1a): each has one place-search terminal record
+            public int UnpoweredLand = -1, UnpoweredWater = -1; // v0.22: unpowered buildings with a free slot, by where they stand
+            public int WaterFirstPlants;        // v0.22: plants for unpowered buildings queued as water plants first
             public int PlantsForUnpowered;
             public int PreferredIntelAttempts;
             public int DefensesThisTurn;
@@ -700,6 +702,7 @@ namespace InterplanetaryAI
             d.DefenseTurnCap = EconomyDirector.DefensesPerTurnCap(d.DesiredDefenses, d.OwnDefenses, Plugin.DefensesPerTurn.Value,
                 Plugin.DefenseCatchUpTurns.Value, d.SlotsAtStart, d.RecentDamage > 0f);
             d.Unpowered = core.PowerGrid.BuildingsRequiringPowerAmount;
+            CountUnpowered(core, out d.UnpoweredLand, out d.UnpoweredWater, null); // v0.22 (log)
             d.TurnStartEnergy = core.Resources.Energy;
             d.TurnStartMaterial = core.Resources.Material;
             PlayerResourceHandler res = core.PlayerData.ResourceHandler;
@@ -774,10 +777,15 @@ namespace InterplanetaryAI
                 || (economy.NeedSlotForGoal && d.PlantsForUnpowered == 0);
             if (needPlant && !d.FailedThisTurn.Contains("unpowered-plant"))
             {
-                BuildingData plant = PickLandPlant(core, d) ?? PickWaterPlant(core, d);
+                // v0.22: a water plant first when every unpowered building that can take a line stands on water.
+                int unpoweredLand, unpoweredWater;
+                CountUnpowered(core, out unpoweredLand, out unpoweredWater, null);
+                bool waterFirst = Plugin.WaterPlantForWater.Value && AnchorMedium.WaterPlantFirst(unpoweredLand, unpoweredWater);
+                BuildingData plant = waterFirst ? (PickWaterPlant(core, d) ?? PickLandPlant(core, d)) : (PickLandPlant(core, d) ?? PickWaterPlant(core, d));
                 if (plant != null && QueueBuilding(construction, core, d, plant, "power"))
                 {
                     d.PlantsForUnpowered++;
+                    if (waterFirst && IsWaterOnly(plant)) d.WaterFirstPlants++;
                     return true;
                 }
                 d.FailedThisTurn.Add("unpowered-plant");
@@ -2973,6 +2981,12 @@ namespace InterplanetaryAI
                     if (defenseCore != null && Plugin.IsSmart(defenseCore.PlayerData) && CoverageStep(__instance, data, defenseCore)) return false;
                     return true;
                 }
+                if (data != null && !data.defense_functionality.IsValueSet && !__instance.m_needsPowerGrid && IsWaterOnly(data) && Plugin.WaterPlantForWater.Value)
+                {
+                    // v0.22: a water plant goes next to an unpowered water building and connects to it.
+                    AICore plantCore = (AICore)s_searchCore.GetValue(__instance);
+                    if (plantCore != null && Plugin.IsSmart(plantCore.PlayerData) && WaterLinkStep(__instance, plantCore)) return false;
+                }
                 if (data != null && Plugin.ShelterPlacement.Value && !data.defense_functionality.IsValueSet)
                 {
                     AICore shelterCore = (AICore)s_searchCore.GetValue(__instance);
@@ -3065,6 +3079,42 @@ namespace InterplanetaryAI
             }
         }
 
+        // v0.22: unpowered buildings that can take a power line (the game's own test for a plant's anchors), split by where
+        // they stand; `onWater` (optional) collects the ones on water.
+        private static void CountUnpowered(AICore core, out int land, out int water, List<BaseBuilding> onWater)
+        {
+            land = 0;
+            water = 0;
+            foreach (BaseBuilding b in core.PlayerData.BuildingHandler.Buildings)
+            {
+                if (b == null || b.CurrentState == BaseBuilding.BuildingState.Ruins || b.CurrentState == BaseBuilding.BuildingState.Destroyed) continue;
+                if (!core.PowerGrid.IsBuildingRequiringPower(b) || !core.PowerGrid.HasBuildingAvailableSlots(b)) continue;
+                if (AnchorOnWater(core, b))
+                {
+                    water++;
+                    if (onWater != null) onWater.Add(b);
+                }
+                else land++;
+            }
+        }
+
+        // v0.22: one step of a water plant's search: a ring spot next to a random unpowered water building, connected to it
+        // (the game's own next-to step registers the anchor as powered). False when nothing on water needs power, or after
+        // MediumWidenAfter steps, so the v0.17 shoreline placement (or the game's random water spot) takes over.
+        private static bool WaterLinkStep(AIBuildingPlacementSearch search, AICore core)
+        {
+            PlaceSearch stat = StatOf(search);
+            if (stat != null && stat.WaterLinkSteps >= MediumWidenAfter) return false;
+            List<BaseBuilding> unpowered = new List<BaseBuilding>();
+            int land, water;
+            CountUnpowered(core, out land, out water, unpowered);
+            if (unpowered.Count == 0) return false;
+            if (stat != null) stat.WaterLinkSteps++;
+            s_searchSteps.SetValue(search, (int)s_searchSteps.GetValue(search) + 1);
+            s_placeNextTo.Invoke(search, new object[] { unpowered });
+            return true;
+        }
+
         // The game's own step (a ring spot around a random anchor) with land anchors preferred. False when the preference
         // changes nothing, so the game's step runs unchanged.
         private static bool LandStep(AIBuildingPlacementSearch search, BuildingData data, AICore core)
@@ -3092,6 +3142,7 @@ namespace InterplanetaryAI
             public int Skipped;      // water anchors left out, summed over those steps
             public int NoSameMedium; // steps where every anchor was on water (nothing to prefer)
             public bool Widened;     // MediumWidenAfter steps passed: every anchor again
+            public int WaterLinkSteps; // v0.22: steps a water plant tried next to an unpowered water building
         }
 
         private static int s_placeSearchIds;
@@ -3153,7 +3204,7 @@ namespace InterplanetaryAI
             {
                 Plugin.WriteDecision(new Json().Str("e", "place-search").Int("t", p.Turn).Str("ai", p.Ai).Int("searchId", p.Id).Str("building", p.Building)
                     .Str("outcome", outcome).Int("steps", (int)s_searchSteps.GetValue(search)).Int("filtered", p.Filtered)
-                    .Int("skippedAnchors", p.Skipped).Int("noSameMedium", p.NoSameMedium).Bool("widened", p.Widened).ToString());
+                    .Int("skippedAnchors", p.Skipped).Int("noSameMedium", p.NoSameMedium).Bool("widened", p.Widened).Int("waterLinkSteps", p.WaterLinkSteps).ToString());
             }
             catch (Exception e)
             {
@@ -3299,6 +3350,7 @@ namespace InterplanetaryAI
                 .Int("retaliationQuiet", RetaliationOf(core.PlayerData).QuietTurns) // v0.20 (council I2)
                 .Int("unpoweredWeapons", d.UnpoweredWeapons).Int("searchesOpenAtEnd", d.SearchesOpenAtEnd) // v0.20 (council I1a)
                 .Int("placeSearchesStarted", d.PlaceSearchesStarted) // v0.21 (council I1a)
+                .Int("unpoweredLand", d.UnpoweredLand).Int("unpoweredWater", d.UnpoweredWater).Int("waterFirstPlants", d.WaterFirstPlants) // v0.22
                 .Int("energyStart", d.TurnStartEnergy).Int("materialStart", d.TurnStartMaterial)
                 .Int("energyLeft", core.Resources.Energy).Int("materialLeft", core.Resources.Material)
                 .Num("upkeep", d.Upkeep).Int("ownDefenses", d.OwnDefenses).Int("desiredDefenses", d.DesiredDefenses).Int("defenseTurnCap", d.DefenseTurnCap)

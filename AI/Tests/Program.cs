@@ -541,6 +541,12 @@ namespace InterplanetaryAI.Tests
             Check(string.Join(",", AnchorMedium.Preferred(true, false, pool, 59, 60)) == "2", "59 of 60 steps tried: still land only");
             Check(string.Join(",", AnchorMedium.Preferred(true, false, pool, 60, 60)) == "0,1,2,3", "60 steps without a spot: every anchor again (Gemini v0.21 #4)");
 
+            // v0.22: m29 T25 shape, unpowered offshore mines only.
+            Check(AnchorMedium.WaterPlantFirst(0, 5), "only offshore mines unpowered: a water plant first");
+            Check(!AnchorMedium.WaterPlantFirst(1, 5), "one unpowered land building: the land plant first (it can reach it)");
+            Check(!AnchorMedium.WaterPlantFirst(0, 0), "nothing unpowered: the land plant first (the slot rule)");
+            Check(!AnchorMedium.WaterPlantFirst(3, 0), "only land unpowered: the land plant first");
+
             // Opening: with no free slot (a queued plant's connectors are unusable this turn), one plant, then the material waits.
             EconOption mineT1 = new EconOption { Id = "mine", Kind = OptionKind.Producer, Energy = 300, Material = 300, MaterialGain = 100f, NeedsSlot = true };
             EconOption solarT1 = new EconOption { Id = "solar", Kind = OptionKind.Plant, Energy = 250, Material = 400, EnergyGain = 100f };

@@ -24,7 +24,7 @@ namespace InterplanetaryAI
     {
         public const string GUID = "pavol.interplanetary.ai";
         public const string NAME = "Interplanetary EE: Smarter AI";
-        public const string VERSION = "0.21.0";
+        public const string VERSION = "0.22.0";
 
         internal static ManualLogSource Log;
 
@@ -341,6 +341,7 @@ namespace InterplanetaryAI
         internal static ConfigEntry<float> FreeFireMinPassing;       // v0.16.2
         internal static ConfigEntry<bool> LateFirePulseWait;         // v0.20 (council S1)
         internal static ConfigEntry<bool> AnchorMediumMatch;         // v0.21 (council I9)
+        internal static ConfigEntry<bool> WaterPlantForWater;        // v0.22
         internal static ConfigEntry<float> MaterialBoundEnergyShare; // v0.16.2
         internal static ConfigEntry<float> MaterialBoundStockShare;  // v0.16.2
         internal static ConfigEntry<int> MaterialBoundMinEnergy;     // v0.16.2
@@ -778,6 +779,8 @@ namespace InterplanetaryAI
                 "v0.20 (council S1): late free fire also on pulse-wait holds when the energy actually left covers the reservation; the volley is booked like the hold it replaced, so the pulse cadence is unchanged. m25: Donnels T33 held with 8,828 left vs 5,960.");
             AnchorMediumMatch = Config.Bind("Director", "AnchorMediumMatch", true,
                 "v0.21 (council I9): a land-only building (solar and nuclear plants, railguns, telescopes) is placed around land anchors when any exist, instead of a random anchor that may be an offshore mine or floating plant (its ring lands in the sea). With no land anchor the game's pool is kept. m28: 73 land placements given up (118 with defenses) while the anchor pools held 15-43 offshore mines.");
+            WaterPlantForWater = Config.Bind("Director", "WaterPlantForWater", true,
+                "v0.22: when every unpowered building that can take a power line stands on water (offshore mines), the plant for it is a floating plant, placed next to one of them and connected; a land plant could only anchor at sea. m29 T25-T27: 7 land plants given up that way.");
             MaterialBoundEnergyShare = Config.Bind("Director", "MaterialBoundEnergyShare", 0.2f,
                 "v0.16.2: material binds when last turn left at least this share of its energy (and MaterialBoundMinEnergy) unspent while its material was spent down to MaterialBoundStockShare. Then extraction goes first and energy gains are worth nothing. 0 = off.");
             MaterialBoundStockShare = Config.Bind("Director", "MaterialBoundStockShare", 0.1f, "v0.16.2: most material left at turn end, as a share of the turn's material, that counts as spent down.");

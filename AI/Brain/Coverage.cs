@@ -413,5 +413,13 @@ namespace InterplanetaryAI.Brain
             }
             return same.Count > 0 ? same : all; // after widening `same` is empty: every anchor
         }
+
+        // v0.22: the plant for unpowered buildings is a water plant when every unpowered building that can take a power
+        // line stands on water. A land plant connects to an unpowered building (the game's rule), so its only anchors would
+        // be at sea. m29 T25-T27: 7 land plants given up that way after the human cut power to offshore mines.
+        public static bool WaterPlantFirst(int unpoweredLand, int unpoweredWater)
+        {
+            return unpoweredWater > 0 && unpoweredLand == 0;
+        }
     }
 }
