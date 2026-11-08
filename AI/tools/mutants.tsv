@@ -15,3 +15,5 @@ medium-land-off	Brain/Coverage.cs	if (buildingOnLand && !buildingOnWater && wate
 medium-water-off	Brain/Coverage.cs	if (buildingOnWater && !buildingOnLand && !water) continue; // water-only building, land anchor	;	water-only building: only the water anchors
 medium-no-fallback	Brain/Coverage.cs	return same.Count > 0 ? same : all;	return same;	no land anchor: every anchor is kept
 medium-both-filtered	Brain/Coverage.cs	if (buildingOnLand && !buildingOnWater && water) continue;  // land-only building, water anchor	if (buildingOnLand && water) continue;	a building for both media keeps every anchor
+medium-no-widen	Brain/Coverage.cs	if (triedSteps >= widenAfter) continue;	;	60 steps without a spot
+medium-widen-early	Brain/Coverage.cs	if (triedSteps >= widenAfter) continue;	if (triedSteps + 1 >= widenAfter) continue;	59 of 60 steps tried

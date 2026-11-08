@@ -101,8 +101,19 @@ def evaluate(rows, human="jogi", only=None):
         bad = ["%s T%d %d vs %d" % (r["ai"], r["t"], r["placeSearchesStarted"], per[(r["ai"], r["t"])])
                for r in counted if r["placeSearchesStarted"] != per[(r["ai"], r["t"])]]
         dup = len(ids) - len(set(ids))
-        gate(res, "I1a every placement search terminal", "PASS" if not bad and not dup else "FAIL",
-             "%d searches over %d director records; mismatched AI-turns %d %s; duplicate ids %d" % (len(places), len(counted), len(bad), bad[:3], dup))
+        # Gemini v0.21 #2/#3: records on AI-turns without a director record, a director record without the field, and a
+        # match with no search at all must not pass.
+        keys = {(r["ai"], r["t"]) for r in counted}
+        orphans = sum(n for k, n in per.items() if k not in keys)
+        started = sum(r["placeSearchesStarted"] for r in counted)
+        missing = len(dirs) - len(counted)
+        detail = "%d searches started, %d records over %d director records; mismatched AI-turns %d %s; orphans %d; duplicate ids %d; records without the field %d" % (
+            started, len(places), len(counted), len(bad), bad[:3], orphans, dup, missing)
+        if started == 0 and not places:
+            gate(res, "I1a every placement search terminal", "UNTESTED", detail)
+        else:
+            ok = not bad and not dup and not orphans and not missing and started == len(places)
+            gate(res, "I1a every placement search terminal", "PASS" if ok else "FAIL", detail)
     else:
         gate(res, "I1a every placement search terminal", "UNTESTED", "no director record carries placeSearchesStarted (before v0.21)")
 
@@ -342,6 +353,10 @@ def selftest():
     checks.append(("2 started, 1 terminal: placement FAILs", status(two[:-1], term) == "FAIL"))
     checks.append(("a duplicate terminal FAILs", status(two[:-1] + [ps(1, "open")], term) == "FAIL"))
     checks.append(("before v0.21 the placement gate is UNTESTED", status(base, term) == "UNTESTED"))
+    checks.append(("an orphan record on an AI-turn without a director record FAILs", status(two + [dict(ps(3, "open"), t=13)], term) == "FAIL"))
+    checks.append(("no search started is UNTESTED", status([base[0], dict(base[1], placeSearchesStarted=0), base[2], base[3]], term) == "UNTESTED"))
+    nofield = [base[0], dict(base[1], placeSearchesStarted=1), dict(base[1], t=13), base[2], base[3], ps(1, "placed")]
+    checks.append(("a director record without the field FAILs", status(nofield, term) == "FAIL"))
     i9 = "I9 land placements given up per AI-turn"
     many = [base[0], dict(base[1], placeSearchesStarted=0, placementFailures={"bui_SolarPlant": 3}), base[2], base[3]]
     checks.append(("3 solar given up in 1 AI-turn FAILs I9", status(many, i9) == "FAIL"))

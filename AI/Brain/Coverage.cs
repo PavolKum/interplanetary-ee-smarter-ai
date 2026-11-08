@@ -395,19 +395,23 @@ namespace InterplanetaryAI.Brain
     // coastal anchor can still be tried and nothing that placed before can stop placing.
     public static class AnchorMedium
     {
-        public static List<int> Preferred(bool buildingOnLand, bool buildingOnWater, IList<bool> anchorWaterOnly)
+        // `anchorOnWater`: where each anchor stands. Gemini v0.21 #4: once `triedSteps` reach `widenAfter`, every anchor is
+        // kept again, so one crowded land anchor cannot starve the coastal water anchors the game would have tried.
+        public static List<int> Preferred(bool buildingOnLand, bool buildingOnWater, IList<bool> anchorOnWater,
+            int triedSteps = 0, int widenAfter = int.MaxValue)
         {
             List<int> all = new List<int>();
             List<int> same = new List<int>();
-            for (int i = 0; i < anchorWaterOnly.Count; i++)
+            for (int i = 0; i < anchorOnWater.Count; i++)
             {
                 all.Add(i);
-                bool water = anchorWaterOnly[i];
+                if (triedSteps >= widenAfter) continue;
+                bool water = anchorOnWater[i];
                 if (buildingOnLand && !buildingOnWater && water) continue;  // land-only building, water anchor
                 if (buildingOnWater && !buildingOnLand && !water) continue; // water-only building, land anchor
                 same.Add(i);
             }
-            return same.Count > 0 ? same : all;
+            return same.Count > 0 ? same : all; // after widening `same` is empty: every anchor
         }
     }
 }

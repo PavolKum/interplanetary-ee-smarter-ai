@@ -2852,7 +2852,7 @@ namespace InterplanetaryAI
                     if (b != null && b.CurrentState == BaseBuilding.BuildingState.Normal) anchors.Add(b);
                 }
             }
-            anchors = SameMedium(data, anchors, StatOf(search)); // v0.21 (council I9): land buildings around land anchors
+            anchors = SameMedium(core, data, anchors, StatOf(search)); // v0.21 (council I9): land buildings around land anchors
             if (anchors.Count == 0) return false; // native: a random spot
 
             s_shelterSteps[search] = ++steps;
@@ -3026,22 +3026,43 @@ namespace InterplanetaryAI
 
         // The anchors on a land-only building's own medium when any exist (AnchorMedium.Preferred); every other building,
         // and AnchorMediumMatch = false, keeps the list unchanged (v0.17 puts water buildings on the land base's shoreline).
-        private static List<BaseBuilding> SameMedium(BuildingData data, List<BaseBuilding> anchors, PlaceSearch stat)
+        private const int MediumWidenAfter = 60; // Gemini v0.21 #4: preference steps before every anchor is tried again
+
+        private static List<BaseBuilding> SameMedium(AICore core, BuildingData data, List<BaseBuilding> anchors, PlaceSearch stat)
         {
             if (!Plugin.AnchorMediumMatch.Value || anchors.Count == 0 || !IsLandOnly(data)) return anchors;
-            List<bool> waterOnly = new List<bool>(anchors.Count);
-            foreach (BaseBuilding b in anchors) waterOnly.Add(b != null && b.BuildingData != null && IsWaterOnly(b.BuildingData));
-            List<int> keep = AnchorMedium.Preferred(true, false, waterOnly);
+            List<bool> onWater = new List<bool>(anchors.Count);
+            foreach (BaseBuilding b in anchors) onWater.Add(AnchorOnWater(core, b));
+            int tried = stat != null ? stat.Filtered : 0;
+            List<int> keep = AnchorMedium.Preferred(true, false, onWater, tried, MediumWidenAfter);
             if (stat != null)
             {
                 stat.Filtered++;
                 stat.Skipped += anchors.Count - keep.Count;
-                if (!waterOnly.Contains(false)) stat.NoSameMedium++; // every anchor was water: the game's pool is kept
+                if (!onWater.Contains(false)) stat.NoSameMedium++; // every anchor was water: the game's pool is kept
+                if (tried == MediumWidenAfter) stat.Widened = true;
             }
             if (keep.Count == anchors.Count) return anchors;
             List<BaseBuilding> kept = new List<BaseBuilding>(keep.Count);
             foreach (int i in keep) kept.Add(anchors[i]);
             return kept;
+        }
+
+        // Gemini v0.21 #1: where the anchor stands, not what its type allows (a defense is buildable on land and water, and
+        // a sea defense is a water anchor). The game's own test reads the planet's placement mask; the type is the fallback.
+        private static bool AnchorOnWater(AICore core, BaseBuilding b)
+        {
+            if (b == null || b.BuildingData == null) return false;
+            if (IsWaterOnly(b.BuildingData)) return true;
+            try
+            {
+                return PlayerBuildingHandler.IsOnWater(core.Planet.transform.InverseTransformPoint(b.transform.position), core.Planet);
+            }
+            catch (Exception e)
+            {
+                ReportOnce("anchor-on-water", e);
+                return false;
+            }
         }
 
         // The game's own step (a ring spot around a random anchor) with land anchors preferred. False when the preference
@@ -3054,7 +3075,7 @@ namespace InterplanetaryAI
             List<BaseBuilding> anchors = new List<BaseBuilding>();
             (search.m_needsPowerGrid ? s_findWithPower : s_findNeedPower).Invoke(search, new object[] { all, anchors });
             if (anchors.Count == 0) return false; // the game: a random spot
-            List<BaseBuilding> kept = SameMedium(data, anchors, StatOf(search));
+            List<BaseBuilding> kept = SameMedium(core, data, anchors, StatOf(search));
             if (kept.Count == anchors.Count) return false;
             s_searchSteps.SetValue(search, (int)s_searchSteps.GetValue(search) + 1); // the game's step counts itself
             s_placeNextTo.Invoke(search, new object[] { kept });
@@ -3070,6 +3091,7 @@ namespace InterplanetaryAI
             public int Filtered;     // steps the medium preference ran
             public int Skipped;      // water anchors left out, summed over those steps
             public int NoSameMedium; // steps where every anchor was on water (nothing to prefer)
+            public bool Widened;     // MediumWidenAfter steps passed: every anchor again
         }
 
         private static int s_placeSearchIds;
@@ -3131,7 +3153,7 @@ namespace InterplanetaryAI
             {
                 Plugin.WriteDecision(new Json().Str("e", "place-search").Int("t", p.Turn).Str("ai", p.Ai).Int("searchId", p.Id).Str("building", p.Building)
                     .Str("outcome", outcome).Int("steps", (int)s_searchSteps.GetValue(search)).Int("filtered", p.Filtered)
-                    .Int("skippedAnchors", p.Skipped).Int("noSameMedium", p.NoSameMedium).ToString());
+                    .Int("skippedAnchors", p.Skipped).Int("noSameMedium", p.NoSameMedium).Bool("widened", p.Widened).ToString());
             }
             catch (Exception e)
             {

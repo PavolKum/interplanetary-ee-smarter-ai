@@ -538,6 +538,8 @@ namespace InterplanetaryAI.Tests
             var allWater = new List<bool> { true, true };
             Check(string.Join(",", AnchorMedium.Preferred(true, false, allWater)) == "0,1", "no land anchor: every anchor is kept (the game's behaviour, coastal spots)");
             Check(AnchorMedium.Preferred(true, false, new List<bool>()).Count == 0, "no anchors: none");
+            Check(string.Join(",", AnchorMedium.Preferred(true, false, pool, 59, 60)) == "2", "59 of 60 steps tried: still land only");
+            Check(string.Join(",", AnchorMedium.Preferred(true, false, pool, 60, 60)) == "0,1,2,3", "60 steps without a spot: every anchor again (Gemini v0.21 #4)");
 
             // Opening: with no free slot (a queued plant's connectors are unusable this turn), one plant, then the material waits.
             EconOption mineT1 = new EconOption { Id = "mine", Kind = OptionKind.Producer, Energy = 300, Material = 300, MaterialGain = 100f, NeedsSlot = true };
